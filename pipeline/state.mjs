@@ -22,7 +22,19 @@ export function pipelinePaths(repoRoot) {
     testSuite: path.join(dir, 'test_suite.md'),
     reviewReport: path.join(dir, 'review_report.md'),
     testHistory: path.join(dir, 'test_history.json'),
+    diff: path.join(dir, 'diff.patch'),
+    runs: path.join(dir, 'runs'),
   };
+}
+
+// True when the given PID belongs to a live process we can signal.
+export function pidAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
+export function readLock(paths) {
+  try { return JSON.parse(fs.readFileSync(paths.lock, 'utf8')); } catch { return null; }
 }
 
 export function loadConfig(paths) {

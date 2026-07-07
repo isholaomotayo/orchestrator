@@ -88,7 +88,12 @@ function parseClaudeEvent(line) {
     return blocks;
   }
   if (ev.type === 'result') {
-    return [{ kind: 'sys', text: `done · ${ev.subtype || ''} · ${ev.num_turns ?? '?'} turns · $${ev.total_cost_usd?.toFixed?.(4) ?? '?'}` }];
+    return [{
+      kind: 'sys',
+      text: `done · ${ev.subtype || ''} · ${ev.num_turns ?? '?'} turns · $${ev.total_cost_usd?.toFixed?.(4) ?? '?'}`,
+      costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : undefined,
+      turns: ev.num_turns,
+    }];
   }
   return []; // user/tool_result echoes — too noisy for the dashboard
 }

@@ -11,7 +11,10 @@
 .pipeline/test_history.json
 .pipeline/.lock
 .pipeline/ui-server.pid
+.pipeline/ui-server.out
 .pipeline/followups/
+.pipeline/diff.patch
+.pipeline/runs/
 
 # Sandbox worktree
 .pipeline_sandbox/

@@ -18,16 +18,25 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif; }
+  svg.ic { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
   .app { display: flex; flex-direction: column; height: 100vh; max-width: 1400px; margin: 0 auto; background: var(--panel); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 
   /* ---- top bar ---- */
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .topbar .appicon { width: 22px; height: 22px; border-radius: 6px; background: #1c1917; color: #fff; display: grid; place-items: center; font-size: 12px; }
-  .topbar .title { font-weight: 600; font-size: 13.5px; }
+  .topbar .appicon { width: 24px; height: 24px; border-radius: 7px; background: #1c1917; color: #fff; display: grid; place-items: center; }
+  .topbar .appicon svg.ic { width: 13px; height: 13px; }
+  .topbar .title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
   .topbar .spacer { flex: 1; }
-  .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: #f0efec; color: var(--muted); border: 1px solid var(--border); }
+  .totals { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: #f0efec; color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
   .pill.active { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
   .pill.halted { background: var(--red-bg); color: var(--red-text); border-color: transparent; }
+  .pill.stale { background: var(--amber-bg); color: var(--amber-text); border-color: transparent; }
+  #run-select { font: 11.5px inherit; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; background: #f7f6f4; padding: 4px 6px; max-width: 210px; }
+  .tb-btn { display: inline-flex; align-items: center; gap: 5px; font: 600 11.5px inherit; border: 1px solid var(--border); background: #fff; color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
+  .tb-btn:hover { background: #f7f6f4; }
+  .tb-btn.primary { background: #1c1917; border-color: #1c1917; color: #fff; }
+  .tb-btn.danger { background: var(--red-bg); border-color: transparent; color: var(--red-text); }
 
   .body { display: flex; flex: 1; min-height: 0; }
 
@@ -38,7 +47,8 @@
   .agent-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
   .agent-row:hover { background: #f0efec; }
   .agent-row.selected { background: var(--accent-row); }
-  .agent-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 13px; flex-shrink: 0; }
+  .agent-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; }
+  .agent-ico svg.ic { width: 13px; height: 13px; }
   .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
   .agent-row .sub { font-size: 11px; color: var(--muted); line-height: 1.25; }
   .agent-row .grow { flex: 1; min-width: 0; }
@@ -53,6 +63,7 @@
   .stepper { display: flex; align-items: flex-start; padding: 4px 8px 2px; }
   .step { display: flex; flex-direction: column; align-items: center; gap: 4px; position: relative; flex: 1; }
   .step .circ { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid #d6d3d1; color: var(--faint); display: grid; place-items: center; font-size: 10.5px; font-weight: 600; background: var(--sidebar); z-index: 1; }
+  .step .circ svg.ic { width: 11px; height: 11px; }
   .step.done .circ { background: var(--green); border-color: var(--green); color: #fff; }
   .step.active .circ { background: #1c1917; border-color: #1c1917; color: #fff; }
   .step.failed .circ { background: var(--red); border-color: var(--red); color: #fff; }
@@ -67,7 +78,8 @@
   /* ---- main ---- */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   .agent-header { display: flex; align-items: center; gap: 11px; padding: 13px 22px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .agent-header .agent-ico { width: 30px; height: 30px; font-size: 15px; }
+  .agent-header .agent-ico { width: 30px; height: 30px; }
+  .agent-header .agent-ico svg.ic { width: 15px; height: 15px; }
   .agent-header .nm { font-weight: 700; font-size: 14px; }
   .agent-header .sub { font-size: 11.5px; color: var(--muted); }
   .agent-header .spacer { flex: 1; }
@@ -79,11 +91,13 @@
   .badge.pending { background: #f0efec; color: var(--muted); }
 
   #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #fecaca; }
+  #archive-banner { display: none; background: #eff6ff; color: #1e40af; font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #dbeafe; }
 
   .feed { flex: 1; overflow-y: auto; padding: 18px 22px 26px; }
   .feed-inner { max-width: 760px; }
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
   .chip { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3.5px 9px; border-radius: 7px; display: inline-flex; align-items: center; gap: 5px; }
+  .chip svg.ic { width: 11px; height: 11px; }
   .chip.edit { background: var(--amber-bg); color: var(--amber-text); }
   .chip.create { background: var(--green-bg); color: var(--green-text); }
   .chip.read { background: #f0efec; color: var(--muted); }
@@ -95,7 +109,7 @@
   .errline { font-size: 11.5px; color: var(--red-text); margin: 6px 0; font-family: ui-monospace, Menlo, monospace; }
   .cycle-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; color: var(--faint); font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
   .cycle-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-  .note-card { background: #eff6ff; color: #1e40af; border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px; }
+  .note-card { display: flex; align-items: center; gap: 8px; background: #eff6ff; color: #1e40af; border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px; }
 
   .sec-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin: 22px 0 8px; display: flex; align-items: center; gap: 6px; }
   .artifact-card { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 4px 18px 14px; margin-bottom: 10px; }
@@ -105,27 +119,52 @@
   .artifact-card pre code { background: none; padding: 0; }
   .artifact-card ul { padding-left: 20px; margin: 6px 0; }
   .kw { color: #7c3aed; } .str { color: #b45309; } .cmt { color: #9ca3af; } .typ { color: #0e7490; }
+  .diffcard { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 0; margin-bottom: 10px; font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; }
+  .diffcard .dl { padding: 0 14px; white-space: pre; }
+  .diffcard .add { background: #f0fdf4; color: #166534; }
+  .diffcard .del { background: #fef2f2; color: #991b1b; }
+  .diffcard .hunk { color: #7c3aed; background: #faf5ff; }
+  .diffcard .meta { color: var(--faint); }
   .empty-feed { color: var(--faint); font-size: 12.5px; padding: 30px 0; text-align: center; }
 
   /* ---- follow-up composer ---- */
-  .composer { display: flex; gap: 9px; padding: 12px 22px 16px; border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; }
-  .composer .queued { position: absolute; transform: translateY(-34px); font-size: 11px; color: var(--purple-text); background: var(--purple-bg); padding: 2px 9px; border-radius: 999px; }
+  .composer { display: flex; gap: 9px; padding: 12px 22px 16px; border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; position: relative; }
+  .composer .queued { position: absolute; top: -13px; left: 22px; font-size: 11px; color: var(--purple-text); background: var(--purple-bg); padding: 2px 9px; border-radius: 999px; }
   .composer input { flex: 1; border: 1px solid var(--border); background: #f7f6f4; border-radius: 10px; padding: 10px 14px; font: inherit; color: var(--text); outline: none; }
   .composer input:focus { border-color: #d6d3d1; background: #fff; }
-  .composer button { width: 36px; height: 36px; border: none; border-radius: 10px; background: var(--orange); color: #fff; font-size: 15px; cursor: pointer; flex-shrink: 0; }
+  .composer input:disabled { opacity: .5; }
+  .composer button { width: 36px; height: 36px; border: none; border-radius: 10px; background: var(--orange); color: #fff; cursor: pointer; flex-shrink: 0; display: grid; place-items: center; }
   .composer button:hover { filter: brightness(1.07); }
+  .composer button:disabled { opacity: .4; cursor: default; }
 
   footer.statusline { font-size: 10.5px; color: var(--faint); padding: 0 22px 8px; display: flex; justify-content: space-between; }
   #conn.on { color: var(--green); }
+
+  /* ---- new run modal ---- */
+  .overlay { display: none; position: fixed; inset: 0; background: rgba(28,25,23,.35); z-index: 10; }
+  .overlay.open { display: grid; place-items: center; }
+  .modal { background: #fff; border-radius: 14px; width: 440px; max-width: calc(100vw - 40px); padding: 20px 22px; box-shadow: 0 20px 50px rgba(0,0,0,.2); }
+  .modal h3 { margin: 0 0 14px; font-size: 14.5px; }
+  .modal label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+  .modal textarea { width: 100%; min-height: 74px; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; font: inherit; resize: vertical; outline: none; }
+  .modal textarea:focus { border-color: #d6d3d1; }
+  .modal select { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font: inherit; background: #fff; }
+  .modal .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .modal .err { color: var(--red-text); font-size: 12px; margin-top: 10px; }
 </style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
-    <div class="appicon">◎</div>
+    <div class="appicon" id="app-ico"></div>
     <div class="title" id="ws-title">Agent workspace</div>
     <div class="spacer"></div>
+    <span class="totals" id="totals"></span>
     <span class="pill" id="active-pill">idle</span>
+    <select id="run-select" title="Run history"><option value="">Current run</option></select>
+    <button class="tb-btn danger" id="cancel-btn" style="display:none"></button>
+    <button class="tb-btn primary" id="newrun-btn"></button>
   </div>
 
   <div class="body">
@@ -136,7 +175,7 @@
       <div class="stepper" id="stepper"></div>
       <div class="side-label">Current task</div>
       <div class="task-box">
-        <div id="task-text">No pipeline run yet. Start one with<br><code style="font-size:11px">bash .pipeline/spawn.sh "task"</code></div>
+        <div id="task-text">No pipeline run yet. Start one with the New run button or<br><code style="font-size:11px">bash .pipeline/spawn.sh "task"</code></div>
         <div class="when" id="task-when"></div>
       </div>
     </aside>
@@ -144,6 +183,7 @@
     <main class="main">
       <div class="agent-header" id="agent-header"></div>
       <div id="halt-banner"></div>
+      <div id="archive-banner"></div>
       <div class="feed"><div class="feed-inner" id="feed"></div></div>
       <footer class="statusline">
         <span>Watching <code>.pipeline/</code></span>
@@ -152,29 +192,74 @@
       <div class="composer">
         <span class="queued" id="queued-pill" style="display:none"></span>
         <input id="followup-input" placeholder="Add a follow-up for the agent…">
-        <button id="followup-send" title="Queue follow-up">➤</button>
+        <button id="followup-send" title="Queue follow-up"></button>
       </div>
     </main>
   </div>
 </div>
 
+<div class="overlay" id="newrun-overlay">
+  <div class="modal">
+    <h3>Start a new pipeline run</h3>
+    <label>Task</label>
+    <textarea id="nr-task" placeholder="Describe the feature, fix, or refactor…"></textarea>
+    <label>Runner</label>
+    <select id="nr-runner"></select>
+    <div class="check"><input type="checkbox" id="nr-sandbox"> <label for="nr-sandbox" style="all:unset;cursor:pointer">Run in isolated git worktree (sandbox)</label></div>
+    <div class="err" id="nr-err"></div>
+    <div class="actions">
+      <button class="tb-btn" id="nr-cancel">Cancel</button>
+      <button class="tb-btn primary" id="nr-start">Start run</button>
+    </div>
+  </div>
+</div>
+
 <script>
+// ---- inline SVG icon set (stroke, currentColor) ----
+const I = (paths, vb = '0 0 24 24') => `<svg class="ic" viewBox="${vb}" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`;
+const ICONS = {
+  app:      I('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>'),
+  planner:  I('<circle cx="12" cy="12" r="9"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5" fill="currentColor" stroke="none"/>'),
+  coder:    I('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
+  tester:   I('<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><polyline points="9 12 11 14 15 10"/>'),
+  reviewer: I('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16" y2="16"/>'),
+  plus:     I('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>'),
+  pencil:   I('<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>'),
+  eye:      I('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>'),
+  gear:     I('<circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4M4.2 4.2l2.8 2.8m10 10 2.8 2.8M1 12h4m14 0h4M4.2 19.8 7 17m10-10 2.8-2.8"/>'),
+  send:     I('<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9" fill="currentColor" stroke="none"/>'),
+  play:     I('<polygon points="6 3 20 12 6 21" fill="currentColor" stroke="none"/>'),
+  stop:     I('<rect x="5" y="5" width="14" height="14" rx="2" fill="currentColor" stroke="none"/>'),
+  check:    I('<polyline points="20 6 9 17 4 12"/>'),
+  doc:      I('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'),
+  pin:      I('<path d="M12 17v5"/><path d="M9 3h6l1 7 2 2H6l2-2z"/>'),
+  diff:     I('<line x1="12" y1="3" x2="12" y2="21"/><path d="M5 8h4M7 6v4M15 16h4"/>'),
+};
+
 const AGENTS = {
-  planner:  { icon: '🧭', bg: '#ede9fe', sub: 'Spec writer',     desc: 'Turns vague requests into precise specs',            artifacts: ['specs.md'] },
-  coder:    { icon: '⌘',  bg: '#dbeafe', sub: 'Implementation',  desc: 'Implements the spec, self-heals until checks pass',  artifacts: ['changes.md', 'checker_report.md'] },
-  tester:   { icon: '✓',  bg: '#dcfce7', sub: 'QA & coverage',   desc: 'Writes rigorous tests for the implementation',       artifacts: ['test_suite.md'] },
-  reviewer: { icon: '🔍', bg: '#fef3c7', sub: 'Code review',     desc: 'Read-only security & architecture audit',            artifacts: ['review_report.md'] },
+  planner:  { icon: 'planner',  bg: '#ede9fe', fg: '#6d28d9', sub: 'Spec writer',    desc: 'Turns vague requests into precise specs',           artifacts: ['specs.md'] },
+  coder:    { icon: 'coder',    bg: '#dbeafe', fg: '#1d4ed8', sub: 'Implementation', desc: 'Implements the spec, self-heals until checks pass', artifacts: ['changes.md', 'checker_report.md'] },
+  tester:   { icon: 'tester',   bg: '#dcfce7', fg: '#166534', sub: 'QA & coverage',  desc: 'Writes rigorous tests for the implementation',      artifacts: ['test_suite.md'] },
+  reviewer: { icon: 'reviewer', bg: '#fef3c7', fg: '#92400e', sub: 'Code review',    desc: 'Read-only security & architecture audit',           artifacts: ['review_report.md', 'diff.patch'] },
 };
 const STEP_LABELS = { planner: 'Plan', coder: 'Code', tester: 'Test', reviewer: 'Review' };
 const ORDER = ['planner', 'coder', 'tester', 'reviewer'];
 
 let state = null;
-let selected = null;        // manual selection; null = follow the running agent
+let runs = [];
+let currentRun = '';     // '' = live run, otherwise archived run id
+let selected = null;     // manual agent selection; null = follow the running agent
 let artifactCache = {};
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
-function hl(code) { // tiny js/ts highlighter for artifact code blocks
+document.getElementById('app-ico').innerHTML = ICONS.app;
+document.getElementById('followup-send').innerHTML = ICONS.send;
+document.getElementById('newrun-btn').innerHTML = ICONS.play + ' New run';
+document.getElementById('cancel-btn').innerHTML = ICONS.stop + ' Stop run';
+
+function hl(code) {
   return esc(code)
     .replace(/(\/\/[^\n]*)/g, '<span class="cmt">$1</span>')
     .replace(/('[^']*'|"[^"]*"|`[^`]*`)/g, '<span class="str">$1</span>')
@@ -212,6 +297,17 @@ function renderMd(md) {
   return html;
 }
 
+function renderDiff(patch) {
+  return patch.split('\n').map((line) => {
+    let cls = '';
+    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) cls = 'meta';
+    else if (line.startsWith('@@')) cls = 'hunk';
+    else if (line.startsWith('+')) cls = 'add';
+    else if (line.startsWith('-')) cls = 'del';
+    return `<div class="dl ${cls}">${esc(line) || ' '}</div>`;
+  }).join('');
+}
+
 function stageOf(name) { return state?.status?.stages?.find((s) => s.name === name); }
 function activeAgent() {
   if (selected) return selected;
@@ -225,20 +321,25 @@ function agoText(iso) {
   const m = Math.floor((Date.now() - new Date(iso)) / 60000);
   return m < 1 ? 'Requested just now' : m < 60 ? `Requested ${m} min ago` : `Requested ${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
+function fmtDur(a, b) {
+  if (!a) return '';
+  const s = Math.floor(((b ? new Date(b) : new Date()) - new Date(a)) / 1000);
+  return s < 60 ? s + 's' : `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+function agentIco(name, size) {
+  const m = AGENTS[name];
+  return `<div class="agent-ico" style="background:${m.bg};color:${m.fg}">${ICONS[m.icon]}</div>`;
+}
 
 function renderSidebar() {
   const list = document.getElementById('agent-list');
   const cur = activeAgent();
   list.innerHTML = '';
   for (const name of ORDER) {
-    const meta = AGENTS[name];
     const st = stageOf(name) || { status: 'pending' };
     const row = document.createElement('div');
     row.className = 'agent-row' + (cur === name ? ' selected' : '');
-    row.innerHTML = `
-      <div class="agent-ico" style="background:${meta.bg}">${meta.icon}</div>
-      <div class="grow"><div class="nm">${name[0].toUpperCase() + name.slice(1)}</div><div class="sub">${meta.sub}</div></div>
-      <div class="sdot ${st.status}"></div>`;
+    row.innerHTML = `${agentIco(name)}<div class="grow"><div class="nm">${cap(name)}</div><div class="sub">${AGENTS[name].sub}</div></div><div class="sdot ${st.status}"></div>`;
     row.onclick = () => { selected = name; renderAll(); loadArtifacts(); };
     list.appendChild(row);
     if (name === 'coder' && st.cycle > 0) {
@@ -249,7 +350,6 @@ function renderSidebar() {
       list.appendChild(mini);
     }
   }
-  // stepper
   const stepper = document.getElementById('stepper');
   stepper.innerHTML = '';
   ORDER.forEach((name, i) => {
@@ -257,10 +357,9 @@ function renderSidebar() {
     const cls = st.status === 'passed' ? 'done' : st.status === 'running' ? 'active' : (st.status === 'failed' || st.status === 'blocked') ? 'failed' : '';
     const div = document.createElement('div');
     div.className = 'step ' + cls;
-    div.innerHTML = `<div class="circ">${st.status === 'passed' ? '✓' : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
+    div.innerHTML = `<div class="circ">${st.status === 'passed' ? ICONS.check : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
     stepper.appendChild(div);
   });
-  // current task
   if (state?.status) {
     document.getElementById('task-text').textContent = state.status.task;
     document.getElementById('task-when').textContent = agoText(state.status.startedAt);
@@ -269,41 +368,69 @@ function renderSidebar() {
 
 function renderTop() {
   const pill = document.getElementById('active-pill');
+  const totals = document.getElementById('totals');
+  const cancelBtn = document.getElementById('cancel-btn');
   const s = state?.status;
-  if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; return; }
+  cancelBtn.style.display = state?.canCancel ? '' : 'none';
+  if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; totals.textContent = ''; return; }
   document.getElementById('ws-title').textContent = 'Agent workspace — ' + (s.task.length > 48 ? s.task.slice(0, 48) + '…' : s.task);
-  const running = s.stages.filter((x) => x.status === 'running').length;
-  if (s.overall === 'running') { pill.textContent = `${running || 1} agent${running === 1 ? '' : 's'} active`; pill.className = 'pill active'; }
+  const parts = [];
+  const started = s.stages.filter((x) => x.startedAt).length;
+  if (started) parts.push(`${started} agent${started === 1 ? '' : 's'}`);
+  if (state.totals?.costUsd > 0) parts.push('$' + state.totals.costUsd.toFixed(2));
+  const dur = fmtDur(s.startedAt, s.endedAt);
+  if (dur) parts.push(dur);
+  totals.textContent = parts.join(' · ');
+  if (state.stale) { pill.textContent = 'stale — process gone'; pill.className = 'pill stale'; }
+  else if (s.overall === 'running') { pill.textContent = '1 agent active'; pill.className = 'pill active'; }
   else if (s.overall === 'halted') { pill.textContent = 'halted — needs attention'; pill.className = 'pill halted'; }
   else { pill.textContent = s.verdict ? `completed — ${s.verdict}` : 'completed'; pill.className = 'pill active'; }
 }
 
+// Where would a queued follow-up land for this agent, given current pipeline state?
+function followupHint(name) {
+  const s = state?.status;
+  const st = stageOf(name);
+  if (s && s.overall === 'running' && !state.stale) {
+    if (st?.status === 'running' && name === 'coder') return 'note queued — applies next fix cycle';
+    if (st?.status === 'running') return 'note queued — applies if stage re-runs, else next run';
+    if (st?.status === 'pending') return 'note queued — applies when agent starts';
+  }
+  return 'note queued — applies on next run';
+}
+
 function renderHeader() {
   const name = activeAgent();
-  const meta = AGENTS[name];
   const st = stageOf(name) || { status: 'pending' };
   document.getElementById('agent-header').innerHTML = `
-    <div class="agent-ico" style="background:${meta.bg}">${meta.icon}</div>
-    <div><div class="nm">${name[0].toUpperCase() + name.slice(1)} Agent</div><div class="sub">${meta.desc}</div></div>
+    ${agentIco(name)}
+    <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div></div>
     <div class="spacer"></div>
-    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status[0].toUpperCase() + st.status.slice(1)}</span>`;
+    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : cap(st.status)}</span>`;
   const banner = document.getElementById('halt-banner');
   const s = state?.status;
   if (s?.haltReason) {
     const failing = s.stages.find((x) => x.status === 'failed' || x.status === 'blocked');
     banner.style.display = 'block';
-    banner.textContent = `⛔ ${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
+    banner.textContent = `${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
   } else banner.style.display = 'none';
-  document.getElementById('followup-input').placeholder = `Add a follow-up for the ${name[0].toUpperCase() + name.slice(1)} agent…`;
+  const archived = document.getElementById('archive-banner');
+  archived.style.display = state?.live === false ? 'block' : 'none';
+  archived.textContent = `Viewing archived run ${state?.runId || ''} — read-only.`;
+  const input = document.getElementById('followup-input');
+  const send = document.getElementById('followup-send');
+  input.disabled = send.disabled = state?.live === false;
+  input.placeholder = state?.live === false ? 'Archived run — follow-ups disabled' : `Add a follow-up for the ${cap(name)} agent…`;
   const q = document.getElementById('queued-pill');
-  if (state?.followups?.[name]) { q.style.display = ''; q.textContent = 'note queued for next run'; } else q.style.display = 'none';
+  if (state?.live !== false && state?.followups?.[name]) { q.style.display = ''; q.textContent = followupHint(name); }
+  else q.style.display = 'none';
 }
 
 function chipFor(ev) {
   const t = ev.tool || '';
-  if (/^Write$/i.test(t)) return { cls: 'create', icon: '+', label: ev.file || t };
-  if (/^(Edit|NotebookEdit|MultiEdit)$/i.test(t)) return { cls: 'edit', icon: '✎', label: ev.file || t };
-  if (/^(Read|Glob|Grep|LS|WebFetch|WebSearch)$/i.test(t)) return { cls: 'read', icon: '🔎', label: ev.file || ev.cmd || t };
+  if (/^Write$/i.test(t)) return { cls: 'create', icon: ICONS.plus, label: ev.file || t };
+  if (/^(Edit|NotebookEdit|MultiEdit)$/i.test(t)) return { cls: 'edit', icon: ICONS.pencil, label: ev.file || t };
+  if (/^(Read|Glob|Grep|LS|WebFetch|WebSearch)$/i.test(t)) return { cls: 'read', icon: ICONS.eye, label: ev.file || ev.cmd || t };
   return null;
 }
 
@@ -325,13 +452,14 @@ function renderFeed() {
     if (ev.type === 'agent_start') { flushChips(); if (ev.cycle > 1) html += `<div class="cycle-divider">Fix cycle ${ev.cycle}</div>`; continue; }
     if (ev.type === 'checks_start') { flushChips(); html += `<div class="cycle-divider">Checker · verification</div>`; continue; }
     if (ev.type === 'check_end') { flushChips(); html += `<div class="sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`; continue; }
+    if (ev.type === 'followup_applied') { flushChips(); html += `<div class="note-card">${ICONS.pin} Follow-up applied: ${esc(ev.text)}</div>`; continue; }
     if (ev.type !== 'agent_output') continue;
     if (ev.kind === 'tool') {
       const chip = chipFor(ev);
       if (chip) { chipRow.push(chip); continue; }
       flushChips();
       if (/^Bash$/i.test(ev.tool)) { html += `<div class="cmdcard"><span class="dollar">$</span> ${esc(ev.cmd || '')}</div>`; continue; }
-      html += `<div class="sysline">⚙ ${esc(ev.tool)} ${esc(ev.file || ev.cmd || '')}</div>`;
+      html += `<div class="sysline">${esc(ev.tool)} ${esc(ev.file || ev.cmd || '')}</div>`;
       continue;
     }
     flushChips();
@@ -341,15 +469,13 @@ function renderFeed() {
   }
   flushChips();
 
-  // Applied follow-ups
-  for (const ev of events) if (ev.type === 'followup_applied') html += `<div class="note-card">📌 Follow-up applied: ${esc(ev.text)}</div>`;
-
-  // Rendered artifacts for this agent
   for (const file of AGENTS[name].artifacts) {
     if (!(state?.artifacts || []).includes(file)) continue;
     const content = artifactCache[file];
     if (!content) continue;
-    html += `<div class="sec-label">📄 Output — ${file}</div><div class="artifact-card">${renderMd(content)}</div>`;
+    const isDiff = file.endsWith('.patch');
+    html += `<div class="sec-label">${isDiff ? ICONS.diff : ICONS.doc} Output — ${file}</div>`;
+    html += isDiff ? `<div class="diffcard">${renderDiff(content)}</div>` : `<div class="artifact-card">${renderMd(content)}</div>`;
   }
 
   feed.innerHTML = html || '<div class="empty-feed">No activity yet for this agent.</div>';
@@ -361,30 +487,52 @@ async function loadArtifacts() {
   for (const file of AGENTS[name].artifacts) {
     if (!(state?.artifacts || []).includes(file)) continue;
     try {
-      const { content } = await (await fetch('/api/artifact?name=' + encodeURIComponent(file))).json();
-      artifactCache[file] = content;
+      const r = await fetch(`/api/artifact?name=${encodeURIComponent(file)}${currentRun ? '&run=' + encodeURIComponent(currentRun) : ''}`);
+      artifactCache[file] = (await r.json()).content;
     } catch {}
   }
   renderFeed();
+}
+
+function renderRunSelect() {
+  const sel = document.getElementById('run-select');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">Current run</option>' + runs.map((r) => {
+    const label = `${(r.startedAt || r.id).replace('T', ' ').slice(0, 16)} — ${r.task.slice(0, 30)}${r.task.length > 30 ? '…' : ''} (${r.verdict || r.haltReason || r.overall || '?'})`;
+    return `<option value="${esc(r.id)}">${esc(label)}</option>`;
+  }).join('');
+  sel.value = prev;
 }
 
 function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(); }
 
 async function fetchState() {
   try {
-    state = await (await fetch('/api/state')).json();
+    const r = await fetch('/api/state' + (currentRun ? '?run=' + encodeURIComponent(currentRun) : ''));
+    if (!r.ok) { currentRun = ''; document.getElementById('run-select').value = ''; return fetchState(); }
+    state = await r.json();
     renderAll();
     loadArtifacts();
   } catch {}
 }
+async function fetchRuns() {
+  try { runs = (await (await fetch('/api/runs')).json()).runs || []; renderRunSelect(); } catch {}
+}
 
+document.getElementById('run-select').onchange = (e) => {
+  currentRun = e.target.value;
+  selected = null;
+  artifactCache = {};
+  fetchState();
+};
+
+// ---- follow-ups ----
 async function sendFollowup() {
   const input = document.getElementById('followup-input');
   const text = input.value.trim();
-  if (!text) return;
-  const stage = activeAgent();
+  if (!text || state?.live === false) return;
   try {
-    await fetch('/api/followup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage, text }) });
+    await fetch('/api/followup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: activeAgent(), text }) });
     input.value = '';
     fetchState();
   } catch {}
@@ -392,17 +540,57 @@ async function sendFollowup() {
 document.getElementById('followup-send').onclick = sendFollowup;
 document.getElementById('followup-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFollowup(); });
 
+// ---- run controls ----
+const overlay = document.getElementById('newrun-overlay');
+document.getElementById('newrun-btn').onclick = () => {
+  const sel = document.getElementById('nr-runner');
+  sel.innerHTML = (state?.runners || ['auto', 'claude', 'cursor', 'codex', 'gemini']).map((r) => `<option value="${r}">${r}</option>`).join('');
+  document.getElementById('nr-err').textContent = '';
+  overlay.classList.add('open');
+  document.getElementById('nr-task').focus();
+};
+document.getElementById('nr-cancel').onclick = () => overlay.classList.remove('open');
+overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('open'); });
+document.getElementById('nr-start').onclick = async () => {
+  const body = {
+    task: document.getElementById('nr-task').value,
+    runner: document.getElementById('nr-runner').value,
+    sandbox: document.getElementById('nr-sandbox').checked,
+  };
+  try {
+    const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const out = await r.json();
+    if (out.error) { document.getElementById('nr-err').textContent = out.error; return; }
+    overlay.classList.remove('open');
+    document.getElementById('nr-task').value = '';
+    currentRun = '';
+    document.getElementById('run-select').value = '';
+    selected = null;
+    artifactCache = {};
+    setTimeout(() => { fetchState(); fetchRuns(); }, 600);
+  } catch { document.getElementById('nr-err').textContent = 'failed to reach server'; }
+};
+document.getElementById('cancel-btn').onclick = async () => {
+  if (!confirm('Stop the active pipeline run?')) return;
+  try { await fetch('/api/cancel', { method: 'POST' }); setTimeout(fetchState, 400); } catch {}
+};
+
 function connectSSE() {
   const conn = document.getElementById('conn');
   const es = new EventSource('/events');
   es.onopen = () => { conn.textContent = '● live'; conn.className = 'on'; };
   es.onerror = () => { conn.textContent = '● reconnecting…'; conn.className = ''; };
-  es.onmessage = (m) => { try { if (JSON.parse(m.data).type === 'change') fetchState(); } catch {} };
+  es.onmessage = (m) => {
+    try {
+      if (JSON.parse(m.data).type === 'change' && !currentRun) { fetchState(); fetchRuns(); }
+    } catch {}
+  };
 }
 
 fetchState();
+fetchRuns();
 connectSSE();
-setInterval(fetchState, 3000);
+setInterval(() => { if (!currentRun) fetchState(); }, 3000);
 </script>
 </body>
 </html>

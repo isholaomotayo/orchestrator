@@ -6,8 +6,8 @@
 // .pipeline/events.jsonl for the live dashboard.
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent } from './state.mjs';
+import { execSync, spawnSync } from 'node:child_process';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 
@@ -35,9 +35,13 @@ if (args.runner) config.runner = args.runner;
 
 // ---- Guardrail 3: mutex lock -----------------------------------------------
 if (fs.existsSync(paths.lock)) {
-  console.error('[Orchestrator] Pipeline execution is locked by another running agent.');
-  console.error(`Remove '${paths.lock}' if this is stale.`);
-  process.exit(1);
+  const lock = readLock(paths);
+  if (lock && pidAlive(lock.pid)) {
+    console.error(`[Orchestrator] Pipeline execution is locked by a running orchestrator (pid ${lock.pid}).`);
+    process.exit(1);
+  }
+  console.error('[Orchestrator] Clearing stale lock (owning process is gone).');
+  try { fs.unlinkSync(paths.lock); } catch {}
 }
 fs.mkdirSync(paths.dir, { recursive: true });
 fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
@@ -50,8 +54,12 @@ function haltAndExit(code) {
   releaseLock();
   process.exit(code);
 }
-process.on('SIGINT', () => { if (status) { status.overall = 'halted'; status.haltReason = status.haltReason || 'INTERRUPTED'; finalize(); } haltAndExit(130); });
-process.on('SIGTERM', () => haltAndExit(143));
+function interrupted(code) {
+  if (status) { status.overall = 'halted'; status.haltReason = status.haltReason || 'INTERRUPTED'; finalize(); }
+  haltAndExit(code);
+}
+process.on('SIGINT', () => interrupted(130));
+process.on('SIGTERM', () => interrupted(143));
 process.on('exit', releaseLock);
 
 // ---- Guardrail 1: sandbox worktree ------------------------------------------
@@ -70,10 +78,20 @@ if (args.sandbox) {
   workCwd = sandbox;
 }
 
-// ---- Fresh-run reset ---------------------------------------------------------
-for (const f of [paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.events]) {
-  try { fs.unlinkSync(f); } catch {}
+// ---- Archive previous run, then fresh-run reset -------------------------------
+const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.diff];
+if (fs.existsSync(paths.status)) {
+  let runId = 'run';
+  try { runId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
+  const dest = path.join(paths.runs, runId);
+  fs.mkdirSync(dest, { recursive: true });
+  for (const f of RUN_FILES) {
+    try { fs.renameSync(f, path.join(dest, path.basename(f))); } catch {}
+  }
+  try { fs.renameSync(paths.logs, path.join(dest, 'logs')); } catch {}
+  console.log(`[Orchestrator] Archived previous run to .pipeline/runs/${runId}`);
 }
+for (const f of RUN_FILES) { try { fs.unlinkSync(f); } catch {} }
 fs.rmSync(paths.logs, { recursive: true, force: true });
 fs.writeFileSync(paths.vagueRequest, args.task);
 
@@ -85,7 +103,8 @@ const coderStage = status.stages.find((s) => s.name === 'coder');
 coderStage.maxCycles = config.maxCoderCycles;
 writeStatus(paths, status);
 appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner });
-console.log(`[Orchestrator] Pipeline started (runner=${runner}, sandbox=${args.sandbox}). Dashboard: http://localhost:${config.uiPort}`);
+const uiPort = process.env.PIPELINE_UI_PORT || config.uiPort;
+console.log(`[Orchestrator] Pipeline started (runner=${runner}, sandbox=${args.sandbox}). Dashboard: http://localhost:${uiPort}`);
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
 function setStage(name, patch) {
@@ -132,6 +151,17 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false } = {}) {
   const res = await runAgent({ runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config });
   if (!res.ok && res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed: ${res.error}`);
   return res;
+}
+
+function writeDiffArtifact() {
+  const git = (gitArgs) => spawnSync('git', gitArgs, { cwd: workCwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  let patch = git(['diff', 'HEAD']).stdout || '';
+  const untracked = (git(['ls-files', '--others', '--exclude-standard']).stdout || '').split('\n').filter(Boolean);
+  for (const f of untracked) {
+    if (f.startsWith('.pipeline')) continue;
+    patch += git(['diff', '--no-index', '/dev/null', f]).stdout || '';
+  }
+  try { fs.writeFileSync(paths.diff, patch || 'No working-tree changes detected.\n'); } catch {}
 }
 
 const history = { coder: [], postTester: [] };
@@ -211,6 +241,10 @@ async function main() {
     setStage('coder', { status: 'passed' });
   }
   setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
+
+  // Snapshot the working-tree diff (tracked changes + untracked files) so the
+  // dashboard can render the audit surface alongside the review.
+  writeDiffArtifact();
 
   // ---- Stage 4: REVIEWER (read-only) -------------------------------------------
   setStage('reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });

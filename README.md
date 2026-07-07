@@ -12,7 +12,7 @@ Task ─► PLANNER ──specs.md──► CODER ──changes.md──► TEST
                               │     cycles exhausted → HALT
 ```
 
-Every stage streams verbose activity and writes markdown artifacts into `.pipeline/`, and a **live dashboard** renders stage progress, the Coder's fix-cycle dots, agent logs, and the artifacts at **http://localhost:4600**.
+Every stage streams verbose activity and writes markdown artifacts into `.pipeline/`, and a **live dashboard** (bound to `127.0.0.1` only) renders stage progress, the Coder's fix-cycle counter, agent activity, rendered artifacts, and the working-tree diff at **http://localhost:4600**. From the dashboard you can also **start a new run**, **stop the active run**, browse **archived run history**, and queue **follow-up notes** that are injected into an agent's next invocation.
 
 Works with any of these agent CLIs (auto-detected, or pick with `--runner`): **Claude Code** (`claude`), **Cursor** (`cursor-agent`), **Codex** (`codex`), **Gemini / Antigravity** (`gemini`).
 
@@ -46,7 +46,7 @@ Flags: `--runner claude|cursor|codex|gemini`, `--sandbox` (run agents in an isol
 1. **Regression halt** — if a fix cycle passes *fewer* tests than the previous cycle, the pipeline halts (`REGRESSION_BLOCKED`) for human inspection instead of burning tokens.
 2. **Max cycles** — the Coder loop stops after `maxCoderCycles` (default 5); post-Tester fixes are capped at `maxPostTesterCycles` (default 2).
 3. **Never-weaken-tests** — the Coder prompt forbids deleting/mocking tests to pass; the Reviewer runs **read-only** (tool allowlist) and can only write `review_report.md`.
-4. **Mutex lock** — `.pipeline/.lock` prevents overlapping runs; other agents are instructed to pre-flight check it.
+4. **Mutex lock** — `.pipeline/.lock` (with owner PID) prevents overlapping runs; locks owned by dead processes are cleared automatically, and the UI flags a `status.json` stuck on "running" as **stale — process gone**.
 5. **Sandbox** — `--sandbox` runs agents in a git worktree (`.pipeline_sandbox/`) so IDE watchers never see half-finished code; artifacts still land in the main `.pipeline/` via symlink.
 6. **Artifact validation** — each stage must produce its expected non-empty artifact or the pipeline halts (`MISSING_ARTIFACT`).
 
@@ -84,7 +84,15 @@ The skill is advertised to every major agent CLI via committed rule files: [.cla
 
 ### Runtime artifacts (gitignored)
 
-`status.json` (live state consumed by the UI) · `events.jsonl` (append-only event feed) · `logs/<stage>.log` (verbose agent output) · `specs.md` · `changes.md` · `checker_report.md` · `test_suite.md` · `review_report.md` · `test_history.json` · `.lock`.
+`status.json` (live state consumed by the UI) · `events.jsonl` (append-only event feed) · `logs/<stage>.log` (verbose agent output) · `specs.md` · `changes.md` · `checker_report.md` · `test_suite.md` · `review_report.md` · `diff.patch` (working-tree diff for the Reviewer view) · `test_history.json` · `followups/` · `.lock` · `runs/` (each new run archives the previous one to `runs/<timestamp>/`, browsable from the dashboard's run switcher).
+
+### Multiple repos on one machine
+
+Each repo runs its own dashboard. `spawn.sh` checks `/healthz` (which reports the repo it serves): a matching server is reused, a server belonging to a different repo is skipped, and the next free port in `uiPort..uiPort+20` is used instead.
+
+### Runtime
+
+Node ≥ 18 is the default and only requirement (only `node:` builtins are used — no npm installs). The scripts also run under Bun (`bun pipeline/ui-server.mjs`) if you prefer, but there is no performance benefit: the workload is subprocess-bound.
 
 ## Demo
 

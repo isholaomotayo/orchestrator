@@ -6,7 +6,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PIPELINE_DIR="$SCRIPT_DIR"
-UI_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
+BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
 TASK="${1:-}"
 if [ -z "$TASK" ] || [[ "$TASK" == --* ]]; then
@@ -25,25 +25,52 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# Guardrail 3: pre-flight mutex check (orchestrator re-checks atomically).
+# Guardrail 3: pre-flight mutex check. A lock owned by a dead process (kill -9,
+# crash, reboot) is cleared automatically; a live one blocks.
 if [ -f "$PIPELINE_DIR/.lock" ]; then
-  echo "[spawn] Pipeline is locked by another running agent (.pipeline/.lock exists). Waiting is not supported — retry later or remove the stale lock." >&2
-  exit 1
+  LOCK_PID="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/.lock','utf8')).pid||'')}catch{console.log('')}")"
+  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+    echo "[spawn] Pipeline is locked by a running orchestrator (pid $LOCK_PID). Retry after it finishes." >&2
+    exit 1
+  fi
+  echo "[spawn] Clearing stale lock (owning process is gone)."
+  rm -f "$PIPELINE_DIR/.lock"
 fi
 
-# Start the dashboard server if it isn't already listening.
+# Find a dashboard for THIS repo: reuse a healthy server whose /healthz
+# repoRoot matches, skip ports serving other repos, start on the first free one.
+UI_PORT="$BASE_PORT"
 if [ "$NO_UI" -eq 0 ]; then
-  if ! curl -sf "http://localhost:$UI_PORT/healthz" >/dev/null 2>&1; then
-    echo "[spawn] Starting dashboard at http://localhost:$UI_PORT ..."
-    (cd "$REPO_ROOT" && nohup node pipeline/ui-server.mjs > "$PIPELINE_DIR/ui-server.out" 2>&1 & echo $! > "$PIPELINE_DIR/ui-server.pid")
-    sleep 0.5
+  FOUND=0
+  for PORT in $(seq "$BASE_PORT" $((BASE_PORT + 20))); do
+    HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
+    if [ -z "$HEALTH" ]; then
+      UI_PORT="$PORT"
+      echo "[spawn] Starting dashboard at http://localhost:$UI_PORT ..."
+      (cd "$REPO_ROOT" && PIPELINE_UI_PORT="$UI_PORT" nohup node pipeline/ui-server.mjs > "$PIPELINE_DIR/ui-server.out" 2>&1 & echo $! > "$PIPELINE_DIR/ui-server.pid")
+      sleep 0.5
+      FOUND=1
+      break
+    fi
+    SERVED_ROOT="$(node -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$HEALTH")"
+    if [ "$SERVED_ROOT" = "$REPO_ROOT" ]; then
+      UI_PORT="$PORT"
+      FOUND=1
+      break
+    fi
+    # Healthy server for a different repo — try the next port.
+  done
+  if [ "$FOUND" -eq 0 ]; then
+    echo "[spawn] No free port in $BASE_PORT-$((BASE_PORT + 20)); continuing without dashboard." >&2
+    NO_UI=1
+  else
+    echo "[spawn] Live dashboard: http://localhost:$UI_PORT"
   fi
-  echo "[spawn] Live dashboard: http://localhost:$UI_PORT"
 fi
 
 cd "$REPO_ROOT"
 set +e
-node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 EXIT_CODE=$?
 set -e
 
