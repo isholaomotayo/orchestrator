@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Portable unified agentic pipeline (Planner -> Coder self-healing loop -> Tester -> Reviewer) with a live zero-dependency dashboard.",
   "scripts": {
-    "test": "node --test demo/",
+    "test": "node --test demo/*.test.js",
     "ui": "node pipeline/ui-server.mjs",
     "pipeline": "bash .pipeline/spawn.sh"
   }
