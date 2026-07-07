@@ -1,0 +1,13 @@
+{
+  "runner": "auto",
+  "maxCoderCycles": 5,
+  "maxPostTesterCycles": 2,
+  "uiPort": 4600,
+  "checks": {
+    "test": "npm test --silent",
+    "lint": "npm run lint --if-present --silent",
+    "typecheck": "npm run typecheck --if-present --silent"
+  },
+  "checkTimeoutMs": 300000,
+  "agentTimeoutMs": 1800000
+}

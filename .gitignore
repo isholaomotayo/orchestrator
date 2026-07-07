@@ -1,0 +1,19 @@
+# Pipeline runtime artifacts (regenerated every run)
+.pipeline/status.json
+.pipeline/events.jsonl
+.pipeline/logs/
+.pipeline/vague_request.txt
+.pipeline/specs.md
+.pipeline/changes.md
+.pipeline/checker_report.md
+.pipeline/test_suite.md
+.pipeline/review_report.md
+.pipeline/test_history.json
+.pipeline/.lock
+.pipeline/ui-server.pid
+
+# Sandbox worktree
+.pipeline_sandbox/
+
+node_modules/
+.DS_Store

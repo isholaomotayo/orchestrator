@@ -1,0 +1,19 @@
+{
+  "name": "execute_agent_pipeline",
+  "description": "Executes a unified self-healing agentic pipeline (Planner -> Coder[builder-checker loop] -> Tester -> Reviewer) to build software features from vague descriptions, with a live progress dashboard.",
+  "command": "bash .pipeline/spawn.sh",
+  "arguments": {
+    "task_description": {
+      "type": "string",
+      "description": "The target requirement, issue, or feature description."
+    }
+  },
+  "outputs": {
+    "specification": ".pipeline/specs.md",
+    "implementation": ".pipeline/changes.md",
+    "checker_feedback": ".pipeline/checker_report.md",
+    "validation": ".pipeline/test_suite.md",
+    "final_review": ".pipeline/review_report.md",
+    "live_state": ".pipeline/status.json"
+  }
+}

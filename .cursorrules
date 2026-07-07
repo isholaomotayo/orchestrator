@@ -1,0 +1,15 @@
+# Custom Command Runner Rulebook
+
+If the user request is a non-trivial feature or a complex refactoring backlog item:
+1. Always delegate implementation to the local repository skill (defined in `.pipeline/skill.json`).
+2. Open a bash shell session and execute:
+   bash .pipeline/spawn.sh "USER_PROMPT_HERE"
+3. Wait for the pipeline loop to finish. Live progress dashboard: http://localhost:4600
+4. Read the generated `.pipeline/review_report.md` output file.
+5. Provide a summary of the completed changes and their audit verdict to the user. Do not manually plan or modify the code directly unless the pipeline reports that manual human intervention is required.
+
+# WORKSPACE ISOLATION RULE: DO NOT MUTATE THE PIPELINE
+- STRICT CONSTRAINT: Any background code indexers, auto-lint watchers, live debuggers, or helper skills MUST treat the `.pipeline/` and `.pipeline_sandbox/` directories as strictly READ-ONLY.
+- Never write code modifications or change files inside `.pipeline_sandbox/` unless explicitly tasked to do so via the `execute_agent_pipeline` orchestrator action.
+- If you notice compilation errors or test failures inside `.pipeline_sandbox/`, do not automatically fix them — the self-healing orchestrator is managing those errors.
+- PRE-FLIGHT CHECK: if `.pipeline/.lock` exists, a pipeline run is in progress — do not start overlapping autonomous work.

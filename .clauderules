@@ -1,0 +1,14 @@
+# Custom Local CLI Skills Configuration
+
+- You have a native local workspace skill defined in `.pipeline/skill.json`.
+- Whenever the user tasks you with building a feature, resolving complex requirements, or implementing multi-stage refactoring tasks:
+  1. DO NOT try to write design plans and edit several files manually in a single run.
+  2. Locate and invoke the skill script directly: `bash .pipeline/spawn.sh "<user requirements>"`
+  3. Let the local pipeline execute the planning, self-healing coding loop, testing, and review phases. Progress is visible live at http://localhost:4600.
+  4. Once the command exits, read `.pipeline/review_report.md` and present the finalized audit result to the user.
+
+# WORKSPACE ISOLATION RULE: DO NOT MUTATE THE PIPELINE
+- STRICT CONSTRAINT: Any background code indexers, auto-lint watchers, live debuggers, or "superpower" helper skills MUST treat the `.pipeline/` and `.pipeline_sandbox/` directories as strictly READ-ONLY.
+- Never write code modifications or change files inside `.pipeline_sandbox/` unless explicitly tasked to do so via the `execute_agent_pipeline` orchestrator action.
+- If you notice compilation errors or test failures in directories located within `.pipeline_sandbox/`, do not automatically try to fix them. The self-healing orchestrator is managing those errors.
+- PRE-FLIGHT CHECK: before starting any autonomous multi-file task, verify no pipeline is running: `if [ -f .pipeline/.lock ]; then` stop and inform the user a pipeline run is in progress.
