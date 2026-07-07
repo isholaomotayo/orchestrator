@@ -65,38 +65,52 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
   }
 }
 
-// Turn a claude stream-json event line into a short human-readable log line.
-function summarizeClaudeEvent(line) {
+// Turn a claude stream-json event line into structured activity blocks the
+// dashboard can render (text paragraphs, file chips, command cards).
+function parseClaudeEvent(line) {
   let ev;
-  try { ev = JSON.parse(line); } catch { return line; }
-  if (ev.type === 'system' && ev.subtype === 'init') return `[session] model=${ev.model || '?'}`;
+  try { ev = JSON.parse(line); } catch { return [{ kind: 'text', text: line }]; }
+  if (ev.type === 'system' && ev.subtype === 'init') return [{ kind: 'sys', text: `session started · model ${ev.model || '?'}` }];
   if (ev.type === 'assistant') {
-    const parts = [];
+    const blocks = [];
     for (const block of ev.message?.content || []) {
-      if (block.type === 'text' && block.text?.trim()) parts.push(block.text.trim());
+      if (block.type === 'text' && block.text?.trim()) blocks.push({ kind: 'text', text: block.text.trim() });
       if (block.type === 'tool_use') {
-        const input = JSON.stringify(block.input || {});
-        parts.push(`[tool] ${block.name} ${input.length > 200 ? input.slice(0, 200) + '…' : input}`);
+        const input = block.input || {};
+        blocks.push({
+          kind: 'tool',
+          tool: block.name,
+          file: input.file_path || input.path || input.notebook_path || null,
+          cmd: input.command || input.pattern || input.query || null,
+        });
       }
     }
-    return parts.join('\n') || null;
+    return blocks;
   }
   if (ev.type === 'result') {
-    return `[result] ${ev.subtype || ''} turns=${ev.num_turns ?? '?'} cost=$${ev.total_cost_usd?.toFixed?.(4) ?? '?'}`;
+    return [{ kind: 'sys', text: `done · ${ev.subtype || ''} · ${ev.num_turns ?? '?'} turns · $${ev.total_cost_usd?.toFixed?.(4) ?? '?'}` }];
   }
-  return null; // user/tool_result echoes — too noisy for the dashboard
+  return []; // user/tool_result echoes — too noisy for the dashboard
 }
 
-function summarizeLine(parse, line) {
-  if (!line.trim()) return null;
-  if (parse === 'claude-stream-json') return summarizeClaudeEvent(line);
+function parseLine(parse, line) {
+  if (!line.trim()) return [];
+  if (parse === 'claude-stream-json') return parseClaudeEvent(line);
   if (parse === 'jsonl-or-text') {
     try {
       const ev = JSON.parse(line);
-      return ev.text || ev.message || ev.content || line;
-    } catch { return line; }
+      const text = ev.text || ev.message || ev.content;
+      return typeof text === 'string' ? [{ kind: 'text', text }] : [{ kind: 'text', text: line }];
+    } catch { return [{ kind: 'text', text: line }]; }
   }
-  return line;
+  return [{ kind: 'text', text: line }];
+}
+
+function blockToLogLine(b) {
+  if (b.kind === 'tool') return `[tool] ${b.tool} ${b.file || b.cmd || ''}`.trim();
+  if (b.kind === 'sys') return `[session] ${b.text}`;
+  if (b.kind === 'err') return `[stderr] ${b.text}`;
+  return b.text;
 }
 
 export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config }) {
@@ -118,17 +132,18 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     }, config.agentTimeoutMs);
 
     let buffer = '';
+    const emit = (b) => {
+      log.write(blockToLogLine(b) + '\n');
+      appendEvent(paths, { stage, cycle, type: 'agent_output', ...b });
+    };
     const handleChunk = (chunk, isErr) => {
       buffer += chunk.toString();
       let idx;
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
-        const summary = isErr ? (line.trim() ? `[stderr] ${line}` : null) : summarizeLine(parse, line);
-        if (summary) {
-          log.write(summary + '\n');
-          appendEvent(paths, { stage, cycle, type: 'agent_output', line: summary });
-        }
+        const blocks = isErr ? (line.trim() ? [{ kind: 'err', text: line }] : []) : parseLine(parse, line);
+        blocks.forEach(emit);
       }
     };
     child.stdout.on('data', (c) => handleChunk(c, false));
@@ -143,10 +158,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (buffer.trim()) {
-        const summary = summarizeLine(parse, buffer);
-        if (summary) { log.write(summary + '\n'); appendEvent(paths, { stage, cycle, type: 'agent_output', line: summary }); }
-      }
+      if (buffer.trim()) parseLine(parse, buffer).forEach(emit);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code });
       log.end();
       resolve({ ok: code === 0, exitCode: code });

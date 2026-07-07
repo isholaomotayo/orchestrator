@@ -113,8 +113,22 @@ function requireArtifact(stageName, file) {
   if (!artifactOk(file)) halt(stageName, 'MISSING_ARTIFACT', `${stageName} did not produce ${path.relative(repoRoot, file)}`);
 }
 
+// Human follow-up notes queued from the dashboard are injected into the next
+// invocation of that agent, then cleared.
+function consumeFollowups(name) {
+  const file = path.join(paths.dir, 'followups', `${name}.txt`);
+  try {
+    const text = fs.readFileSync(file, 'utf8').trim();
+    fs.unlinkSync(file);
+    if (text) appendEvent(paths, { stage: name, type: 'followup_applied', text });
+    return text;
+  } catch { return ''; }
+}
+
 async function runStageAgent(name, task, { cycle = 1, readOnly = false } = {}) {
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
+  const followup = consumeFollowups(name);
+  if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const res = await runAgent({ runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config });
   if (!res.ok && res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed: ${res.error}`);
   return res;

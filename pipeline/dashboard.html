@@ -3,116 +3,192 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent Pipeline Dashboard</title>
+<title>Agent Workspace</title>
 <style>
   :root {
-    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #e6edf3;
-    --muted: #8b949e; --green: #3fb950; --red: #f85149; --amber: #d29922;
-    --blue: #58a6ff; --purple: #bc8cff;
+    --bg: #f4f4f2; --panel: #ffffff; --sidebar: #fafaf8; --border: #e7e5e2;
+    --text: #1c1917; --muted: #78716c; --faint: #a8a29e;
+    --green: #16a34a; --green-bg: #dcfce7; --green-text: #166534;
+    --amber-bg: #fef3c7; --amber-text: #92400e;
+    --red: #dc2626; --red-bg: #fee2e2; --red-text: #991b1b;
+    --purple-bg: #ede9fe; --purple-text: #6d28d9;
+    --orange: #ea580c; --code-bg: #f5f5f3;
+    --accent-row: #fdf3e7;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
-  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
-  header h1 { font-size: 18px; margin: 0; }
-  .task { color: var(--muted); font-size: 13px; flex: 1; min-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); }
-  .badge.running { color: var(--blue); border-color: var(--blue); }
-  .badge.done { color: var(--green); border-color: var(--green); }
-  .badge.halted { color: var(--red); border-color: var(--red); }
-  .badge.idle { color: var(--muted); }
-  #halt-banner { display: none; background: #3d1418; border: 1px solid var(--red); color: #ffb3ad; border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13px; }
-  .rail { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 16px 0; }
-  .stage { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; transition: border-color .15s; position: relative; }
-  .stage.selected { border-color: var(--blue); }
-  .stage .name { font-weight: 600; text-transform: capitalize; display: flex; align-items: center; gap: 8px; }
-  .stage .meta { color: var(--muted); font-size: 12px; margin-top: 6px; min-height: 18px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
-  .stage.pending .dot { background: var(--muted); }
-  .stage.running .dot { background: var(--blue); animation: pulse 1.1s infinite; }
-  .stage.passed .dot { background: var(--green); }
-  .stage.failed .dot, .stage.blocked .dot { background: var(--red); }
-  @keyframes pulse { 50% { opacity: .3; } }
-  .cycles { display: flex; gap: 4px; margin-top: 8px; }
-  .cycles span { width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--border); }
-  .cycles span.done-ok { background: var(--green); border-color: var(--green); }
-  .cycles span.done-fail { background: var(--amber); border-color: var(--amber); }
-  .cycles span.active { background: var(--blue); border-color: var(--blue); animation: pulse 1.1s infinite; }
-  .checkline { font-size: 12px; margin-top: 6px; }
-  .checkline .ok { color: var(--green); } .checkline .bad { color: var(--red); }
-  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } .rail { grid-template-columns: repeat(2, 1fr); } }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
-  #log { height: 420px; overflow-y: auto; padding: 12px 14px; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; color: #c9d1d9; }
-  #log .tool { color: var(--purple); } #log .err { color: var(--red); } #log .sys { color: var(--muted); }
-  .tabs { display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .tabs button { background: none; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 6px 10px; font-size: 12.5px; cursor: pointer; }
-  .tabs button.active { color: var(--text); border-bottom-color: var(--blue); }
-  .tabs button:disabled { opacity: .35; cursor: default; }
-  #artifact { height: 384px; overflow-y: auto; padding: 14px 18px; }
-  #artifact h1 { font-size: 18px; } #artifact h2 { font-size: 15px; margin-top: 18px; } #artifact h3 { font-size: 13.5px; }
-  #artifact pre { background: #0d1117; border: 1px solid var(--border); border-radius: 6px; padding: 10px; overflow-x: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; }
-  #artifact code { background: #21262d; border-radius: 4px; padding: 1px 5px; font: 12px ui-monospace, Menlo, monospace; }
-  #artifact pre code { background: none; padding: 0; }
-  #artifact ul { padding-left: 22px; }
-  #artifact .empty { color: var(--muted); font-style: italic; }
-  footer { color: var(--muted); font-size: 11.5px; margin-top: 14px; display: flex; justify-content: space-between; }
-  #conn.on { color: var(--green); } #conn.off { color: var(--red); }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif; }
+  .app { display: flex; flex-direction: column; height: 100vh; max-width: 1400px; margin: 0 auto; background: var(--panel); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+
+  /* ---- top bar ---- */
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .topbar .appicon { width: 22px; height: 22px; border-radius: 6px; background: #1c1917; color: #fff; display: grid; place-items: center; font-size: 12px; }
+  .topbar .title { font-weight: 600; font-size: 13.5px; }
+  .topbar .spacer { flex: 1; }
+  .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: #f0efec; color: var(--muted); border: 1px solid var(--border); }
+  .pill.active { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
+  .pill.halted { background: var(--red-bg); color: var(--red-text); border-color: transparent; }
+
+  .body { display: flex; flex: 1; min-height: 0; }
+
+  /* ---- sidebar ---- */
+  .sidebar { width: 232px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--border); padding: 14px 10px; overflow-y: auto; }
+  .side-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin: 14px 8px 6px; }
+  .side-label:first-child { margin-top: 0; }
+  .agent-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+  .agent-row:hover { background: #f0efec; }
+  .agent-row.selected { background: var(--accent-row); }
+  .agent-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; font-size: 13px; flex-shrink: 0; }
+  .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
+  .agent-row .sub { font-size: 11px; color: var(--muted); line-height: 1.25; }
+  .agent-row .grow { flex: 1; min-width: 0; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; background: #d6d3d1; flex-shrink: 0; }
+  .sdot.running { background: var(--green); animation: pulse 1.2s infinite; }
+  .sdot.passed { background: var(--green); }
+  .sdot.failed, .sdot.blocked { background: var(--red); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .cycle-mini { font-size: 10.5px; color: var(--muted); padding: 0 8px 4px 43px; margin-top: -4px; }
+
+  /* ---- stepper ---- */
+  .stepper { display: flex; align-items: flex-start; padding: 4px 8px 2px; }
+  .step { display: flex; flex-direction: column; align-items: center; gap: 4px; position: relative; flex: 1; }
+  .step .circ { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid #d6d3d1; color: var(--faint); display: grid; place-items: center; font-size: 10.5px; font-weight: 600; background: var(--sidebar); z-index: 1; }
+  .step.done .circ { background: var(--green); border-color: var(--green); color: #fff; }
+  .step.active .circ { background: #1c1917; border-color: #1c1917; color: #fff; }
+  .step.failed .circ { background: var(--red); border-color: var(--red); color: #fff; }
+  .step .lbl { font-size: 10px; color: var(--muted); }
+  .step::before { content: ''; position: absolute; top: 11px; left: -50%; width: 100%; height: 1.5px; background: #d6d3d1; }
+  .step:first-child::before { display: none; }
+  .step.done::before, .step.active::before { background: var(--green); }
+
+  .task-box { padding: 2px 8px; font-size: 12.5px; }
+  .task-box .when { font-size: 11px; color: var(--faint); margin-top: 3px; }
+
+  /* ---- main ---- */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .agent-header { display: flex; align-items: center; gap: 11px; padding: 13px 22px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .agent-header .agent-ico { width: 30px; height: 30px; font-size: 15px; }
+  .agent-header .nm { font-weight: 700; font-size: 14px; }
+  .agent-header .sub { font-size: 11.5px; color: var(--muted); }
+  .agent-header .spacer { flex: 1; }
+  .badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; }
+  .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.running { background: var(--purple-bg); color: var(--purple-text); }
+  .badge.passed { background: var(--green-bg); color: var(--green-text); }
+  .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
+  .badge.pending { background: #f0efec; color: var(--muted); }
+
+  #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #fecaca; }
+
+  .feed { flex: 1; overflow-y: auto; padding: 18px 22px 26px; }
+  .feed-inner { max-width: 760px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
+  .chip { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3.5px 9px; border-radius: 7px; display: inline-flex; align-items: center; gap: 5px; }
+  .chip.edit { background: var(--amber-bg); color: var(--amber-text); }
+  .chip.create { background: var(--green-bg); color: var(--green-text); }
+  .chip.read { background: #f0efec; color: var(--muted); }
+  .cmdcard { font: 11.5px/1.55 ui-monospace, Menlo, monospace; background: #1c1917; color: #e7e5e4; border-radius: 8px; padding: 8px 12px; margin: 8px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .cmdcard .dollar { color: #a8a29e; }
+  .txt { margin: 10px 0; }
+  .txt p { margin: 6px 0; }
+  .sysline { font-size: 11px; color: var(--faint); margin: 10px 0; font-family: ui-monospace, Menlo, monospace; }
+  .errline { font-size: 11.5px; color: var(--red-text); margin: 6px 0; font-family: ui-monospace, Menlo, monospace; }
+  .cycle-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; color: var(--faint); font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .cycle-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+  .note-card { background: #eff6ff; color: #1e40af; border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px; }
+
+  .sec-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin: 22px 0 8px; display: flex; align-items: center; gap: 6px; }
+  .artifact-card { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 4px 18px 14px; margin-bottom: 10px; }
+  .artifact-card h1 { font-size: 15px; } .artifact-card h2 { font-size: 13px; margin: 16px 0 6px; } .artifact-card h3, .artifact-card h4 { font-size: 12px; margin: 12px 0 4px; }
+  .artifact-card pre { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font: 11.5px/1.6 ui-monospace, Menlo, monospace; }
+  .artifact-card code { font: 11.5px ui-monospace, Menlo, monospace; background: #ebe9e6; border-radius: 4px; padding: 1px 4px; }
+  .artifact-card pre code { background: none; padding: 0; }
+  .artifact-card ul { padding-left: 20px; margin: 6px 0; }
+  .kw { color: #7c3aed; } .str { color: #b45309; } .cmt { color: #9ca3af; } .typ { color: #0e7490; }
+  .empty-feed { color: var(--faint); font-size: 12.5px; padding: 30px 0; text-align: center; }
+
+  /* ---- follow-up composer ---- */
+  .composer { display: flex; gap: 9px; padding: 12px 22px 16px; border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; }
+  .composer .queued { position: absolute; transform: translateY(-34px); font-size: 11px; color: var(--purple-text); background: var(--purple-bg); padding: 2px 9px; border-radius: 999px; }
+  .composer input { flex: 1; border: 1px solid var(--border); background: #f7f6f4; border-radius: 10px; padding: 10px 14px; font: inherit; color: var(--text); outline: none; }
+  .composer input:focus { border-color: #d6d3d1; background: #fff; }
+  .composer button { width: 36px; height: 36px; border: none; border-radius: 10px; background: var(--orange); color: #fff; font-size: 15px; cursor: pointer; flex-shrink: 0; }
+  .composer button:hover { filter: brightness(1.07); }
+
+  footer.statusline { font-size: 10.5px; color: var(--faint); padding: 0 22px 8px; display: flex; justify-content: space-between; }
+  #conn.on { color: var(--green); }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>⚙️ Agent Pipeline</h1>
-    <span id="overall" class="badge idle">idle</span>
-    <span id="verdict" class="badge" style="display:none"></span>
-    <div class="task" id="task">No pipeline run yet — start one with <code>bash .pipeline/spawn.sh "your task"</code></div>
-  </header>
-  <div id="halt-banner"></div>
-
-  <div class="rail" id="rail"></div>
-
-  <div class="cols">
-    <div class="panel">
-      <h2>Live activity <span id="log-stage" style="text-transform:none"></span></h2>
-      <div id="log"></div>
-    </div>
-    <div class="panel">
-      <h2>Artifacts</h2>
-      <div class="tabs" id="tabs"></div>
-      <div id="artifact"><div class="empty">No artifacts yet.</div></div>
-    </div>
+<div class="app">
+  <div class="topbar">
+    <div class="appicon">◎</div>
+    <div class="title" id="ws-title">Agent workspace</div>
+    <div class="spacer"></div>
+    <span class="pill" id="active-pill">idle</span>
   </div>
 
-  <footer>
-    <span>Watching <code>.pipeline/</code> via SSE</span>
-    <span id="conn" class="off">● disconnected</span>
-  </footer>
+  <div class="body">
+    <aside class="sidebar">
+      <div class="side-label">Agents</div>
+      <div id="agent-list"></div>
+      <div class="side-label">Progress</div>
+      <div class="stepper" id="stepper"></div>
+      <div class="side-label">Current task</div>
+      <div class="task-box">
+        <div id="task-text">No pipeline run yet. Start one with<br><code style="font-size:11px">bash .pipeline/spawn.sh "task"</code></div>
+        <div class="when" id="task-when"></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="agent-header" id="agent-header"></div>
+      <div id="halt-banner"></div>
+      <div class="feed"><div class="feed-inner" id="feed"></div></div>
+      <footer class="statusline">
+        <span>Watching <code>.pipeline/</code></span>
+        <span id="conn">● connecting…</span>
+      </footer>
+      <div class="composer">
+        <span class="queued" id="queued-pill" style="display:none"></span>
+        <input id="followup-input" placeholder="Add a follow-up for the agent…">
+        <button id="followup-send" title="Queue follow-up">➤</button>
+      </div>
+    </main>
+  </div>
 </div>
 
 <script>
-const STAGE_ORDER = ['planner', 'coder', 'tester', 'reviewer'];
-const ARTIFACT_TABS = [
-  ['specs.md', 'Spec'], ['changes.md', 'Changes'], ['checker_report.md', 'Checker'],
-  ['test_suite.md', 'Tests'], ['review_report.md', 'Review'],
-];
+const AGENTS = {
+  planner:  { icon: '🧭', bg: '#ede9fe', sub: 'Spec writer',     desc: 'Turns vague requests into precise specs',            artifacts: ['specs.md'] },
+  coder:    { icon: '⌘',  bg: '#dbeafe', sub: 'Implementation',  desc: 'Implements the spec, self-heals until checks pass',  artifacts: ['changes.md', 'checker_report.md'] },
+  tester:   { icon: '✓',  bg: '#dcfce7', sub: 'QA & coverage',   desc: 'Writes rigorous tests for the implementation',       artifacts: ['test_suite.md'] },
+  reviewer: { icon: '🔍', bg: '#fef3c7', sub: 'Code review',     desc: 'Read-only security & architecture audit',            artifacts: ['review_report.md'] },
+};
+const STEP_LABELS = { planner: 'Plan', coder: 'Code', tester: 'Test', reviewer: 'Review' };
+const ORDER = ['planner', 'coder', 'tester', 'reviewer'];
+
 let state = null;
-let selectedStage = null;   // manual stage selection for the log panel
-let selectedTab = 'specs.md';
-let pinnedTab = false;      // user clicked a tab → stop auto-following
+let selected = null;        // manual selection; null = follow the running agent
+let artifactCache = {};
 
-const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-// Minimal markdown renderer: headings, fenced code, bold/italic/inline code, lists, hr.
+function hl(code) { // tiny js/ts highlighter for artifact code blocks
+  return esc(code)
+    .replace(/(\/\/[^\n]*)/g, '<span class="cmt">$1</span>')
+    .replace(/('[^']*'|"[^"]*"|`[^`]*`)/g, '<span class="str">$1</span>')
+    .replace(/\b(export|import|from|function|const|let|var|return|async|await|if|else|throw|new|class|interface|type|extends)\b/g, '<span class="kw">$1</span>')
+    .replace(/\b(string|number|boolean|void|Promise|Record|Array)\b/g, '<span class="typ">$1</span>');
+}
+
 function renderMd(md) {
   const blocks = md.split(/```/);
   let html = '';
   blocks.forEach((block, i) => {
-    if (i % 2 === 1) { // inside a fence; first line may be a language tag
+    if (i % 2 === 1) {
       const nl = block.indexOf('\n');
-      const body = nl >= 0 ? block.slice(nl + 1) : block;
-      html += '<pre><code>' + esc(body) + '</code></pre>';
+      html += '<pre><code>' + hl(nl >= 0 ? block.slice(nl + 1) : block) + '</code></pre>';
       return;
     }
     const lines = block.split('\n');
@@ -136,144 +212,197 @@ function renderMd(md) {
   return html;
 }
 
-function fmtDuration(a, b) {
-  if (!a) return '';
-  const ms = (b ? new Date(b) : new Date()) - new Date(a);
-  const s = Math.floor(ms / 1000);
-  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
-}
-
-function renderRail() {
-  const rail = document.getElementById('rail');
-  const stages = state?.status?.stages || STAGE_ORDER.map((name) => ({ name, status: 'pending', cycle: 0 }));
-  rail.innerHTML = '';
-  for (const st of stages) {
-    const div = document.createElement('div');
-    div.className = 'stage ' + st.status + (selectedStage === st.name ? ' selected' : '');
-    let cyclesHtml = '';
-    if (st.name === 'coder' && (st.cycle > 0 || st.status !== 'pending')) {
-      const max = st.maxCycles || 5;
-      cyclesHtml = '<div class="cycles" title="fix cycles">';
-      for (let i = 1; i <= max; i++) {
-        let cls = '';
-        if (i < st.cycle) cls = 'done-fail';
-        else if (i === st.cycle) cls = st.status === 'running' ? 'active' : (st.status === 'passed' ? 'done-ok' : 'done-fail');
-        cyclesHtml += `<span class="${cls}"></span>`;
-      }
-      cyclesHtml += '</div>';
-    }
-    let checkHtml = '';
-    if (st.checks) {
-      checkHtml = `<div class="checkline"><span class="ok">✓ ${st.checks.passedCount ?? '?'} passed</span>` +
-        (st.checks.failedCount ? ` · <span class="bad">✗ ${st.checks.failedCount} failed</span>` : '') + '</div>';
-    }
-    const meta = st.status === 'running'
-      ? `running · ${fmtDuration(st.startedAt)}${st.name === 'coder' ? ` · cycle ${st.cycle}/${st.maxCycles}` : ''}`
-      : st.status === 'pending' ? 'pending'
-      : `${st.status}${st.endedAt ? ' · ' + fmtDuration(st.startedAt, st.endedAt) : ''}${st.detail ? ' · ' + st.detail : ''}`;
-    div.innerHTML = `<div class="name"><span class="dot"></span>${st.name}</div><div class="meta">${esc(meta)}</div>${cyclesHtml}${checkHtml}`;
-    div.onclick = () => { selectedStage = st.name; renderAll(); };
-    rail.appendChild(div);
-  }
-}
-
-function activeLogStage() {
-  if (selectedStage) return selectedStage;
-  const stages = state?.status?.stages || [];
-  const running = stages.find((s) => s.status === 'running');
+function stageOf(name) { return state?.status?.stages?.find((s) => s.name === name); }
+function activeAgent() {
+  if (selected) return selected;
+  const running = state?.status?.stages?.find((s) => s.status === 'running');
   if (running) return running.name;
-  const started = stages.filter((s) => s.startedAt);
+  const started = (state?.status?.stages || []).filter((s) => s.startedAt);
   return started.length ? started[started.length - 1].name : 'planner';
 }
-
-function renderLog() {
-  const stage = activeLogStage();
-  document.getElementById('log-stage').textContent = '— ' + stage;
-  const el = document.getElementById('log');
-  const raw = state?.logs?.[stage] || '';
-  const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-  el.innerHTML = raw.split('\n').map((line) => {
-    let cls = '';
-    if (line.startsWith('[tool]')) cls = 'tool';
-    else if (line.startsWith('[stderr]') || line.startsWith('[error]')) cls = 'err';
-    else if (line.startsWith('=====') || line.startsWith('[session]') || line.startsWith('[result]')) cls = 'sys';
-    return `<div class="${cls}">${esc(line)}</div>`;
-  }).join('');
-  if (atBottom) el.scrollTop = el.scrollHeight;
+function agoText(iso) {
+  if (!iso) return '';
+  const m = Math.floor((Date.now() - new Date(iso)) / 60000);
+  return m < 1 ? 'Requested just now' : m < 60 ? `Requested ${m} min ago` : `Requested ${Math.floor(m / 60)}h ${m % 60}m ago`;
 }
 
-function renderTabs() {
-  const tabs = document.getElementById('tabs');
-  tabs.innerHTML = '';
-  const available = new Set(state?.artifacts || []);
-  for (const [file, label] of ARTIFACT_TABS) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.disabled = !available.has(file);
-    b.className = selectedTab === file ? 'active' : '';
-    b.onclick = () => { selectedTab = file; pinnedTab = true; renderTabs(); loadArtifact(); };
-    tabs.appendChild(b);
-  }
-  // Auto-follow the newest artifact until the user pins a tab.
-  if (!pinnedTab) {
-    for (const [file] of [...ARTIFACT_TABS].reverse()) {
-      if (available.has(file)) { if (selectedTab !== file) { selectedTab = file; loadArtifact(); } break; }
+function renderSidebar() {
+  const list = document.getElementById('agent-list');
+  const cur = activeAgent();
+  list.innerHTML = '';
+  for (const name of ORDER) {
+    const meta = AGENTS[name];
+    const st = stageOf(name) || { status: 'pending' };
+    const row = document.createElement('div');
+    row.className = 'agent-row' + (cur === name ? ' selected' : '');
+    row.innerHTML = `
+      <div class="agent-ico" style="background:${meta.bg}">${meta.icon}</div>
+      <div class="grow"><div class="nm">${name[0].toUpperCase() + name.slice(1)}</div><div class="sub">${meta.sub}</div></div>
+      <div class="sdot ${st.status}"></div>`;
+    row.onclick = () => { selected = name; renderAll(); loadArtifacts(); };
+    list.appendChild(row);
+    if (name === 'coder' && st.cycle > 0) {
+      const mini = document.createElement('div');
+      mini.className = 'cycle-mini';
+      mini.textContent = `fix cycle ${st.cycle}/${st.maxCycles || 5}` +
+        (st.checks ? ` · ${st.checks.passedCount ?? '?'}✓${st.checks.failedCount ? ' ' + st.checks.failedCount + '✗' : ''}` : '');
+      list.appendChild(mini);
     }
   }
+  // stepper
+  const stepper = document.getElementById('stepper');
+  stepper.innerHTML = '';
+  ORDER.forEach((name, i) => {
+    const st = stageOf(name) || { status: 'pending' };
+    const cls = st.status === 'passed' ? 'done' : st.status === 'running' ? 'active' : (st.status === 'failed' || st.status === 'blocked') ? 'failed' : '';
+    const div = document.createElement('div');
+    div.className = 'step ' + cls;
+    div.innerHTML = `<div class="circ">${st.status === 'passed' ? '✓' : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
+    stepper.appendChild(div);
+  });
+  // current task
+  if (state?.status) {
+    document.getElementById('task-text').textContent = state.status.task;
+    document.getElementById('task-when').textContent = agoText(state.status.startedAt);
+  }
 }
 
-async function loadArtifact() {
-  const el = document.getElementById('artifact');
-  try {
-    const r = await fetch('/api/artifact?name=' + encodeURIComponent(selectedTab));
-    const { content } = await r.json();
-    el.innerHTML = content ? renderMd(content) : '<div class="empty">Empty.</div>';
-  } catch { el.innerHTML = '<div class="empty">Failed to load.</div>'; }
+function renderTop() {
+  const pill = document.getElementById('active-pill');
+  const s = state?.status;
+  if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; return; }
+  document.getElementById('ws-title').textContent = 'Agent workspace — ' + (s.task.length > 48 ? s.task.slice(0, 48) + '…' : s.task);
+  const running = s.stages.filter((x) => x.status === 'running').length;
+  if (s.overall === 'running') { pill.textContent = `${running || 1} agent${running === 1 ? '' : 's'} active`; pill.className = 'pill active'; }
+  else if (s.overall === 'halted') { pill.textContent = 'halted — needs attention'; pill.className = 'pill halted'; }
+  else { pill.textContent = s.verdict ? `completed — ${s.verdict}` : 'completed'; pill.className = 'pill active'; }
 }
 
 function renderHeader() {
-  const s = state?.status;
-  const overall = document.getElementById('overall');
-  const verdict = document.getElementById('verdict');
+  const name = activeAgent();
+  const meta = AGENTS[name];
+  const st = stageOf(name) || { status: 'pending' };
+  document.getElementById('agent-header').innerHTML = `
+    <div class="agent-ico" style="background:${meta.bg}">${meta.icon}</div>
+    <div><div class="nm">${name[0].toUpperCase() + name.slice(1)} Agent</div><div class="sub">${meta.desc}</div></div>
+    <div class="spacer"></div>
+    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status[0].toUpperCase() + st.status.slice(1)}</span>`;
   const banner = document.getElementById('halt-banner');
-  if (!s) { overall.textContent = 'idle'; overall.className = 'badge idle'; return; }
-  document.getElementById('task').textContent = (s.runner ? `[${s.runner}] ` : '') + s.task;
-  overall.textContent = s.overall;
-  overall.className = 'badge ' + s.overall;
-  if (s.verdict) {
-    verdict.style.display = '';
-    verdict.textContent = s.verdict;
-    verdict.className = 'badge ' + (s.verdict === 'APPROVED' ? 'done' : 'halted');
-  } else verdict.style.display = 'none';
-  if (s.haltReason) {
+  const s = state?.status;
+  if (s?.haltReason) {
     const failing = s.stages.find((x) => x.status === 'failed' || x.status === 'blocked');
     banner.style.display = 'block';
-    banner.textContent = `⛔ ${s.haltReason}: ${failing?.detail || 'pipeline halted — human intervention required.'}`;
+    banner.textContent = `⛔ ${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
   } else banner.style.display = 'none';
+  document.getElementById('followup-input').placeholder = `Add a follow-up for the ${name[0].toUpperCase() + name.slice(1)} agent…`;
+  const q = document.getElementById('queued-pill');
+  if (state?.followups?.[name]) { q.style.display = ''; q.textContent = 'note queued for next run'; } else q.style.display = 'none';
 }
 
-function renderAll() { renderHeader(); renderRail(); renderLog(); renderTabs(); }
+function chipFor(ev) {
+  const t = ev.tool || '';
+  if (/^Write$/i.test(t)) return { cls: 'create', icon: '+', label: ev.file || t };
+  if (/^(Edit|NotebookEdit|MultiEdit)$/i.test(t)) return { cls: 'edit', icon: '✎', label: ev.file || t };
+  if (/^(Read|Glob|Grep|LS|WebFetch|WebSearch)$/i.test(t)) return { cls: 'read', icon: '🔎', label: ev.file || ev.cmd || t };
+  return null;
+}
+
+function renderFeed() {
+  const name = activeAgent();
+  const feed = document.getElementById('feed');
+  const events = state?.events?.[name] || [];
+  const wrap = feed.parentElement;
+  const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 40;
+  let html = '';
+  let chipRow = [];
+  const flushChips = () => {
+    if (chipRow.length) {
+      html += '<div class="chips">' + chipRow.map((c) => `<span class="chip ${c.cls}">${c.icon} ${esc(c.label)}</span>`).join('') + '</div>';
+      chipRow = [];
+    }
+  };
+  for (const ev of events) {
+    if (ev.type === 'agent_start') { flushChips(); if (ev.cycle > 1) html += `<div class="cycle-divider">Fix cycle ${ev.cycle}</div>`; continue; }
+    if (ev.type === 'checks_start') { flushChips(); html += `<div class="cycle-divider">Checker · verification</div>`; continue; }
+    if (ev.type === 'check_end') { flushChips(); html += `<div class="sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`; continue; }
+    if (ev.type !== 'agent_output') continue;
+    if (ev.kind === 'tool') {
+      const chip = chipFor(ev);
+      if (chip) { chipRow.push(chip); continue; }
+      flushChips();
+      if (/^Bash$/i.test(ev.tool)) { html += `<div class="cmdcard"><span class="dollar">$</span> ${esc(ev.cmd || '')}</div>`; continue; }
+      html += `<div class="sysline">⚙ ${esc(ev.tool)} ${esc(ev.file || ev.cmd || '')}</div>`;
+      continue;
+    }
+    flushChips();
+    if (ev.kind === 'sys') html += `<div class="sysline">${esc(ev.text)}</div>`;
+    else if (ev.kind === 'err') html += `<div class="errline">${esc(ev.text)}</div>`;
+    else html += `<div class="txt">${renderMd(ev.text || '')}</div>`;
+  }
+  flushChips();
+
+  // Applied follow-ups
+  for (const ev of events) if (ev.type === 'followup_applied') html += `<div class="note-card">📌 Follow-up applied: ${esc(ev.text)}</div>`;
+
+  // Rendered artifacts for this agent
+  for (const file of AGENTS[name].artifacts) {
+    if (!(state?.artifacts || []).includes(file)) continue;
+    const content = artifactCache[file];
+    if (!content) continue;
+    html += `<div class="sec-label">📄 Output — ${file}</div><div class="artifact-card">${renderMd(content)}</div>`;
+  }
+
+  feed.innerHTML = html || '<div class="empty-feed">No activity yet for this agent.</div>';
+  if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+
+async function loadArtifacts() {
+  const name = activeAgent();
+  for (const file of AGENTS[name].artifacts) {
+    if (!(state?.artifacts || []).includes(file)) continue;
+    try {
+      const { content } = await (await fetch('/api/artifact?name=' + encodeURIComponent(file))).json();
+      artifactCache[file] = content;
+    } catch {}
+  }
+  renderFeed();
+}
+
+function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(); }
 
 async function fetchState() {
   try {
     state = await (await fetch('/api/state')).json();
     renderAll();
+    loadArtifacts();
   } catch {}
 }
+
+async function sendFollowup() {
+  const input = document.getElementById('followup-input');
+  const text = input.value.trim();
+  if (!text) return;
+  const stage = activeAgent();
+  try {
+    await fetch('/api/followup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage, text }) });
+    input.value = '';
+    fetchState();
+  } catch {}
+}
+document.getElementById('followup-send').onclick = sendFollowup;
+document.getElementById('followup-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFollowup(); });
 
 function connectSSE() {
   const conn = document.getElementById('conn');
   const es = new EventSource('/events');
   es.onopen = () => { conn.textContent = '● live'; conn.className = 'on'; };
-  es.onerror = () => { conn.textContent = '● reconnecting…'; conn.className = 'off'; };
-  es.onmessage = (m) => {
-    try { if (JSON.parse(m.data).type === 'change') { fetchState(); if (pinnedTab) loadArtifact(); } } catch {}
-  };
+  es.onerror = () => { conn.textContent = '● reconnecting…'; conn.className = ''; };
+  es.onmessage = (m) => { try { if (JSON.parse(m.data).type === 'change') fetchState(); } catch {} };
 }
 
 fetchState();
 connectSSE();
-setInterval(fetchState, 3000); // fallback poll + duration ticker
+setInterval(fetchState, 3000);
 </script>
 </body>
 </html>
