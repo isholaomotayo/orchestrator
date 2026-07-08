@@ -94,6 +94,10 @@ function readState(runId) {
   });
   const { byStage, totalCost } = readEventsByStage(dir);
   const canExtend = live && !orchestratorAlive() && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
+  const canResume = live &&
+    !orchestratorAlive() &&
+    ((status?.overall === 'halted' && status?.haltReason === 'INTERRUPTED') ||
+      (status?.overall === 'running' && stale));
   return {
     status, artifacts, events: byStage,
     followups: live ? readFollowups() : {},
@@ -101,6 +105,7 @@ function readState(runId) {
     totals: { costUsd: totalCost },
     canCancel: live && orchestratorAlive(),
     canExtend,
+    canResume,
     runners: [...RUNNERS, ...Object.keys(config.customRunners || {})],
     // Config-driven defaults — the UI should never hardcode a cycle count.
     defaults: {
@@ -185,6 +190,30 @@ function extendRun({ extend, runner }) {
   return { ok: true, pid: child.pid, extend: n };
 }
 
+function resumeInterruptedRunUi({ runner }) {
+  if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
+  let status;
+  try { status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8')); } catch {
+    return { error: 'no run to resume', code: 409 };
+  }
+  const lock = readLock(paths);
+  const stale = status.overall === 'running' && !(lock && pidAlive(lock.pid));
+  const isInterrupted = status.overall === 'halted' && status.haltReason === 'INTERRUPTED';
+  if (!isInterrupted && !stale) {
+    return { error: `cannot resume: run is not interrupted or stale (overall=${status.overall}, haltReason=${status.haltReason})`, code: 409 };
+  }
+  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume'];
+  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
+  const child = spawn(process.execPath, nodeArgs, {
+    cwd: repoRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
+  });
+  child.unref();
+  return { ok: true, pid: child.pid };
+}
+
 function cancelRun() {
   const lock = readLock(paths);
   if (!lock || !pidAlive(lock.pid)) return { error: 'no active run', code: 409 };
@@ -255,6 +284,11 @@ const server = http.createServer((req, res) => {
     readBody(req, (body) => {
       if (!body) return json(res, { error: 'invalid JSON' }, 400);
       const result = extendRun(body);
+      json(res, result, result.code || 200);
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/resume') {
+    readBody(req, (body) => {
+      const result = resumeInterruptedRunUi(body || {});
       json(res, result, result.code || 200);
     });
   } else if (url.pathname === '/') {

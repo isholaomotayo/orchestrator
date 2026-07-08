@@ -82,6 +82,7 @@ export function newStatus(task) {
     models: null,
     awaitingStage: null,
     chatResume: null,   // { step, context } — set when handing off to IDE chat
+    resumePoint: null,  // { step, context } — tracks last saved checkpoint for resuming
     verdict: null,      // APPROVED | REQUEST_CHANGES | BLOCK
     haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR
     stages: STAGES.map((name) => ({

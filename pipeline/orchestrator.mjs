@@ -41,7 +41,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume --extend <n> [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -50,7 +50,7 @@ const args = parseArgs(process.argv.slice(2));
 const uiPort = process.env.PIPELINE_UI_PORT || config.uiPort;
 
 if (args.resume) {
-  if (!Number.isInteger(args.extend) || args.extend < 1) { console.error(USAGE); process.exit(2); }
+  if (args.extend !== null && (!Number.isInteger(args.extend) || args.extend < 1)) { console.error(USAGE); process.exit(2); }
 } else if (args.continue) {
   // no task required
 } else if (!args.task) {
@@ -114,7 +114,17 @@ function haltAndExit(code) {
   process.exit(code);
 }
 function interrupted(code) {
-  if (status) { status.overall = 'halted'; status.haltReason = status.haltReason || 'INTERRUPTED'; finalize(); }
+  if (status) {
+    status.overall = 'halted';
+    status.haltReason = status.haltReason || 'INTERRUPTED';
+    for (const s of status.stages) {
+      if (s.status === 'running') {
+        s.status = 'interrupted';
+        s.endedAt = new Date().toISOString();
+      }
+    }
+    finalize();
+  }
   haltAndExit(code);
 }
 process.on('SIGINT', () => interrupted(130));
@@ -147,17 +157,42 @@ if (args.continue) {
     console.error('[Orchestrator] Nothing to resume: no previous run found.');
     haltAndExit(1);
   }
-  if (onDisk.overall !== 'halted' || onDisk.haltReason !== 'MAX_CYCLES' || !onDisk.haltedPhase) {
-    console.error(`[Orchestrator] Cannot resume: last run's halt reason was "${onDisk.haltReason || onDisk.overall}", not MAX_CYCLES. Only cycle-budget halts can be extended.`);
-    haltAndExit(1);
+  const isExtend = args.extend !== null;
+  if (isExtend) {
+    if (onDisk.overall !== 'halted' || onDisk.haltReason !== 'MAX_CYCLES' || !onDisk.haltedPhase) {
+      console.error(`[Orchestrator] Cannot resume: last run's halt reason was "${onDisk.haltReason || onDisk.overall}", not MAX_CYCLES. Only cycle-budget halts can be extended.`);
+      haltAndExit(1);
+    }
+    status = onDisk;
+    status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles }; // back-compat
+    runner = args.runner || status.runner;
+    models = status.models || null;
+    loadWorkCwdFromStatus();
+    loadHistory();
+    console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles). Dashboard: http://localhost:${uiPort}`);
+  } else {
+    const lock = readLock(paths);
+    const stale = onDisk.overall === 'running' && !(lock && pidAlive(lock.pid));
+    const isInterrupted = onDisk.overall === 'halted' && onDisk.haltReason === 'INTERRUPTED';
+    if (onDisk.overall === 'done') {
+      console.error('[Orchestrator] Cannot resume: the last run completed successfully.');
+      haltAndExit(1);
+    }
+    if (onDisk.overall === 'halted' && onDisk.haltReason !== 'INTERRUPTED') {
+      console.error(`[Orchestrator] Cannot resume: last run's halt reason was "${onDisk.haltReason}". Resuming is only supported for interrupted or stale runs.`);
+      haltAndExit(1);
+    }
+    if (!isInterrupted && !stale) {
+      console.error(`[Orchestrator] Cannot resume: last run is in state "${onDisk.overall}" (haltReason=${onDisk.haltReason}) and is not stale.`);
+      haltAndExit(1);
+    }
+    status = onDisk;
+    runner = args.runner || status.runner;
+    models = status.models || null;
+    loadWorkCwdFromStatus();
+    loadHistory();
+    console.log(`[Orchestrator] Resuming interrupted/stale run. Dashboard: http://localhost:${uiPort}`);
   }
-  status = onDisk;
-  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles }; // back-compat
-  runner = args.runner || status.runner;
-  models = status.models || null;
-  loadWorkCwdFromStatus();
-  loadHistory();
-  console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles). Dashboard: http://localhost:${uiPort}`);
 } else {
   // ---- Guardrail 1: sandbox worktree ------------------------------------------
   workCwd = repoRoot;
@@ -358,6 +393,7 @@ function postTesterCoderTask(localCycle) {
 }
 
 async function invokeInitialCoderCycle(cycle) {
+  status.resumePoint = { step: 'coder', context: { cycle, loop: 'initial' } };
   setStage('coder', { status: 'running', cycle, maxCycles: status.limits.coderMax });
   console.log(`[Stage] Coder — fix cycle ${cycle}/${status.limits.coderMax}...`);
   await runStageAgent('coder', coderTask(cycle), {
@@ -380,6 +416,8 @@ async function runCoderChecksAfterInitialCycle(cycle) {
 async function runInitialCoderLoop(startCycle) {
   for (let cycle = startCycle; cycle <= status.limits.coderMax; cycle++) {
     await invokeInitialCoderCycle(cycle);
+    status.resumePoint = { step: 'after_coder', context: { cycle, loop: 'initial' } };
+    writeStatus(paths, status);
     const outcome = await runCoderChecksAfterInitialCycle(cycle);
     if (outcome === 'pass') return true;
     if (outcome === 'exhausted') return false;
@@ -390,6 +428,7 @@ async function runInitialCoderLoop(startCycle) {
 async function invokePostTesterCoderCycle(cycle) {
   const localCycle = cycle - status.limits.coderMax;
   const totalMax = status.limits.coderMax + status.limits.postTesterMax;
+  status.resumePoint = { step: 'coder', context: { cycle, loop: 'postTester' } };
   setStage('coder', { status: 'running', cycle, maxCycles: totalMax });
   console.log(`[Stage] Coder (post-tester fix) — cycle ${localCycle}/${status.limits.postTesterMax}...`);
   await runStageAgent('coder', postTesterCoderTask(localCycle), {
@@ -412,6 +451,8 @@ async function runPostTesterLoop(startCycle) {
   const totalMax = status.limits.coderMax + status.limits.postTesterMax;
   for (let cycle = startCycle; cycle <= totalMax; cycle++) {
     await invokePostTesterCoderCycle(cycle);
+    status.resumePoint = { step: 'after_coder', context: { cycle, loop: 'postTester' } };
+    writeStatus(paths, status);
     const outcome = await runCoderChecksAfterPostTesterCycle(cycle);
     if (outcome === 'pass') return true;
     if (outcome === 'exhausted') return false;
@@ -420,11 +461,14 @@ async function runPostTesterLoop(startCycle) {
 }
 
 async function runPlannerStage() {
+  status.resumePoint = { step: 'planner', context: {} };
   setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Planner...');
   await runStageAgent('planner', `Produce a technical specification for this feature request:\n\n${status.task}\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.`, {
     chatResume: { step: 'after_planner', context: {} },
   });
+  status.resumePoint = { step: 'after_planner', context: {} };
+  writeStatus(paths, status);
   requireArtifact('planner', paths.specs);
   setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
 }
@@ -438,11 +482,14 @@ async function runCoderStage() {
 }
 
 async function runTesterStage() {
+  status.resumePoint = { step: 'tester', context: {} };
   setStage('tester', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Tester...');
   await runStageAgent('tester', `Write rigorous tests for the implementation of: ${status.task}\n\nRead .pipeline/specs.md and .pipeline/changes.md first. Summarize coverage in .pipeline/test_suite.md.`, {
     chatResume: { step: 'after_tester', context: {} },
   });
+  status.resumePoint = { step: 'after_tester', context: {} };
+  writeStatus(paths, status);
   requireArtifact('tester', paths.testSuite);
 
   console.log('[Checker] Re-running full suite with the new tests...');
@@ -464,12 +511,15 @@ async function runReviewerStage() {
   // Snapshot the working-tree diff so the dashboard can render the audit
   // surface alongside the review.
   writeDiffArtifact();
+  status.resumePoint = { step: 'reviewer', context: {} };
   setStage('reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Reviewer (read-only audit)...');
   await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, run git diff, and write your verdict to .pipeline/review_report.md.`, {
     readOnly: true,
     chatResume: { step: 'after_reviewer', context: {} },
   });
+  status.resumePoint = { step: 'after_reviewer', context: {} };
+  writeStatus(paths, status);
   await finishReviewerStage();
 }
 
@@ -570,6 +620,173 @@ async function freshRun() {
   await runReviewerStage();
 }
 
+function getResumePoint() {
+  if (status.resumePoint) return status.resumePoint;
+  
+  const planner = stage('planner');
+  const coder = stage('coder');
+  const tester = stage('tester');
+  const reviewer = stage('reviewer');
+  
+  if (planner.status !== 'passed') {
+    return { step: 'planner', context: {} };
+  }
+  if (coder.status !== 'passed') {
+    const isPostTester = coder.maxCycles > status.limits.coderMax;
+    const cycle = coder.cycle || 1;
+    const loop = isPostTester ? 'postTester' : 'initial';
+    if (coder.status === 'failed') {
+      return { step: 'after_coder', context: { cycle, loop } };
+    }
+    return { step: 'coder', context: { cycle, loop } };
+  }
+  if (tester.status !== 'passed') {
+    return { step: 'tester', context: {} };
+  }
+  return { step: 'reviewer', context: {} };
+}
+
+async function resumeInterruptedRun() {
+  status.overall = 'running';
+  status.haltReason = null;
+  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles };
+  writeStatus(paths, status);
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted' });
+
+  const pt = getResumePoint();
+  const step = pt.step;
+  const context = pt.context || {};
+  const cycle = context.cycle;
+  const loop = context.loop;
+
+  console.log(`[Orchestrator] Resuming interrupted run at step: ${step}${cycle ? ` (cycle ${cycle}, loop ${loop})` : ''}`);
+
+  if (step === 'planner') {
+    await runPlannerStage();
+    if (!(await runCoderStage())) return;
+    if (!(await runTesterStage())) return;
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'after_planner') {
+    requireArtifact('planner', paths.specs);
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
+    if (!(await runCoderStage())) return;
+    if (!(await runTesterStage())) return;
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'coder') {
+    if (loop === 'initial') {
+      const green = await runInitialCoderLoop(cycle);
+      if (!green) { haltMaxCycles('coder', 'coder', status.limits.coderMax); return; }
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage())) return;
+      await runReviewerStage();
+    } else if (loop === 'postTester') {
+      const green = await runPostTesterLoop(cycle);
+      if (!green) { haltMaxCycles('postTester', 'tester', status.limits.postTesterMax); return; }
+      setStage('coder', { status: 'passed' });
+      let check = stage('coder').checks;
+      setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
+      await runReviewerStage();
+    }
+    return;
+  }
+
+  if (step === 'after_coder') {
+    if (loop === 'postTester') {
+      const outcome = await runCoderChecksAfterPostTesterCycle(cycle);
+      if (outcome === 'pass') {
+        setStage('coder', { status: 'passed' });
+        setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: stage('coder').checks });
+        await runReviewerStage();
+        return;
+      }
+      if (outcome === 'exhausted') {
+        haltMaxCycles('postTester', 'tester', status.limits.postTesterMax);
+        return;
+      }
+      if (status.invocationMode === 'chat') {
+        await invokePostTesterCoderCycle(cycle + 1);
+      } else {
+        const green = await runPostTesterLoop(cycle + 1);
+        if (!green) { haltMaxCycles('postTester', 'tester', status.limits.postTesterMax); return; }
+        setStage('coder', { status: 'passed' });
+        let check = stage('coder').checks;
+        setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
+        await runReviewerStage();
+      }
+      return;
+    }
+
+    const outcome = await runCoderChecksAfterInitialCycle(cycle);
+    if (outcome === 'pass') {
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage())) return;
+      await runReviewerStage();
+      return;
+    }
+    if (outcome === 'exhausted') {
+      haltMaxCycles('coder', 'coder', status.limits.coderMax);
+      return;
+    }
+    if (status.invocationMode === 'chat') {
+      await invokeInitialCoderCycle(cycle + 1);
+    } else {
+      const green = await runInitialCoderLoop(cycle + 1);
+      if (!green) { haltMaxCycles('coder', 'coder', status.limits.coderMax); return; }
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage())) return;
+      await runReviewerStage();
+    }
+    return;
+  }
+
+  if (step === 'tester') {
+    if (!(await runTesterStage())) return;
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'after_tester') {
+    requireArtifact('tester', paths.testSuite);
+    console.log('[Checker] Re-running full suite with the new tests...');
+    let check = runChecks({ cwd: workCwd, config, paths });
+    console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
+    if (!check.isPassed) {
+      history.postTester.push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: false, at: new Date().toISOString() });
+      saveHistory();
+      if (status.invocationMode === 'chat') {
+        await invokePostTesterCoderCycle(status.limits.coderMax + 1);
+        return;
+      } else {
+        const green = await runPostTesterLoop(status.limits.coderMax + 1);
+        if (!green) { haltMaxCycles('postTester', 'tester', status.limits.postTesterMax); return; }
+        setStage('coder', { status: 'passed' });
+        check = stage('coder').checks;
+      }
+    }
+    setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'reviewer') {
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'after_reviewer') {
+    await finishReviewerStage();
+    return;
+  }
+
+  halt('orchestrator', 'AGENT_ERROR', `Unknown resume step "${step}".`);
+}
+
 async function resumeRun() {
   const phase = status.haltedPhase;
   status.overall = 'running';
@@ -603,7 +820,7 @@ async function resumeRun() {
   }
 }
 
-(args.continue ? chatContinueRun() : args.resume ? resumeRun() : freshRun()).catch((err) => {
+(args.continue ? chatContinueRun() : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
   console.error('[Orchestrator] Uncaught error:', err);
   if (status) { status.overall = 'halted'; status.haltReason = 'AGENT_ERROR'; finalize(); }
   haltAndExit(1);

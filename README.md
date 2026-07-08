@@ -299,9 +299,17 @@ The Coder's own prompt has a standing instruction never to weaken, skip, or dele
 
 There's a **second** fix loop, distinct from the first: after the Tester adds new tests, the checker runs once more. If the Tester's tests expose a bug the Coder didn't catch, the pipeline drops back into a Coder fix loop (capped separately by `maxPostTesterCycles`, default: 2) before advancing to the Reviewer. This is tracked as its own phase (`haltedPhase: "postTester"`) with its own regression history, so a regression here is compared against the post-Tester baseline, not the pre-Tester one.
 
-## Extending a halted run
+## Resuming or extending a halted run
 
-A `MAX_CYCLES` halt is not a dead end — it's a checkpoint. Nothing is discarded: `specs.md`, `changes.md`, and all prior cycle history stay exactly as they were. From either the CLI or the dashboard you can add more cycles to the **same** loop and keep going, as many times as you want:
+An interrupted run (`INTERRUPTED`) or a stale run (where the orchestrator process died) can be resumed from the saved resume point. From the CLI, run:
+
+```bash
+bash .pipeline/orchestrate.sh --resume
+```
+
+or click the **Resume run** button in the dashboard's halt/stale banner.
+
+A `MAX_CYCLES` halt is not a dead end either — it's a checkpoint. Nothing is discarded: `specs.md`, `changes.md`, and all prior cycle history stay exactly as they were. From either the CLI or the dashboard you can add more cycles to the **same** loop and keep going, as many times as you want:
 
 ```bash
 bash .pipeline/orchestrate.sh --resume --extend 5 --runner claude
@@ -360,6 +368,9 @@ node pipeline/orchestrator.mjs --task "description" \
   [--sandbox] \
   [--max-cycles N] \
   [--max-post-tester-cycles N]
+
+# Resume an interrupted or stale run
+node pipeline/orchestrator.mjs --resume [--runner ...]
 
 # Extend a run halted with MAX_CYCLES
 node pipeline/orchestrator.mjs --resume --extend N [--runner ...]

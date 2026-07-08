@@ -5,6 +5,9 @@
 #   bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini] \
 #     [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
 #
+# Resume an interrupted or stale run:
+#   bash .pipeline/orchestrate.sh --resume [--runner ...] [--no-ui]
+#
 # Extend a run that halted with MAX_CYCLES (continues the same fix loop,
 # repeatable as many times as needed):
 #   bash .pipeline/orchestrate.sh --resume --extend <n> [--runner ...] [--no-ui]
@@ -17,7 +20,7 @@ BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PI
 
 USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --continue
-   or: bash .pipeline/orchestrate.sh --resume --extend <n> [--runner ...] [--no-ui]'
+   or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]'
 
 RESUME=0
 CONTINUE=0

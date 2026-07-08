@@ -37,7 +37,7 @@ Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the Git
 
 ```bash
 bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--sandbox]
-bash .pipeline/orchestrate.sh --resume --extend 5
+bash .pipeline/orchestrate.sh --resume [--extend 5]
 node pipeline/orchestrator.mjs --task "description" --model-profile auto
 ```
 
@@ -70,6 +70,7 @@ Default auto profiles (override in `.pipeline/config.json`):
 | Reason | Action |
 |--------|--------|
 | `MAX_CYCLES` | `bash .pipeline/orchestrate.sh --resume --extend N` |
+| `INTERRUPTED` / stale | `bash .pipeline/orchestrate.sh --resume` or dashboard **Resume run** |
 | `REGRESSION_BLOCKED` | Human review required |
 | `MISSING_ARTIFACT` | Inspect `.pipeline/logs/` (Planner: often CLI auth in CLI mode) |
 | `AGENT_ERROR` | CLI auth/spawn failure — use chat mode from IDE or log in to CLI |
