@@ -54,42 +54,42 @@ Two production-grade patterns are fused into one pipeline instead of run as sepa
 ```mermaid
 flowchart LR
     T[Task] --> P[Planner]
-    P -- specs.md --> C{Coder}
-    C -- changes.md --> Te[Tester]
-    Te -- test_suite.md --> R[Reviewer]
-    R -- review_report.md --> V[Verdict]
+    P -->|specs.md| C[Coder]
+    C -->|changes.md| Te[Tester]
+    Te -->|test_suite.md| R[Reviewer]
+    R -->|review_report.md| V[Verdict]
 
-    subgraph loop [Self-healing loop, ≤ N cycles]
+    subgraph SH["Self-healing loop up to N cycles"]
         direction TB
-        C1[Coder implements / fixes] --> Ch[Checker: test + lint + typecheck]
-        Ch -- green --> Done((advance))
-        Ch -- regression --> Halt1[[HALT: human review]]
-        Ch -- cycles exhausted --> Halt2[[HALT: extend or stop]]
+        C1[Coder implements fixes] --> Ch[Checker runs test lint typecheck]
+        Ch -->|pass| Done[advance]
+        Ch -->|regression| H1[HALT human review]
+        Ch -->|max cycles| H2[HALT extend or stop]
     end
-    C -.-> loop
+    C -.-> C1
 ```
 
 ```mermaid
 sequenceDiagram
-    participant U as You / dashboard
+    participant U as Dashboard
     participant O as orchestrator.mjs
-    participant A as Agent CLI (claude/cursor/codex/gemini)
+    participant A as Agent CLI
     participant Ck as checker.mjs
 
-    U->>O: orchestrate.sh "task"
+    U->>O: orchestrate.sh task
     O->>A: Planner prompt
     A-->>O: specs.md
-    loop fix cycle (until pass or max)
-        O->>A: Coder prompt (+ checker_report.md on retry)
+    loop Fix cycle until pass or max
+        O->>A: Coder prompt
         A-->>O: changes.md
-        O->>Ck: run test/lint/typecheck
+        O->>Ck: run test lint typecheck
         Ck-->>O: pass counts
     end
     O->>A: Tester prompt
     A-->>O: test_suite.md
-    O->>A: Reviewer prompt (read-only)
+    O->>A: Reviewer prompt read-only
     A-->>O: review_report.md
-    O-->>U: status.json + verdict
+    O-->>U: status.json and verdict
 ```
 
 Everything the agents produce is a plain file under `.pipeline/`. The orchestrator is the only thing that reads/writes `status.json` and `events.jsonl`; the dashboard only ever reads them (plus two small control endpoints to start/stop/extend a run). This means you can run the whole pipeline with **no dashboard running at all** — `orchestrate.sh` and `orchestrator.mjs` work standalone from any terminal or CI job.
@@ -381,7 +381,7 @@ Concurrent runs **within** the same repo are intentionally blocked by the mutex 
 The `/orchestrate` skill declares itself to every supported CLI via committed rule files:
 
 - [.cursor/commands/orchestrate.md](.cursor/commands/orchestrate.md) — Cursor slash command `/orchestrate`
-- [.clauderules](.clauderules) — Claude Code
+- [CLAUDE.md](CLAUDE.md) — Claude Code (official project memory)
 - [.cursorrules](.cursorrules) — Cursor rules
 - [AGENTS.md](AGENTS.md) — Codex, Antigravity (and any other `AGENTS.md`-aware tool)
 - [GEMINI.md](GEMINI.md) — Gemini CLI

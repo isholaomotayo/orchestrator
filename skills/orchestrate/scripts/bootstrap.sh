@@ -22,7 +22,7 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO ..."
-git clone --depth 1 "$ORCHESTRATOR_REPO" "$TMP"
+  git clone --depth 1 "$ORCHESTRATOR_REPO" "$TMP"
 
 cp -R "$TMP/.pipeline" "$REPO_ROOT/"
 cp -R "$TMP/pipeline" "$REPO_ROOT/"
@@ -45,9 +45,11 @@ else
   " "$TMP"
 fi
 
-if [ -f "$TMP/AGENTS.md" ] && [ ! -f "$REPO_ROOT/AGENTS.md" ]; then
-  cp "$TMP/AGENTS.md" "$REPO_ROOT/"
-fi
+for agentFile in AGENTS.md CLAUDE.md; do
+  if [ -f "$TMP/$agentFile" ] && [ ! -f "$REPO_ROOT/$agentFile" ]; then
+    cp "$TMP/$agentFile" "$REPO_ROOT/"
+  fi
+done
 
 if [ -f "$REPO_ROOT/.pipeline/orchestrate.sh" ]; then
   chmod +x "$REPO_ROOT/.pipeline/orchestrate.sh"
