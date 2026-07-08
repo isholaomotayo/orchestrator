@@ -80,6 +80,7 @@ export function newStatus(task) {
     invocationMode: 'cli', // chat | cli — how agent stages are executed
     runner: 'auto',
     models: null,
+    baseRef: null,      // commit SHA the run started from; diff is scoped against it
     awaitingStage: null,
     chatResume: null,   // { step, context } — set when handing off to IDE chat
     resumePoint: null,  // { step, context } — tracks last saved checkpoint for resuming

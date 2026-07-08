@@ -6,6 +6,16 @@
   "verdict": "APPROVED",
   "haltReason": null,
   "runner": "claude",
+  "models": {
+    "selection": "auto",
+    "runner": "claude",
+    "stages": {
+      "planner": "opus-4",
+      "coder": "sonnet-4",
+      "tester": "sonnet-4",
+      "reviewer": "opus-4"
+    }
+  },
   "sandbox": false,
   "limits": { "coderMax": 5, "postTesterMax": 2 },
   "stages": [

@@ -237,6 +237,12 @@ if (args.continue) {
   status.runner = runner;
   status.models = models;
   status.sandbox = args.sandbox;
+  // Capture the commit the run starts from, before any agent runs, so the
+  // review diff can be scoped to this run even after agents commit their work.
+  {
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: workCwd, encoding: 'utf8' });
+    status.baseRef = head.status === 0 ? head.stdout.trim() : null;
+  }
   status.haltedPhase = null;
   status.extensions = [];
   status.limits = {
@@ -351,15 +357,31 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   return res;
 }
 
+function resolveDiffBaseRef(git) {
+  // 1. Prefer the commit the run started from (captures committed + uncommitted work).
+  const captured = status?.baseRef;
+  if (captured && git(['cat-file', '-e', `${captured}^{commit}`]).status === 0) return captured;
+  // 2. Fall back to the merge-base with a default branch (for legacy runs missing baseRef).
+  for (const branch of ['main', 'master']) {
+    const mb = git(['merge-base', 'HEAD', branch]);
+    if (mb.status === 0 && mb.stdout.trim()) return mb.stdout.trim();
+  }
+  // 3. Last resort: the working-tree diff against HEAD (original behavior).
+  return 'HEAD';
+}
+
 function writeDiffArtifact() {
   const git = (gitArgs) => spawnSync('git', gitArgs, { cwd: workCwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  let patch = git(['diff', 'HEAD']).stdout || '';
+  const baseRef = resolveDiffBaseRef(git);
+  let patch = git(['diff', baseRef]).stdout || '';
   const untracked = (git(['ls-files', '--others', '--exclude-standard']).stdout || '').split('\n').filter(Boolean);
   for (const f of untracked) {
     if (f.startsWith('.pipeline')) continue;
     patch += git(['diff', '--no-index', '/dev/null', f]).stdout || '';
   }
-  try { fs.writeFileSync(paths.diff, patch || 'No working-tree changes detected.\n'); } catch {}
+  const shortRef = baseRef === 'HEAD' ? 'HEAD (working tree)' : baseRef.slice(0, 12);
+  const body = patch ? `# diff vs ${shortRef}\n\n${patch}` : 'No working-tree changes detected.\n';
+  try { fs.writeFileSync(paths.diff, body); } catch {}
 }
 
 function saveHistory() { fs.writeFileSync(paths.testHistory, JSON.stringify(history, null, 2)); }
@@ -514,7 +536,7 @@ async function runReviewerStage() {
   status.resumePoint = { step: 'reviewer', context: {} };
   setStage('reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Reviewer (read-only audit)...');
-  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, run git diff, and write your verdict to .pipeline/review_report.md.`, {
+  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, read .pipeline/diff.patch, and write your verdict to .pipeline/review_report.md.`, {
     readOnly: true,
     chatResume: { step: 'after_reviewer', context: {} },
   });

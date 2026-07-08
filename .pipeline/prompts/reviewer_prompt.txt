@@ -9,8 +9,9 @@ INSTRUCTIONS:
    - `.pipeline/specs.md`
    - `.pipeline/changes.md`
    - `.pipeline/test_suite.md`
-3. Execute `git diff` on the working tree to analyze actual code mutations
-   versus the planner's original specification.
+3. Read `.pipeline/diff.patch` (the full base-to-HEAD diff for this run,
+   including committed and uncommitted changes) to analyze actual code
+   mutations versus the planner's original specification.
 4. Review the implementation for:
    - **Security Audits**: SQLi, XSS, CSRF, insecure direct object references, or credential leakage.
    - **Scalability & Performance**: Algorithmic complexity, memory leakage, database transaction locking, or blocking synchronous execution.

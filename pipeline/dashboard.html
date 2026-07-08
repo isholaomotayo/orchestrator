@@ -66,7 +66,14 @@
   .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
   .topbar .appicon { width: 24px; height: 24px; border-radius: 7px; background: var(--inverse); color: var(--on-inverse); display: grid; place-items: center; }
   .topbar .appicon svg.ic { width: 13px; height: 13px; }
-  .topbar .title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
+  .topbar .title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
+  .runtime-strip { display: none; align-items: center; gap: 8px; flex-shrink: 0; }
+  .runtime-strip.visible { display: inline-flex; }
+  .runtime-chip { display: inline-flex; align-items: baseline; gap: 5px; font-size: 11px; color: var(--muted); padding: 4px 10px; border-radius: 8px; background: var(--surface-muted); border: 1px solid var(--border); white-space: nowrap; }
+  .runtime-chip .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
+  .runtime-chip strong { font-size: 13px; font-weight: 800; color: var(--text); letter-spacing: -.01em; }
+  .runtime-chip.runner strong { color: var(--purple-text); }
+  .runtime-chip.model strong { color: var(--info-text); }
   .topbar .spacer { flex: 1; }
   .totals { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
   .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: var(--surface-hover); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
@@ -129,7 +136,12 @@
   .agent-header .agent-ico svg.ic { width: 15px; height: 15px; }
   .agent-header .nm { font-weight: 700; font-size: 14px; }
   .agent-header .sub { font-size: 11.5px; color: var(--muted); }
+  .agent-header .runtime-line { font-size: 12px; margin-top: 3px; color: var(--muted); }
+  .agent-header .runtime-line strong { font-weight: 800; color: var(--text); }
+  .agent-header .runtime-line .runner-strong { color: var(--purple-text); }
+  .agent-header .runtime-line .model-strong { color: var(--info-text); }
   .agent-header .spacer { flex: 1; }
+  .model-badge { font-size: 12px; font-weight: 800; padding: 4px 11px; border-radius: 999px; background: var(--info-bg); color: var(--info-text); border: 1px solid var(--info-border); white-space: nowrap; }
   .badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; }
   .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .badge.running { background: var(--purple-bg); color: var(--purple-text); }
@@ -230,6 +242,10 @@
   <div class="topbar">
     <div class="appicon" id="app-ico"></div>
     <div class="title" id="ws-title">Agent workspace</div>
+    <div class="runtime-strip" id="runtime-strip" aria-live="polite">
+      <span class="runtime-chip runner"><span class="lbl">CLI</span> <strong id="runtime-runner">—</strong></span>
+      <span class="runtime-chip model"><span class="lbl">Model</span> <strong id="runtime-model">—</strong></span>
+    </div>
     <div class="spacer"></div>
     <span class="totals" id="totals"></span>
     <span class="pill" id="active-pill">idle</span>
@@ -473,6 +489,61 @@ function fmtDur(a, b) {
   const s = Math.floor(((b ? new Date(b) : new Date()) - new Date(a)) / 1000);
   return s < 60 ? s + 's' : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
+
+const RUNNER_LABELS = {
+  claude: 'Claude',
+  cursor: 'Cursor',
+  codex: 'Codex',
+  gemini: 'Gemini',
+  host: 'IDE Chat',
+};
+
+function formatRunner(runner) {
+  if (!runner) return '—';
+  return RUNNER_LABELS[runner] || cap(runner);
+}
+
+function runningStageName() {
+  return state?.status?.stages?.find((s) => s.status === 'running')?.name || null;
+}
+
+function modelForAgent(name) {
+  return state?.status?.models?.stages?.[name] || null;
+}
+
+function currentRuntimeModel() {
+  const running = runningStageName();
+  if (running) {
+    const m = modelForAgent(running);
+    if (m) return m;
+  }
+  const active = activeAgent();
+  const activeModel = modelForAgent(active);
+  if (activeModel) return activeModel;
+  const stages = state?.status?.models?.stages;
+  if (stages) {
+    for (const name of ORDER) {
+      if (stages[name]) return stages[name];
+    }
+  }
+  return null;
+}
+
+function renderRuntimeStrip() {
+  const strip = document.getElementById('runtime-strip');
+  const runnerEl = document.getElementById('runtime-runner');
+  const modelEl = document.getElementById('runtime-model');
+  const s = state?.status;
+  if (!s?.runner) {
+    strip.classList.remove('visible');
+    return;
+  }
+  strip.classList.add('visible');
+  runnerEl.textContent = formatRunner(s.runner);
+  const model = currentRuntimeModel();
+  modelEl.textContent = model || 'default';
+}
+
 function agentIco(name) {
   const m = AGENTS[name];
   return `<div class="agent-ico ${name}">${ICONS[m.icon]}</div>`;
@@ -526,7 +597,7 @@ function renderTop() {
   const cancelBtn = document.getElementById('cancel-btn');
   const s = state?.status;
   cancelBtn.style.display = state?.canCancel ? '' : 'none';
-  if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; totals.textContent = ''; return; }
+  if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; totals.textContent = ''; renderRuntimeStrip(); return; }
   document.getElementById('ws-title').textContent = 'Agent workspace — ' + (s.task.length > 48 ? s.task.slice(0, 48) + '…' : s.task);
   const parts = [];
   const started = s.stages.filter((x) => x.startedAt).length;
@@ -547,6 +618,7 @@ function renderTop() {
     pill.className = 'pill halted';
   }
   else { pill.textContent = s.verdict ? `completed — ${s.verdict}` : 'completed'; pill.className = 'pill active'; }
+  renderRuntimeStrip();
 }
 
 function getNextAgent(s) {
@@ -586,11 +658,15 @@ function followupHint(name) {
 function renderHeader() {
   const name = activeAgent();
   const st = stageOf(name) || { status: 'pending' };
-  const stageModel = state?.status?.models?.stages?.[name];
-  const modelBadge = stageModel ? `<span class="pill" style="margin-left:8px;font-size:11px">${esc(stageModel)}</span>` : '';
+  const stageModel = modelForAgent(name);
+  const runner = state?.status?.runner;
+  const runtimeLine = runner
+    ? `<div class="runtime-line"><span class="lbl">CLI</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${esc(stageModel)}</strong>` : ''}</div>`
+    : '';
+  const modelBadge = stageModel ? `<span class="model-badge">${esc(stageModel)}</span>` : '';
   document.getElementById('agent-header').innerHTML = `
     ${agentIco(name)}
-    <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}${stageModel ? ' · model: ' + esc(stageModel) : ''}</div></div>
+    <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}</div>
     <div class="spacer"></div>
     ${modelBadge}
     <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? 'Awaiting chat' : cap(st.status)}</span>`;

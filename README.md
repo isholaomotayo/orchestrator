@@ -268,7 +268,7 @@ You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, a
 | **Planner** | [.pipeline/prompts/planner_prompt.txt](.pipeline/prompts/planner_prompt.txt) | the task, the codebase | `specs.md` | no |
 | **Coder** | [.pipeline/prompts/coder_prompt.txt](.pipeline/prompts/coder_prompt.txt) | `specs.md`, or `checker_report.md` on retry | `changes.md` + actual code | **yes** — self-healing loop |
 | **Tester** | [.pipeline/prompts/tester_prompt.txt](.pipeline/prompts/tester_prompt.txt) | `specs.md`, `changes.md` | `test_suite.md` + test files | no (but can trigger a second Coder loop, see below) |
-| **Reviewer** | [.pipeline/prompts/reviewer_prompt.txt](.pipeline/prompts/reviewer_prompt.txt) | `specs.md`, `changes.md`, `test_suite.md`, `git diff` | `review_report.md` **only** | no — read-only |
+| **Reviewer** | [.pipeline/prompts/reviewer_prompt.txt](.pipeline/prompts/reviewer_prompt.txt) | `specs.md`, `changes.md`, `test_suite.md`, `diff.patch` | `review_report.md` **only** | no — read-only |
 
 Every stage in `status.json` carries a lifecycle you can watch live:
 
@@ -453,7 +453,7 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 | `events.jsonl` | Append-only, newline-delimited event log (every stage transition and agent output line) |
 | `logs/<stage>.log` | Human-readable verbose transcript per stage |
 | `specs.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md` | The four stages' artifacts |
-| `diff.patch` | Working-tree diff snapshotted just before the Reviewer runs |
+| `diff.patch` | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs |
 | `test_history.json` | Pass/fail counts per cycle, used for regression detection |
 | `followups/<stage>.txt` | Queued human notes awaiting injection |
 | `.lock` | Mutex — contains the owning process's PID |
@@ -493,7 +493,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 - **One run per repo at a time.** By design — see [Multiple repos](#multiple-repos-on-one-machine). True cross-repo or cross-run parallelism would need a run registry and a hub server; deliberately out of scope to keep this a zero-infrastructure, drop-in skill.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.
-- **The diff view shows the whole working tree**, not a scoped "just this run's changes" diff — if you have unrelated uncommitted edits when a non-sandboxed run finishes, they'll appear in the Reviewer's diff too.
+- **The diff is scoped to the commit the run started from** (committed + uncommitted changes since then). Any edits you had already made *before* the run started are part of that baseline and won't appear in the Reviewer's diff; conversely, if you had uncommitted edits at run start on a non-sandboxed run, they're included.
 - **No built-in cost/rate limiting** beyond cycle counts — a misbehaving prompt loop still costs real agent-CLI tokens per cycle before a guardrail trips.
 
 ## Future improvements
@@ -502,7 +502,6 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 - Pluggable checker parsers for more test runners (Go, Rust, JVM ecosystems).
 - Structured (not just best-effort regex) verdict and cost extraction for the Cursor/Codex/Gemini adapters, matching what Claude Code's `stream-json` already provides.
 - Optional PR-creation step after an `APPROVED` verdict.
-- A "diff scoped to this run" view (compare against the commit the run started from, not the live working tree).
 
 ## Troubleshooting
 
