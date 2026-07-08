@@ -55,6 +55,7 @@ Override: `--mode chat` or `--mode cli`. Force a CLI runner: `--runner claude` (
    - If `handoff.model` is set, switch to that model in the IDE before working the stage.
    - Complete that pipeline stage **in this chat session** (write the required `artifact`, follow the stage prompt).
    - For **Reviewer**: read-only audit — only write `.pipeline/review_report.md`.
+   - Update `.pipeline/stage-handoff.json` to add the `"actualModel": "model name"` field (e.g. `"actualModel": "Gemini 3.5 Flash"`) to report the model you used.
    - Run: `bash .pipeline/orchestrate.sh --continue`
    - Repeat until the pipeline finishes or halts.
 7. **CLI mode**: wait for the orchestrator to finish (no handoff loop).

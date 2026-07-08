@@ -120,6 +120,7 @@ export function newStatus(task) {
       endedAt: null,
       artifact: null,
       detail: null,
+      model: null,
       checks: null, // { passedCount, failedCount } from last checker run
     })),
   };

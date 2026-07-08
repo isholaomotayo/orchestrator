@@ -8,14 +8,14 @@ test('resolveModelProfile auto picks per-runner defaults', () => {
   const res = resolveModelProfile({ config, runner: 'claude', profile: 'auto' });
   assert.equal(res.selection, 'auto');
   assert.equal(res.runner, 'claude');
-  assert.equal(res.stages.planner, 'opus');
-  assert.equal(res.stages.coder, 'sonnet');
+  assert.equal(res.stages.planner, 'opus-4.8');
+  assert.equal(res.stages.coder, 'sonnet-5');
 });
 
 test('resolveModelProfile normalizes auto/undefined runner to host', () => {
   const res = resolveModelProfile({ config, runner: 'auto', profile: 'auto' });
   assert.equal(res.runner, 'host');
-  assert.equal(res.stages.planner, 'opus-4');
+  assert.equal(res.stages.planner, 'opus-4.8');
 });
 
 test('resolveModelProfile manual requires all four stages', () => {

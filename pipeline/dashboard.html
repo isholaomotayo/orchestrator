@@ -534,6 +534,8 @@ function runningStageName() {
 }
 
 function modelForAgent(name) {
+  const st = stageOf(name);
+  if (st?.model) return st.model;
   return state?.status?.models?.stages?.[name] || null;
 }
 
@@ -566,8 +568,19 @@ function renderRuntimeStrip() {
   }
   strip.classList.add('visible');
   runnerEl.textContent = formatRunner(s.runner);
-  const model = currentRuntimeModel();
-  modelEl.textContent = model || 'default';
+  
+  const running = runningStageName();
+  const active = activeAgent();
+  const currentStageName = running || active;
+  const st = stageOf(currentStageName);
+  
+  if (s.runner === 'host' && st?.status !== 'passed' && st?.status !== 'failed' && !st?.model) {
+    const suggestedModel = state?.status?.models?.stages?.[currentStageName];
+    modelEl.innerHTML = `determined by chat ${suggestedModel ? `<span style="opacity: 0.7; font-weight: normal;">(suggested: ${esc(suggestedModel)})</span>` : ''}`;
+  } else {
+    const model = modelForAgent(currentStageName);
+    modelEl.textContent = model || 'default';
+  }
 }
 
 function agentIco(name) {
@@ -695,10 +708,11 @@ function renderHeader() {
   const st = stageOf(name) || { status: 'pending' };
   const stageModel = modelForAgent(name);
   const runner = state?.status?.runner;
+  const isPendingOrRunningInHost = runner === 'host' && st.status !== 'passed' && st.status !== 'failed' && !st.model;
   const runtimeLine = runner
-    ? `<div class="runtime-line"><span class="lbl">Agent</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${esc(stageModel)}</strong>` : ''}</div>`
+    ? `<div class="runtime-line"><span class="lbl">Agent</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${isPendingOrRunningInHost ? `determined by chat <span style="opacity: 0.7; font-weight: normal;">(suggested: ${esc(stageModel)})</span>` : esc(stageModel)}</strong>` : ''}</div>`
     : '';
-  const modelBadge = stageModel ? `<span class="model-badge">${esc(stageModel)}</span>` : '';
+  const modelBadge = stageModel ? `<span class="model-badge">${isPendingOrRunningInHost ? 'chat window' : esc(stageModel)}</span>` : '';
   document.getElementById('agent-header').innerHTML = `
     ${agentIco(name)}
     <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}</div>

@@ -4,34 +4,34 @@ import { STAGES } from './state.mjs';
 export const DEFAULT_MODEL_PROFILES = {
   auto: {
     host: {
-      planner: 'opus-4',
-      coder: 'sonnet-4',
-      tester: 'sonnet-4',
-      reviewer: 'sonnet-4',
+      planner: 'opus-4.8',
+      coder: 'sonnet-5',
+      tester: 'sonnet-5',
+      reviewer: 'sonnet-5',
     },
     claude: {
-      planner: 'opus',
-      coder: 'sonnet',
-      tester: 'sonnet',
-      reviewer: 'sonnet',
+      planner: 'opus-4.8',
+      coder: 'sonnet-5',
+      tester: 'sonnet-5',
+      reviewer: 'sonnet-5',
     },
     cursor: {
-      planner: 'opus-4',
-      coder: 'sonnet-4',
-      tester: 'sonnet-4',
-      reviewer: 'sonnet-4',
+      planner: 'opus-4.8',
+      coder: 'sonnet-5',
+      tester: 'sonnet-5',
+      reviewer: 'sonnet-5',
     },
     codex: {
-      planner: 'o3',
+      planner: 'gpt-5',
       coder: 'gpt-5',
       tester: 'gpt-5',
       reviewer: 'gpt-5',
     },
     gemini: {
-      planner: 'gemini-2.5-pro',
-      coder: 'gemini-2.5-flash',
-      tester: 'gemini-2.5-flash',
-      reviewer: 'gemini-2.5-flash',
+      planner: 'gemini-3.1-pro',
+      coder: 'gemini-3.5-flash',
+      tester: 'gemini-3.5-flash',
+      reviewer: 'gemini-3.5-flash',
     },
   },
 };
@@ -105,7 +105,7 @@ export function modelForStage(models, stage) {
 }
 
 export function modelNote(model) {
-  return `Switch to ${model} before completing this stage.`;
+  return `Switch to ${model} (or use your active chat model) before completing this stage.`;
 }
 
 export function mergeModelProfiles(config) {

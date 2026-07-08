@@ -50,7 +50,7 @@ Each pipeline stage (Planner, Coder, Tester, Reviewer) can use a different model
 | `--model-profile auto` (default) | Uses `modelProfiles.auto` from `.pipeline/config.json` — high-tier for Planner, mid-tier for Coder/Tester/Reviewer |
 | `--model-profile manual` | Requires `--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'` |
 
-**Chat mode:** resolved models are written to `stage-handoff.json` (`model`, `modelNote`). Switch IDE model before each stage.
+**Chat mode:** resolved models are written to `stage-handoff.json` (`model`, `modelNote`). Switch IDE model before each stage (or use your active model, updating `"actualModel"` in `stage-handoff.json` before running `--continue`).
 
 **CLI mode:** `--model` is passed to `claude`, `cursor-agent`, `codex`, and `gemini` subprocesses.
 
@@ -60,10 +60,10 @@ Default auto profiles (override in `.pipeline/config.json`):
 
 | Runner | Planner | Coder / Tester / Reviewer |
 |--------|---------|---------------------------|
-| host / cursor | opus-4 | sonnet-4 |
-| claude | opus | sonnet |
-| codex | o3 | gpt-5 |
-| gemini | gemini-2.5-pro | gemini-2.5-flash |
+| host / cursor | opus-4.8 | sonnet-5 |
+| claude | opus-4.8 | sonnet-5 |
+| codex | gpt-5 | gpt-5 |
+| gemini | gemini-3.1-pro | gemini-3.5-flash |
 
 ## Halt reasons
 

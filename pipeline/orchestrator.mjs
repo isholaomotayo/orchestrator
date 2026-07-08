@@ -332,6 +332,10 @@ function requestChatHandoff(stageName, chatResume) {
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
   console.log('  bash .pipeline/orchestrate.sh --continue');
+  const stageModel = modelForStage(models, stageName);
+  if (stageModel) {
+    console.log(`[Orchestrator] Suggested model: ${stageModel} (Note: actual model is determined by your active chat model)`);
+  }
   console.log('[Orchestrator] Stage brief: .pipeline/stage-handoff.json');
   console.log(`[Orchestrator] Live dashboard: ${status.dashboardUrl}\n`);
   haltAndExit(0);
@@ -364,6 +368,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const stageModel = modelForStage(models, name);
+  setStage(name, { model: stageModel });
   const res = await runAgent({
     runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
     model: stageModel,
@@ -683,10 +688,25 @@ async function runReviewFixPass(pass) {
 async function chatContinueRun() {
   const resume = status.chatResume;
   status.chatResume = null;
+
+  let actualModel = null;
+  try {
+    const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+    if (handoff.actualModel) actualModel = handoff.actualModel;
+  } catch {}
+
   try { fs.unlinkSync(paths.stageHandoff); } catch {}
 
   const step = resume.step;
   const context = resume.context || {};
+
+  const completedStage = step === 'after_planner' ? 'planner' :
+                        step === 'after_coder' ? 'coder' :
+                        step === 'after_tester' ? 'tester' :
+                        step === 'after_reviewer' ? 'reviewer' : null;
+  if (completedStage && actualModel) {
+    setStage(completedStage, { model: actualModel });
+  }
 
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);

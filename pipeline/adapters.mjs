@@ -121,7 +121,7 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   if (model) {
     handoff.model = model;
     handoff.modelSelection = modelSelection || 'auto';
-    handoff.modelNote = `Switch to ${model} before completing this stage.`;
+    handoff.modelNote = `Switch to ${model} (or use your active chat model) before completing this stage.`;
   }
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact });
@@ -184,7 +184,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
-    const modelLabel = model ? ` · model ${model}` : '';
+    const modelLabel = model ? ` · suggested model ${model} (actual model determined by chat)` : '';
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host (IDE chat)${modelLabel} — ${new Date().toISOString()} =====\n`);
     appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined });
     writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection });
