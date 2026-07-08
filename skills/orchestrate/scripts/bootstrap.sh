@@ -51,6 +51,13 @@ for agentFile in AGENTS.md CLAUDE.md; do
   fi
 done
 
+if [ -f "$TMP/.cursor/commands/orchestrate.md" ]; then
+  mkdir -p "$REPO_ROOT/.cursor/commands"
+  if [ ! -f "$REPO_ROOT/.cursor/commands/orchestrate.md" ]; then
+    cp "$TMP/.cursor/commands/orchestrate.md" "$REPO_ROOT/.cursor/commands/"
+  fi
+fi
+
 if [ -f "$REPO_ROOT/.pipeline/orchestrate.sh" ]; then
   chmod +x "$REPO_ROOT/.pipeline/orchestrate.sh"
 elif [ -f "$REPO_ROOT/.pipeline/spawn.sh" ]; then

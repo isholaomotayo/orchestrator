@@ -1,11 +1,12 @@
-# Agent Pipeline
+# /orchestrate
 
-A portable, zero-dependency multi-agent pipeline that turns a vague feature request into reviewed, tested software — **Planner → Coder (self-healing) → Tester → Reviewer** — with a live local dashboard for watching, steering, and managing every run.
+A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → Coder (fix loop) → Tester → Reviewer** — with a live local dashboard at http://localhost:4600.
 
-It works with whichever coding-agent CLI you already have installed (Claude Code, Cursor, Codex, or Gemini/Antigravity) and lives entirely inside your repository as plain files: no server to deploy, no database, no npm install.
+Install the skill with `npx skills add`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor (or run `bash .pipeline/orchestrate.sh` from any agent). The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
 
 ```bash
-bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
+# In your existing project (after install + bootstrap — see Quickstart)
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 # → http://localhost:4600
 ```
 
@@ -18,6 +19,7 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claud
 - [Why this exists](#why-this-exists)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
+- [What gets added to your repo](#what-gets-added-to-your-repo)
 - [Dashboard walkthrough](#dashboard-walkthrough)
 - [Installing an agent CLI](#installing-an-agent-cli)
 - [The pipeline stages](#the-pipeline-stages)
@@ -31,12 +33,11 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claud
 - [Run history and state files](#run-history-and-state-files)
 - [Multiple repos on one machine](#multiple-repos-on-one-machine)
 - [Editor / agent discovery](#editor--agent-discovery)
-- [Install in any project (`/orchestrate`)](#install-in-any-project-orchestrate)
 - [Where this excels](#where-this-excels)
 - [Limitations and known trade-offs](#limitations-and-known-trade-offs)
 - [Future improvements](#future-improvements)
 - [Troubleshooting](#troubleshooting)
-- [Demo](#demo)
+- [Developing this skill (contributors)](#developing-this-skill-contributors)
 
 ---
 
@@ -96,23 +97,82 @@ Everything the agents produce is a plain file under `.pipeline/`. The orchestrat
 
 ## Quickstart
 
-Requirements: **Node.js ≥ 18** (only `node:` built-ins are used — nothing to `npm install`) and at least one agent CLI on your `PATH` (see [below](#installing-an-agent-cli)).
+Use this in a project you already have — not as a standalone app you clone and live in.
+
+### Requirements
+
+- **Node.js ≥ 18** — the pipeline orchestrator uses only `node:` built-ins (no runtime `npm install` for `.pipeline/` or `pipeline/`)
+- **At least one agent CLI** on your `PATH` — see [Installing an agent CLI](#installing-an-agent-cli)
+- **A git repository** — recommended; required for `--sandbox` worktree isolation
+
+### 1. Install the skill (once per project or globally)
+
+From the root of **your existing project**:
 
 ```bash
-git clone <this-repo>
-cd <this-repo>
+# Project scope (committed with your repo via .agents/skills/)
+npx skills add isholaomotayo/orchestrator --skill orchestrate -a cursor -y --copy
 
-# Start a run — the dashboard boots automatically on first use
-bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
+# Or global scope (all projects on this machine)
+npx skills add isholaomotayo/orchestrator --skill orchestrate -g -a cursor -y --copy
 ```
 
-Open **http://localhost:4600** to watch it live. Or run the dashboard on its own:
+Use `--copy` on Cursor if symlinked skills are not discovered. Other agents: swap `-a cursor` for `claude-code`, `codex`, etc. Browse at [skills.sh](https://skills.sh).
+
+### 2. Bootstrap the pipeline scaffold (once per project)
+
+`npx skills add` installs **agent instructions only**. Copy the runtime files into your repo:
 
 ```bash
-npm run ui   # equivalent to: node pipeline/ui-server.mjs
+bash .agents/skills/orchestrate/scripts/bootstrap.sh
 ```
 
-From the dashboard's **New run** button you can start a pipeline entirely from the browser — no terminal needed after the first launch.
+This adds `.pipeline/` and `pipeline/` to your project and merges `orchestrate` scripts into `package.json` if present. It also drops in `AGENTS.md` / `CLAUDE.md` when your repo does not already have them.
+
+### 3. Run your first pipeline
+
+**From your agent (recommended):**
+
+```
+/orchestrate Add rate limiting to the auth API
+```
+
+**From the terminal:**
+
+```bash
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
+# optional: --runner claude --sandbox
+```
+
+The dashboard starts automatically on first run → **http://localhost:4600**
+
+Or open the UI without starting a run:
+
+```bash
+node pipeline/ui-server.mjs
+```
+
+### 4. Read the verdict
+
+When the run finishes, check `.pipeline/review_report.md` for the audit verdict (`APPROVED`, `REQUEST_CHANGES`, `BLOCK`). If it halts, inspect `.pipeline/checker_report.md`.
+
+---
+
+## What gets added to your repo
+
+After install + bootstrap, your **existing** project gains:
+
+| Path | Purpose |
+|------|---------|
+| `.agents/skills/orchestrate/` | Skill instructions + bootstrap script (from `npx skills add`) |
+| `.pipeline/` | Config, prompts, entrypoint (`orchestrate.sh`), run artifacts (gitignored at runtime) |
+| `pipeline/` | Orchestrator, checker, dashboard server (committed scaffold) |
+| `AGENTS.md` / `CLAUDE.md` | Agent rules (bootstrapped if missing) |
+| `.cursor/commands/orchestrate.md` | Cursor `/orchestrate` command (bootstrapped if missing) |
+
+Your application code, dependencies, and structure stay as they are. The pipeline runs **your** `test` / `lint` / `typecheck` commands from `.pipeline/config.json` against **your** codebase.
+
+To update the skill later: `npx skills update orchestrate`. To refresh the scaffold from upstream, re-run the bootstrap script (backs up nothing — only run on a fresh install or when you intend to overwrite `.pipeline/` and `pipeline/`).
 
 ## Dashboard walkthrough
 
@@ -120,30 +180,30 @@ The dashboard at **http://localhost:4600** is the control surface for every run.
 
 ### Step 1 — Open the workspace
 
-After cloning, start the UI alone (optional) or let `orchestrate.sh` boot it on first run:
+From your project root, start the UI (optional) or let `orchestrate.sh` boot it on first run:
 
 ```bash
-npm run ui
+node pipeline/ui-server.mjs
 # or
 bash .pipeline/orchestrate.sh "your task"
 ```
 
-On a fresh repo you see the idle workspace with agent sidebar, progress stepper, and **New run**:
+On a fresh install you see the idle workspace with agent sidebar, progress stepper, and **New run**:
 
 ![Idle dashboard before the first run](docs/screenshots/01-dashboard-idle.png)
 
 ### Step 2 — Start a run
 
-**Option A — Cursor / agent slash command**
+**Option A — Agent slash command**
 
-```bash
-/orchestrate Fix the failing multiply test in demo/math.js
+```
+/orchestrate Add rate limiting to the auth API
 ```
 
 **Option B — CLI**
 
 ```bash
-bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
 ```
 
 **Option C — Dashboard modal** (task, runner, cycle limits, sandbox):
@@ -168,22 +228,7 @@ If the Coder hits `MAX_CYCLES`, the dashboard halts with an **Extend & continue*
 
 ![Halted run with extend banner after MAX_CYCLES](docs/screenshots/04-dashboard-halted.png)
 
-### Preview the UI locally (demo fixtures)
-
-Regenerate or preview screenshots without running a real agent:
-
-```bash
-# Load a completed demo run into .pipeline/
-node scripts/seed-demo-ui.mjs completed
-npm run ui
-
-# Regenerate README screenshots (requires playwright — dev dependency)
-pnpm run screenshots
-```
-
-Fixture data lives in [`docs/screenshots/fixtures/`](docs/screenshots/fixtures/).
-
-## Installing an agent CLI
+---
 
 The pipeline auto-detects whichever of these is on your `PATH` (or force one with `--runner`):
 
@@ -378,39 +423,19 @@ Concurrent runs **within** the same repo are intentionally blocked by the mutex 
 
 ## Editor / agent discovery
 
-The `/orchestrate` skill declares itself to every supported CLI via committed rule files:
+After bootstrap, agents in your project are steered toward `/orchestrate` via:
 
-- [.cursor/commands/orchestrate.md](.cursor/commands/orchestrate.md) — Cursor slash command `/orchestrate`
-- [CLAUDE.md](CLAUDE.md) — Claude Code (official project memory)
-- [.cursorrules](.cursorrules) — Cursor rules
-- [AGENTS.md](AGENTS.md) — Codex, Antigravity (and any other `AGENTS.md`-aware tool)
-- [GEMINI.md](GEMINI.md) — Gemini CLI
-- [skills/orchestrate/SKILL.md](skills/orchestrate/SKILL.md) — open skills ecosystem (`npx skills add`)
-- [.pipeline/skill.json](.pipeline/skill.json) — workspace manifest
+| File | Agent |
+|------|-------|
+| `.agents/skills/orchestrate/SKILL.md` | Installed skill (`npx skills add`) — slash command `/orchestrate` |
+| `.cursor/commands/orchestrate.md` | Cursor slash command (bootstrapped if missing) |
+| `CLAUDE.md` | Claude Code (copied if missing) |
+| `AGENTS.md` | Codex, Antigravity, other `AGENTS.md`-aware tools (copied if missing) |
+| `.pipeline/skill.json` | Workspace manifest — command is `bash .pipeline/orchestrate.sh` |
 
-All of these route to `bash .pipeline/orchestrate.sh "<task>"` and encode isolation guardrails (treat `.pipeline/` and `.pipeline_sandbox/` as read-only, respect `.lock`).
+All paths route to the same entrypoint and enforce isolation: treat `.pipeline/` and `.pipeline_sandbox/` as read-only unless you are the orchestrator; respect `.pipeline/.lock`.
 
-## Install in any project (`/orchestrate`)
-
-Add the skill to any repository, bootstrap the pipeline scaffold, then invoke `/orchestrate` from your agent:
-
-```bash
-# 1. Install agent instructions (Cursor example)
-npx skills add isholaomotayo/orchestrator --skill orchestrate -a cursor -y --copy
-
-# 2. Bootstrap .pipeline/ + pipeline/ into the current repo (once)
-bash .agents/skills/orchestrate/scripts/bootstrap.sh
-
-# 3. In Cursor chat
-/orchestrate Add rate limiting to the auth API
-```
-
-Or run directly:
-
-```bash
-bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
-pnpm orchestrate "Add rate limiting to the auth API"
-```
+---
 
 ## Where this excels
 
@@ -439,6 +464,7 @@ pnpm orchestrate "Add rate limiting to the auth API"
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `.pipeline/orchestrate.sh` not found | Skill installed but scaffold not bootstrapped | `bash .agents/skills/orchestrate/scripts/bootstrap.sh` |
 | `Pipeline execution is locked by a running orchestrator (pid N)` | A run is genuinely active | Wait, watch the dashboard, or `Stop run` from the UI |
 | Dashboard shows **stale — process gone** | The orchestrator process died without exiting cleanly | Start a new run — the halted state is preserved in run history |
 | `No agent CLI found on PATH` | None of `claude`/`cursor-agent`/`codex`/`gemini` are installed | Install one (see [above](#installing-an-agent-cli)) or set `runner` in `config.json` to a `customRunners` entry |
@@ -446,12 +472,37 @@ pnpm orchestrate "Add rate limiting to the auth API"
 | `Cannot resume: sandbox worktree ... no longer exists` | You manually removed `.pipeline_sandbox/` between runs | Start a fresh run instead of extending |
 | Two repos fighting over port 4600 | Rare — should auto-resolve | `orchestrate.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once |
 
-## Demo
+## Developing this skill (contributors)
 
-[demo/math.js](demo/math.js) ships with an intentional bug (`multiply` adds instead of multiplying):
+This GitHub repository is the **source** for the skill published at `isholaomotayo/orchestrator`. You only clone it if you are developing the skill itself — not to use it day to day.
+
+```bash
+git clone https://github.com/isholaomotayo/orchestrator.git
+cd orchestrator
+pnpm install   # dev deps only (playwright for screenshot regeneration)
+```
+
+### Try the demo in this repo
+
+[demo/math.js](demo/math.js) has an intentional bug (`multiply` adds instead of multiplying):
 
 ```bash
 bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
 ```
 
-Watch the full Planner → Coder (fix loop) → Tester → Reviewer flow reach a verdict on the dashboard.
+### Preview the dashboard without a live agent
+
+```bash
+node scripts/seed-demo-ui.mjs completed
+node pipeline/ui-server.mjs
+# → http://localhost:4600
+```
+
+### Regenerate README screenshots
+
+```bash
+pnpm exec playwright install chromium   # first time only
+pnpm run screenshots
+```
+
+Fixture data: [`docs/screenshots/fixtures/`](docs/screenshots/fixtures/).
