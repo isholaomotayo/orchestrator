@@ -92,13 +92,17 @@ function readState(runId) {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
   const { byStage, totalCost } = readEventsByStage(dir);
+  const canExtend = live && !orchestratorAlive() && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
   return {
     status, artifacts, events: byStage,
     followups: live ? readFollowups() : {},
     live, stale, runId: runId || null,
     totals: { costUsd: totalCost },
     canCancel: live && orchestratorAlive(),
+    canExtend,
     runners: [...RUNNERS, ...Object.keys(config.customRunners || {})],
+    // Config-driven defaults — the UI should never hardcode a cycle count.
+    defaults: { maxCoderCycles: config.maxCoderCycles, maxPostTesterCycles: config.maxPostTesterCycles, extendCycles: config.maxCoderCycles },
     now: new Date().toISOString(),
   };
 }
@@ -113,13 +117,22 @@ function listRuns() {
   });
 }
 
-function startRun({ task, runner, sandbox }) {
+function positiveInt(v) {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles }) {
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
   if (runner && !RUNNERS.includes(runner) && !config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
   if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
   const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--task', task.trim()];
   if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
   if (sandbox) nodeArgs.push('--sandbox');
+  const mc = positiveInt(maxCycles);
+  if (mc) nodeArgs.push('--max-cycles', String(mc));
+  const mptc = positiveInt(maxPostTesterCycles);
+  if (mptc) nodeArgs.push('--max-post-tester-cycles', String(mptc));
   const child = spawn(process.execPath, nodeArgs, {
     cwd: repoRoot,
     detached: true,
@@ -128,6 +141,32 @@ function startRun({ task, runner, sandbox }) {
   });
   child.unref();
   return { ok: true, pid: child.pid };
+}
+
+// Continue a run that halted with MAX_CYCLES for `extend` more cycles of
+// whichever loop (initial coder fix loop, or post-tester fix loop) ran out —
+// repeatable as many times as needed.
+function extendRun({ extend, runner }) {
+  const n = positiveInt(extend);
+  if (!n) return { error: 'extend must be a positive integer', code: 400 };
+  if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
+  let status;
+  try { status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8')); } catch {
+    return { error: 'no run to extend', code: 409 };
+  }
+  if (status.overall !== 'halted' || status.haltReason !== 'MAX_CYCLES') {
+    return { error: `cannot extend: last halt reason was "${status.haltReason || status.overall}", not MAX_CYCLES`, code: 409 };
+  }
+  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume', '--extend', String(n)];
+  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
+  const child = spawn(process.execPath, nodeArgs, {
+    cwd: repoRoot,
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
+  });
+  child.unref();
+  return { ok: true, pid: child.pid, extend: n };
 }
 
 function cancelRun() {
@@ -196,6 +235,12 @@ const server = http.createServer((req, res) => {
   } else if (req.method === 'POST' && url.pathname === '/api/cancel') {
     const result = cancelRun();
     json(res, result, result.code || 200);
+  } else if (req.method === 'POST' && url.pathname === '/api/extend') {
+    readBody(req, (body) => {
+      if (!body) return json(res, { error: 'invalid JSON' }, 400);
+      const result = extendRun(body);
+      json(res, result, result.code || 200);
+    });
   } else if (url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html')));

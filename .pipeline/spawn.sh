@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Portable entrypoint for the unified agent pipeline.
-# Usage: bash .pipeline/spawn.sh "task description" [--runner claude|cursor|codex|gemini] [--sandbox] [--no-ui]
+#
+# Start a new run:
+#   bash .pipeline/spawn.sh "task description" [--runner claude|cursor|codex|gemini] \
+#     [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+#
+# Extend a run that halted with MAX_CYCLES (continues the same fix loop,
+# repeatable as many times as needed):
+#   bash .pipeline/spawn.sh --resume --extend <n> [--runner ...] [--no-ui]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,12 +15,21 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PIPELINE_DIR="$SCRIPT_DIR"
 BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
-TASK="${1:-}"
-if [ -z "$TASK" ] || [[ "$TASK" == --* ]]; then
-  echo "Usage: bash .pipeline/spawn.sh \"task description\" [--runner claude|cursor|codex|gemini] [--sandbox] [--no-ui]" >&2
-  exit 2
+USAGE='Usage: bash .pipeline/spawn.sh "task description" [--runner claude|cursor|codex|gemini] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+   or: bash .pipeline/spawn.sh --resume --extend <n> [--runner ...] [--no-ui]'
+
+RESUME=0
+TASK=""
+if [ "${1:-}" = "--resume" ]; then
+  RESUME=1
+else
+  TASK="${1:-}"
+  if [ -z "$TASK" ] || [[ "$TASK" == --* ]]; then
+    echo "$USAGE" >&2
+    exit 2
+  fi
+  shift
 fi
-shift
 
 NO_UI=0
 ORCH_ARGS=()
@@ -70,7 +86,11 @@ fi
 
 cd "$REPO_ROOT"
 set +e
-PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+if [ "$RESUME" -eq 1 ]; then
+  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
+else
+  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+fi
 EXIT_CODE=$?
 set -e
 

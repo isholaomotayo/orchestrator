@@ -90,7 +90,13 @@
   .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
   .badge.pending { background: #f0efec; color: var(--muted); }
 
-  #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #fecaca; }
+  #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #fecaca; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #halt-banner .msg { flex: 1; min-width: 220px; }
+  #halt-banner .extend { display: flex; align-items: center; gap: 6px; }
+  #halt-banner input[type=number] { width: 54px; border: 1px solid #fca5a5; border-radius: 6px; padding: 3px 6px; font: inherit; }
+  #halt-banner button { font: 600 11.5px inherit; border: none; background: #1c1917; color: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+  #halt-banner button:disabled { opacity: .5; cursor: default; }
+  .ext-history { font-size: 10.5px; color: var(--faint); margin: 2px 0 0 43px; }
   #archive-banner { display: none; background: #eff6ff; color: #1e40af; font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #dbeafe; }
 
   .feed { flex: 1; overflow-y: auto; padding: 18px 22px 26px; }
@@ -205,6 +211,16 @@
     <textarea id="nr-task" placeholder="Describe the feature, fix, or refactor…"></textarea>
     <label>Runner</label>
     <select id="nr-runner"></select>
+    <div style="display:flex;gap:10px">
+      <div style="flex:1">
+        <label>Coder fix cycles</label>
+        <input type="number" min="1" id="nr-max-cycles" style="width:100%;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font:inherit">
+      </div>
+      <div style="flex:1">
+        <label>Post-tester fix cycles</label>
+        <input type="number" min="1" id="nr-max-post-cycles" style="width:100%;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font:inherit">
+      </div>
+    </div>
     <div class="check"><input type="checkbox" id="nr-sandbox"> <label for="nr-sandbox" style="all:unset;cursor:pointer">Run in isolated git worktree (sandbox)</label></div>
     <div class="err" id="nr-err"></div>
     <div class="actions">
@@ -345,9 +361,16 @@ function renderSidebar() {
     if (name === 'coder' && st.cycle > 0) {
       const mini = document.createElement('div');
       mini.className = 'cycle-mini';
-      mini.textContent = `fix cycle ${st.cycle}/${st.maxCycles || 5}` +
+      mini.textContent = `fix cycle ${st.cycle}/${st.maxCycles || '?'}` +
         (st.checks ? ` · ${st.checks.passedCount ?? '?'}✓${st.checks.failedCount ? ' ' + st.checks.failedCount + '✗' : ''}` : '');
       list.appendChild(mini);
+      const exts = state?.status?.extensions;
+      if (exts?.length) {
+        const line = document.createElement('div');
+        line.className = 'ext-history';
+        line.textContent = `extended ${exts.length}× (+${exts.reduce((a, e) => a + e.addedCycles, 0)} cycles total)`;
+        list.appendChild(line);
+      }
     }
   }
   const stepper = document.getElementById('stepper');
@@ -411,8 +434,18 @@ function renderHeader() {
   const s = state?.status;
   if (s?.haltReason) {
     const failing = s.stages.find((x) => x.status === 'failed' || x.status === 'blocked');
-    banner.style.display = 'block';
-    banner.textContent = `${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
+    banner.style.display = 'flex';
+    const msg = `${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
+    if (state?.canExtend) {
+      const phase = s.haltedPhase;
+      const dflt = (phase === 'postTester' ? state?.defaults?.maxPostTesterCycles : state?.defaults?.maxCoderCycles) || 3;
+      banner.innerHTML = `<span class="msg">${esc(msg)}</span>
+        <span class="extend">Extend by <input type="number" min="1" id="extend-n" value="${dflt}"> cycles
+        <button id="extend-btn">Extend & continue</button></span>`;
+      document.getElementById('extend-btn').onclick = sendExtend;
+    } else {
+      banner.textContent = msg;
+    }
   } else banner.style.display = 'none';
   const archived = document.getElementById('archive-banner');
   archived.style.display = state?.live === false ? 'block' : 'none';
@@ -546,6 +579,8 @@ document.getElementById('newrun-btn').onclick = () => {
   const sel = document.getElementById('nr-runner');
   sel.innerHTML = (state?.runners || ['auto', 'claude', 'cursor', 'codex', 'gemini']).map((r) => `<option value="${r}">${r}</option>`).join('');
   document.getElementById('nr-err').textContent = '';
+  document.getElementById('nr-max-cycles').placeholder = String(state?.defaults?.maxCoderCycles ?? 5);
+  document.getElementById('nr-max-post-cycles').placeholder = String(state?.defaults?.maxPostTesterCycles ?? 2);
   overlay.classList.add('open');
   document.getElementById('nr-task').focus();
 };
@@ -556,6 +591,8 @@ document.getElementById('nr-start').onclick = async () => {
     task: document.getElementById('nr-task').value,
     runner: document.getElementById('nr-runner').value,
     sandbox: document.getElementById('nr-sandbox').checked,
+    maxCycles: document.getElementById('nr-max-cycles').value || undefined,
+    maxPostTesterCycles: document.getElementById('nr-max-post-cycles').value || undefined,
   };
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -563,6 +600,8 @@ document.getElementById('nr-start').onclick = async () => {
     if (out.error) { document.getElementById('nr-err').textContent = out.error; return; }
     overlay.classList.remove('open');
     document.getElementById('nr-task').value = '';
+    document.getElementById('nr-max-cycles').value = '';
+    document.getElementById('nr-max-post-cycles').value = '';
     currentRun = '';
     document.getElementById('run-select').value = '';
     selected = null;
@@ -574,6 +613,20 @@ document.getElementById('cancel-btn').onclick = async () => {
   if (!confirm('Stop the active pipeline run?')) return;
   try { await fetch('/api/cancel', { method: 'POST' }); setTimeout(fetchState, 400); } catch {}
 };
+
+async function sendExtend() {
+  const input = document.getElementById('extend-n');
+  const n = parseInt(input.value, 10);
+  if (!n || n < 1) return;
+  const btn = document.getElementById('extend-btn');
+  btn.disabled = true; btn.textContent = 'Extending…';
+  try {
+    const r = await fetch('/api/extend', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ extend: n }) });
+    const out = await r.json();
+    if (out.error) { alert(out.error); btn.disabled = false; btn.textContent = 'Extend & continue'; return; }
+    setTimeout(fetchState, 600);
+  } catch { btn.disabled = false; btn.textContent = 'Extend & continue'; }
+}
 
 function connectSSE() {
   const conn = document.getElementById('conn');
