@@ -227,3 +227,58 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     });
   });
 }
+
+export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 }) {
+  const bin = RUNNER_BINS[runner] || config?.customRunners?.[runner]?.command;
+  if (!bin) {
+    return Promise.reject(new Error(`Runner "${runner}" has no executable binary.`));
+  }
+  let args = [];
+  if (runner === 'claude' || runner === 'cursor' || runner === 'gemini') {
+    args = ['-p', prompt];
+    if (model) args.push('--model', model);
+  } else if (runner === 'codex') {
+    args = ['exec', '--full-auto', prompt];
+    if (model) args.push('--model', model);
+  } else {
+    const custom = config?.customRunners?.[runner];
+    if (custom) {
+      const sub = (s) => s
+        .replaceAll('{task}', prompt)
+        .replaceAll('{systemPrompt}', '')
+        .replaceAll('{readOnly}', 'true');
+      args = (custom.args || []).map(sub);
+    } else {
+      return Promise.reject(new Error(`Unsupported runner for runOneShot: ${runner}`));
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`runOneShot timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout.on('data', (c) => { stdout += c.toString(); });
+    child.stderr.on('data', (c) => { stderr += c.toString(); });
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve(stdout.trim());
+      } else {
+        reject(new Error(`Runner "${runner}" exited with code ${code}. Stderr: ${stderr.trim()}`));
+      }
+    });
+  });
+}
+

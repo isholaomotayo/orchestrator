@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths, loadConfig, pidAlive, readLock } from './state.mjs';
 import { DEFAULT_MODEL_PROFILES } from './models.mjs';
+import { routeMessage } from './router.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = process.cwd();
@@ -111,6 +112,7 @@ function readState(runId) {
     defaults: {
       maxCoderCycles: config.maxCoderCycles,
       maxPostTesterCycles: config.maxPostTesterCycles,
+      maxReviewCycles: config.maxReviewCycles,
       extendCycles: config.maxCoderCycles,
       modelProfiles: config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto,
     },
@@ -270,6 +272,25 @@ const server = http.createServer((req, res) => {
       fs.mkdirSync(dir, { recursive: true });
       fs.appendFileSync(path.join(dir, `${body.stage}.txt`), body.text.trim() + '\n');
       json(res, { ok: true, queued: body.stage });
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/orchestrate') {
+    readBody(req, async (body) => {
+      if (!body || typeof body.text !== 'string' || !body.text.trim()) {
+        return json(res, { error: 'expected { text }' }, 400);
+      }
+      let status = null;
+      try {
+        status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8'));
+      } catch (e) {}
+      try {
+        const result = await routeMessage({ text: body.text, status, config });
+        const dir = path.join(paths.dir, 'followups');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.appendFileSync(path.join(dir, `${result.stage}.txt`), body.text.trim() + '\n');
+        json(res, { ok: true, stage: result.stage, via: result.via, reason: result.reason });
+      } catch (err) {
+        json(res, { error: err.message || 'Internal routing error' }, 500);
+      }
     });
   } else if (req.method === 'POST' && url.pathname === '/api/run') {
     readBody(req, (body) => {

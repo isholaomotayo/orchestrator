@@ -2,6 +2,7 @@
   "runner": "auto",
   "maxCoderCycles": 5,
   "maxPostTesterCycles": 2,
+  "maxReviewCycles": 3,
   "uiPort": 4600,
   "checks": {
     "test": "npm test --silent",

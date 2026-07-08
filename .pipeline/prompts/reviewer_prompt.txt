@@ -11,7 +11,10 @@ INSTRUCTIONS:
    - `.pipeline/test_suite.md`
 3. Read `.pipeline/diff.patch` (the full base-to-HEAD diff for this run,
    including committed and uncommitted changes) to analyze actual code
-   mutations versus the planner's original specification.
+   mutations versus the planner's original specification. If the diff is
+   unavailable or reports no changes (e.g. no commit to compare against),
+   do NOT skip the review — audit the implementation directly from
+   `.pipeline/changes.md` and the source files it references.
 4. Review the implementation for:
    - **Security Audits**: SQLi, XSS, CSRF, insecure direct object references, or credential leakage.
    - **Scalability & Performance**: Algorithmic complexity, memory leakage, database transaction locking, or blocking synchronous execution.
@@ -33,4 +36,13 @@ INSTRUCTIONS:
 - [Evaluate if Coder stayed within parameters defined by Planner]
 
 ## 4. Final Recommendations / Action Items
-- [List critical items if changes requested, or praise optimization items]
+- [If the verdict is APPROVED, briefly note the strongest optimization items.]
+- [If the verdict is REQUEST_CHANGES or BLOCK, this section is consumed verbatim
+  by an automatic Coder + Tester fix pass, so it MUST be a concrete, numbered,
+  self-contained checklist. For EACH item give: (1) the exact file path and
+  symbol/function affected, (2) the precise defect, and (3) the concrete fix to
+  apply. Do not reference prior conversation — each item must be actionable on
+  its own. Example:
+    1. `src/AppFormat.swift` — `clock(_:)`: non-finite `seconds` (e.g. +Inf)
+       reaches `Int(clamped.rounded(.down))` and traps. Fix: guard with
+       `.isFinite` and clamp to 0 before the integer cast.]

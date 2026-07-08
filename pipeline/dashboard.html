@@ -281,7 +281,8 @@
       <div class="composer">
         <span class="queued" id="queued-pill" style="display:none"></span>
         <input id="followup-input" placeholder="Add a follow-up for the agent…">
-        <button id="followup-send" title="Queue follow-up"></button>
+        <button id="followup-send" title="Send to selected agent"></button>
+        <button id="orchestrate-send" title="Send to orchestrator (auto-route)"></button>
         <button id="followup-resume" title="Send & resume" style="display:none"></button>
       </div>
     </main>
@@ -350,6 +351,7 @@ const ICONS = {
   sun:      I('<circle cx="12" cy="12" r="4"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'),
   moon:     I('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
   monitor:  I('<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
+  shuffle:  I('<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>'),
 };
 
 const AGENTS = {
@@ -372,6 +374,7 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
 document.getElementById('app-ico').innerHTML = ICONS.app;
 document.getElementById('followup-send').innerHTML = ICONS.send;
+document.getElementById('orchestrate-send').innerHTML = ICONS.shuffle;
 document.getElementById('followup-resume').innerHTML = ICONS.play;
 document.getElementById('newrun-btn').innerHTML = ICONS.play + ' New run';
 document.getElementById('cancel-btn').innerHTML = ICONS.stop + ' Stop run';
@@ -574,6 +577,15 @@ function renderSidebar() {
         list.appendChild(line);
       }
     }
+    if (name === 'reviewer') {
+      const rp = state?.status?.reviewPass || 0;
+      if (rp > 0) {
+        const mini = document.createElement('div');
+        mini.className = 'cycle-mini';
+        mini.textContent = `fix pass ${rp}/${state?.status?.limits?.reviewMax || '?'}`;
+        list.appendChild(mini);
+      }
+    }
   }
   const stepper = document.getElementById('stepper');
   stepper.innerHTML = '';
@@ -687,7 +699,7 @@ function renderHeader() {
     const msg = `${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
     if (state?.canExtend) {
       const phase = s.haltedPhase;
-      const dflt = (phase === 'postTester' ? state?.defaults?.maxPostTesterCycles : state?.defaults?.maxCoderCycles) || 3;
+      const dflt = (phase === 'postTester' ? state?.defaults?.maxPostTesterCycles : phase === 'review' ? state?.defaults?.maxReviewCycles : state?.defaults?.maxCoderCycles) || 3;
       banner.innerHTML = `<span class="msg">${esc(msg)}</span>
         <span class="extend">Extend by <input type="number" min="1" id="extend-n" value="${dflt}"> cycles
         <button id="extend-btn">Extend & continue</button></span>`;
@@ -707,9 +719,10 @@ function renderHeader() {
   archived.textContent = `Viewing archived run ${state?.runId || ''} — read-only.`;
   const input = document.getElementById('followup-input');
   const send = document.getElementById('followup-send');
+  const orchestrateSend = document.getElementById('orchestrate-send');
   const done = s?.overall === 'done';
   const canResume = state?.canResume;
-  input.disabled = send.disabled = state?.live === false || done;
+  input.disabled = send.disabled = orchestrateSend.disabled = state?.live === false || done;
   if (state?.live === false) {
     input.placeholder = 'Archived run — follow-ups disabled';
   } else if (done) {
@@ -905,7 +918,40 @@ async function sendFollowupAndResume() {
   }
 }
 
+async function sendToOrchestrator() {
+  const input = document.getElementById('followup-input');
+  const text = input.value.trim();
+  if (!text || state?.live === false) return;
+  try {
+    const res = await fetch('/api/orchestrate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+    const out = await res.json();
+    if (out.ok && out.stage) {
+      selected = out.stage;
+      input.value = '';
+      updateFollowupButtons();
+      await fetchState();
+      const q = document.getElementById('queued-pill');
+      if (q) {
+        q.style.display = '';
+        q.textContent = `routed to ${cap(out.stage)} · ${out.via}`;
+        q.style.background = 'var(--purple-bg)';
+        q.style.color = 'var(--purple-text)';
+        q.style.borderColor = 'transparent';
+      }
+    } else {
+      alert(out.error || 'Failed to route message');
+    }
+  } catch (err) {
+    console.error(err);
+  }
+}
+
 document.getElementById('followup-send').onclick = sendFollowup;
+document.getElementById('orchestrate-send').onclick = sendToOrchestrator;
 document.getElementById('followup-resume').onclick = sendFollowupAndResume;
 document.getElementById('followup-input').addEventListener('input', updateFollowupButtons);
 document.getElementById('followup-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFollowup(); });

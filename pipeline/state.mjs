@@ -51,6 +51,7 @@ export function loadConfig(paths) {
     runner: 'auto',
     maxCoderCycles: 5,
     maxPostTesterCycles: 2,
+    maxReviewCycles: 3,
     uiPort: 4600,
     checks: {
       test: 'npm test --silent',
@@ -85,6 +86,7 @@ export function newStatus(task) {
     chatResume: null,   // { step, context } — set when handing off to IDE chat
     resumePoint: null,  // { step, context } — tracks last saved checkpoint for resuming
     verdict: null,      // APPROVED | REQUEST_CHANGES | BLOCK
+    reviewPass: 0,      // auto review-fix passes completed after a non-APPROVED verdict
     haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR
     stages: STAGES.map((name) => ({
       name,

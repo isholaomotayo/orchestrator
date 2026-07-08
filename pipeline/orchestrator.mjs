@@ -20,7 +20,7 @@ import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mj
 function parseArgs(argv) {
   const args = {
     task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
-    maxCycles: null, maxPostTesterCycles: null, mode: null,
+    maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -33,6 +33,7 @@ function parseArgs(argv) {
     else if (a === '--extend') args.extend = parseInt(argv[++i], 10);
     else if (a === '--max-cycles') args.maxCycles = parseInt(argv[++i], 10);
     else if (a === '--max-post-tester-cycles') args.maxPostTesterCycles = parseInt(argv[++i], 10);
+    else if (a === '--max-review-cycles') args.maxReviewCycles = parseInt(argv[++i], 10);
     else if (a === '--mode') args.mode = argv[++i];
     else if (a === '--model-profile') args.modelProfile = argv[++i];
     else if (a === '--models') args.models = argv[++i];
@@ -41,7 +42,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -145,6 +146,9 @@ if (args.continue) {
   status = onDisk;
   status.overall = 'running';
   status.awaitingStage = null;
+  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
+  if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
+  if (status.reviewPass == null) status.reviewPass = 0;
   runner = status.runner || 'host';
   models = status.models || null;
   loadWorkCwdFromStatus();
@@ -164,7 +168,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     status = onDisk;
-    status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles }; // back-compat
+    status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles }; // back-compat
+    if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
+    if (status.reviewPass == null) status.reviewPass = 0;
     runner = args.runner || status.runner;
     models = status.models || null;
     loadWorkCwdFromStatus();
@@ -248,6 +254,7 @@ if (args.continue) {
   status.limits = {
     coderMax: Number.isInteger(args.maxCycles) && args.maxCycles > 0 ? args.maxCycles : config.maxCoderCycles,
     postTesterMax: Number.isInteger(args.maxPostTesterCycles) && args.maxPostTesterCycles > 0 ? args.maxPostTesterCycles : config.maxPostTesterCycles,
+    reviewMax: Number.isInteger(args.maxReviewCycles) && args.maxReviewCycles > 0 ? args.maxReviewCycles : config.maxReviewCycles,
   };
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
@@ -255,7 +262,7 @@ if (args.continue) {
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models });
   const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}). Dashboard: http://localhost:${uiPort}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}). Dashboard: http://localhost:${uiPort}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -281,10 +288,14 @@ function halt(stageName, reason, detail) {
 // `--resume --extend N` knows exactly where to pick back up.
 function haltMaxCycles(phase, stageName, limit) {
   status.haltedPhase = phase;
-  // The Coder loop is what's actually stuck in both phases (the post-tester
-  // loop halts via the 'tester' stage) — make sure its card never shows a
-  // stale "Running" badge once the pipeline has halted.
-  if (stage('coder').status === 'running') setStage('coder', { status: 'failed', endedAt: new Date().toISOString() });
+  // The Coder loop is what's actually stuck in the coder/post-tester phases (the
+  // post-tester loop halts via the 'tester' stage) — make sure its card never
+  // shows a stale "Running" badge once the pipeline has halted.
+  if (phase !== 'review' && stage('coder').status === 'running') setStage('coder', { status: 'failed', endedAt: new Date().toISOString() });
+  if (phase === 'review') {
+    halt(stageName, 'MAX_CYCLES', `Reviewer fix loop reached ${limit} automatic pass${limit === 1 ? '' : 'es'} without an APPROVED verdict. Inspect .pipeline/review_report.md and .pipeline/changes.md — extend from the dashboard, or run: node pipeline/orchestrator.mjs --resume --extend <n>.`);
+    return;
+  }
   const label = phase === 'coder' ? 'Coder' : 'Post-tester coder';
   halt(stageName, 'MAX_CYCLES', `${label} loop reached ${limit} cycles without passing verification. Inspect .pipeline/checker_report.md and .pipeline/changes.md — extend from the dashboard, or run: node pipeline/orchestrator.mjs --resume --extend <n>.`);
 }
@@ -357,6 +368,10 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   return res;
 }
 
+// Git's canonical empty-tree object; diffing against it renders every tracked
+// file as an addition, so a repo with no commits yet still yields a real diff.
+const GIT_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
 function resolveDiffBaseRef(git) {
   // 1. Prefer the commit the run started from (captures committed + uncommitted work).
   const captured = status?.baseRef;
@@ -366,12 +381,22 @@ function resolveDiffBaseRef(git) {
     const mb = git(['merge-base', 'HEAD', branch]);
     if (mb.status === 0 && mb.stdout.trim()) return mb.stdout.trim();
   }
-  // 3. Last resort: the working-tree diff against HEAD (original behavior).
-  return 'HEAD';
+  // 3. If there is at least one commit, diff the working tree against HEAD.
+  if (git(['rev-parse', '--verify', 'HEAD']).status === 0) return 'HEAD';
+  // 4. No commit available (fresh repo): diff against the empty tree so all
+  //    tracked/staged content is still shown to the reviewer.
+  return GIT_EMPTY_TREE;
 }
 
 function writeDiffArtifact() {
   const git = (gitArgs) => spawnSync('git', gitArgs, { cwd: workCwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  // No git context at all: don't block the review — point the reviewer at the
+  // implementation artifacts and source files instead of a git diff.
+  if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) {
+    const note = '# diff unavailable (no git repository)\n\nReview the implementation directly from .pipeline/changes.md and the source files it references.\n';
+    try { fs.writeFileSync(paths.diff, note); } catch {}
+    return;
+  }
   const baseRef = resolveDiffBaseRef(git);
   let patch = git(['diff', baseRef]).stdout || '';
   const untracked = (git(['ls-files', '--others', '--exclude-standard']).stdout || '').split('\n').filter(Boolean);
@@ -379,8 +404,13 @@ function writeDiffArtifact() {
     if (f.startsWith('.pipeline')) continue;
     patch += git(['diff', '--no-index', '/dev/null', f]).stdout || '';
   }
-  const shortRef = baseRef === 'HEAD' ? 'HEAD (working tree)' : baseRef.slice(0, 12);
-  const body = patch ? `# diff vs ${shortRef}\n\n${patch}` : 'No working-tree changes detected.\n';
+  let shortRef;
+  if (baseRef === 'HEAD') shortRef = 'HEAD (working tree)';
+  else if (baseRef === GIT_EMPTY_TREE) shortRef = 'empty tree (no commits yet)';
+  else shortRef = baseRef.slice(0, 12);
+  const body = patch
+    ? `# diff vs ${shortRef}\n\n${patch}`
+    : '# no changes detected\n\nNo diff against the run baseline. Review the implementation directly from .pipeline/changes.md and the source files it references.\n';
   try { fs.writeFileSync(paths.diff, body); } catch {}
 }
 
@@ -412,6 +442,14 @@ function coderTask(cycle) {
 
 function postTesterCoderTask(localCycle) {
   return `The Tester added new tests that expose failures. Read .pipeline/checker_report.md, fix the root causes for the task "${status.task}", and append a "## Post-Tester Fix Cycle ${localCycle}" section to .pipeline/changes.md. Do NOT weaken or remove the new tests.`;
+}
+
+function reviewFixCoderTask(pass) {
+  return `The Reviewer requested changes (review fix pass ${pass}). Read .pipeline/review_report.md and implement EVERY item listed under "Final Recommendations / Action Items" for the task "${status.task}". Fix the root causes — do NOT weaken, skip, mock, or remove existing tests. Append a "## Review Fix Pass ${pass}" section to .pipeline/changes.md describing each fix and the file paths touched.`;
+}
+
+function reviewTesterTask(pass) {
+  return `The Reviewer requested changes (review fix pass ${pass}). Read .pipeline/review_report.md and add regression tests that specifically reproduce each reported bug / action item, plus any coverage gaps you notice. Read .pipeline/specs.md and .pipeline/changes.md first. Do NOT weaken existing tests. Append the new coverage to .pipeline/test_suite.md.`;
 }
 
 async function invokeInitialCoderCycle(cycle) {
@@ -503,14 +541,15 @@ async function runCoderStage() {
   return true;
 }
 
-async function runTesterStage() {
-  status.resumePoint = { step: 'tester', context: {} };
+async function runTesterStage(taskOverride = null, chatContext = {}) {
+  status.resumePoint = { step: 'tester', context: chatContext };
   setStage('tester', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
-  console.log('[Stage] Tester...');
-  await runStageAgent('tester', `Write rigorous tests for the implementation of: ${status.task}\n\nRead .pipeline/specs.md and .pipeline/changes.md first. Summarize coverage in .pipeline/test_suite.md.`, {
-    chatResume: { step: 'after_tester', context: {} },
+  console.log(`[Stage] Tester${chatContext.reviewPass ? ` (review fix pass ${chatContext.reviewPass})` : ''}...`);
+  const testerTask = taskOverride || `Write rigorous tests for the implementation of: ${status.task}\n\nRead .pipeline/specs.md and .pipeline/changes.md first. Summarize coverage in .pipeline/test_suite.md.`;
+  await runStageAgent('tester', testerTask, {
+    chatResume: { step: 'after_tester', context: chatContext },
   });
-  status.resumePoint = { step: 'after_tester', context: {} };
+  status.resumePoint = { step: 'after_tester', context: chatContext };
   writeStatus(paths, status);
   requireArtifact('tester', paths.testSuite);
 
@@ -529,35 +568,93 @@ async function runTesterStage() {
   return true;
 }
 
+// Runs the reviewer agent (read-only audit) then decides what to do with the
+// verdict. On APPROVED the run completes; on REQUEST_CHANGES/BLOCK it drops back
+// into an automatic Coder + Tester fix pass and re-audits, repeating up to
+// status.limits.reviewMax passes before halting as MAX_CYCLES (extendable).
 async function runReviewerStage() {
-  // Snapshot the working-tree diff so the dashboard can render the audit
-  // surface alongside the review.
-  writeDiffArtifact();
-  status.resumePoint = { step: 'reviewer', context: {} };
-  setStage('reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
-  console.log('[Stage] Reviewer (read-only audit)...');
-  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, read .pipeline/diff.patch, and write your verdict to .pipeline/review_report.md.`, {
-    readOnly: true,
-    chatResume: { step: 'after_reviewer', context: {} },
-  });
-  status.resumePoint = { step: 'after_reviewer', context: {} };
-  writeStatus(paths, status);
-  await finishReviewerStage();
+  await runReviewerAudit();
+  await afterReviewerAudit();
 }
 
-async function finishReviewerStage() {
+async function runReviewerAudit() {
+  // Snapshot the working-tree diff so the dashboard can render the audit
+  // surface alongside the review, refreshed for every re-audit.
+  writeDiffArtifact();
+  const auditCycle = (stage('reviewer').cycle || 0) + 1;
+  const pass = status.reviewPass || 0;
+  status.resumePoint = { step: 'reviewer', context: { reviewPass: pass } };
+  setStage('reviewer', {
+    status: 'running',
+    startedAt: stage('reviewer').startedAt || new Date().toISOString(),
+    cycle: auditCycle,
+    maxCycles: status.limits.reviewMax + 1,
+  });
+  console.log(`[Stage] Reviewer (read-only audit${pass > 0 ? `, after fix pass ${pass}` : ''})...`);
+  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, read .pipeline/diff.patch (or audit the source files directly if no diff is available), and write your verdict to .pipeline/review_report.md.`, {
+    readOnly: true,
+    chatResume: { step: 'after_reviewer', context: { reviewPass: pass } },
+  });
+  status.resumePoint = { step: 'after_reviewer', context: { reviewPass: pass } };
+  writeStatus(paths, status);
+}
+
+// Parse the verdict, update the reviewer badge, and either finish (APPROVED) or
+// drive the next automatic fix pass. In chat mode the fix-pass agents hand off,
+// so the tail of this function is only reached in CLI/cli-resume execution.
+async function afterReviewerAudit() {
   requireArtifact('reviewer', paths.reviewReport);
   const report = fs.readFileSync(paths.reviewReport, 'utf8');
   const verdictMatch = report.match(/##\s*Verdict:\s*\[?\s*(APPROVED|REQUEST_CHANGES|BLOCK)/i);
   status.verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'UNKNOWN';
-  setStage('reviewer', { status: status.verdict === 'APPROVED' ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
+  const approved = status.verdict === 'APPROVED';
+  setStage('reviewer', { status: approved ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
+  if (approved) return finishApproved();
+
+  if ((status.reviewPass || 0) >= status.limits.reviewMax) {
+    haltMaxCycles('review', 'reviewer', status.limits.reviewMax);
+    return;
+  }
+
+  status.reviewPass = (status.reviewPass || 0) + 1;
+  writeStatus(paths, status);
+  appendEvent(paths, { stage: 'reviewer', type: 'review_fix_start', pass: status.reviewPass, verdict: status.verdict });
+  console.log(`[Orchestrator] Verdict ${status.verdict} — starting automatic review fix pass ${status.reviewPass}/${status.limits.reviewMax}.`);
+  await runReviewFixPass(status.reviewPass);
+}
+
+function finishApproved() {
   status.overall = 'done';
   status.chatResume = null;
+  status.resumePoint = null;
   finalize();
   console.log(`\n[Orchestrator] Pipeline complete. Verdict: ${status.verdict}`);
   console.log(`Review: ${path.relative(repoRoot, paths.reviewReport)}`);
-  haltAndExit(status.verdict === 'APPROVED' ? 0 : 1);
+  haltAndExit(0);
+}
+
+// One automatic fix pass: Coder applies the reviewer's action items, then the
+// Tester adds regression tests and the checker/post-tester loop validates the
+// fix, then the Reviewer re-audits. Each composed call hands off in chat mode,
+// so control naturally returns to the --continue chain there.
+async function invokeReviewCoderCycle(pass) {
+  status.resumePoint = { step: 'coder', context: { loop: 'review', reviewPass: pass } };
+  setStage('coder', { status: 'running', startedAt: new Date().toISOString(), cycle: 1, maxCycles: 1, detail: `Review fix pass ${pass}` });
+  console.log(`[Stage] Coder (review fix pass ${pass}/${status.limits.reviewMax})...`);
+  await runStageAgent('coder', reviewFixCoderTask(pass), {
+    cycle: 1,
+    chatResume: { step: 'after_coder', context: { loop: 'review', reviewPass: pass } },
+  });
+  status.resumePoint = { step: 'after_coder', context: { loop: 'review', reviewPass: pass } };
+  writeStatus(paths, status);
+}
+
+async function runReviewFixPass(pass) {
+  await invokeReviewCoderCycle(pass);
+  setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+  if (!(await runTesterStage(reviewTesterTask(pass), { reviewPass: pass }))) return;
+  await runReviewerStage();
 }
 
 async function chatContinueRun() {
@@ -578,6 +675,16 @@ async function chatContinueRun() {
   }
 
   if (step === 'after_coder') {
+    // Review fix pass: the Coder just applied the reviewer's action items. Skip
+    // the coder's own checker gate (the Tester stage's post-tester loop validates
+    // the fix) and hand off to the Tester for regression coverage.
+    if (context.loop === 'review') {
+      const pass = context.reviewPass ?? status.reviewPass;
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage(reviewTesterTask(pass), { reviewPass: pass }))) return;
+      await runReviewerStage();
+      return;
+    }
     if (context.loop === 'postTester') {
       const outcome = await runCoderChecksAfterPostTesterCycle(context.cycle);
       if (outcome === 'pass') {
@@ -628,7 +735,7 @@ async function chatContinueRun() {
   }
 
   if (step === 'after_reviewer') {
-    await finishReviewerStage();
+    await afterReviewerAudit();
     return;
   }
 
@@ -671,7 +778,9 @@ function getResumePoint() {
 async function resumeInterruptedRun() {
   status.overall = 'running';
   status.haltReason = null;
-  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles };
+  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
+  if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
+  if (status.reviewPass == null) status.reviewPass = 0;
   writeStatus(paths, status);
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted' });
 
@@ -701,6 +810,10 @@ async function resumeInterruptedRun() {
   }
 
   if (step === 'coder') {
+    if (loop === 'review') {
+      await runReviewFixPass(context.reviewPass ?? status.reviewPass);
+      return;
+    }
     if (loop === 'initial') {
       const green = await runInitialCoderLoop(cycle);
       if (!green) { haltMaxCycles('coder', 'coder', status.limits.coderMax); return; }
@@ -719,6 +832,13 @@ async function resumeInterruptedRun() {
   }
 
   if (step === 'after_coder') {
+    if (loop === 'review') {
+      const pass = context.reviewPass ?? status.reviewPass;
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage(reviewTesterTask(pass), { reviewPass: pass }))) return;
+      await runReviewerStage();
+      return;
+    }
     if (loop === 'postTester') {
       const outcome = await runCoderChecksAfterPostTesterCycle(cycle);
       if (outcome === 'pass') {
@@ -802,7 +922,7 @@ async function resumeInterruptedRun() {
   }
 
   if (step === 'after_reviewer') {
-    await finishReviewerStage();
+    await afterReviewerAudit();
     return;
   }
 
@@ -836,6 +956,12 @@ async function resumeRun() {
     setStage('coder', { status: 'passed' });
     setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: stage('coder').checks });
     await runReviewerStage();
+  } else if (phase === 'review') {
+    // Extend the automatic review-fix budget and drive another fix pass from the
+    // last (still non-APPROVED) audit, then keep looping until APPROVED/exhausted.
+    status.limits.reviewMax += args.extend;
+    setStage('reviewer', { status: 'running', detail: null });
+    await afterReviewerAudit();
   } else {
     console.error(`[Orchestrator] Cannot resume: unknown halted phase "${phase}".`);
     haltAndExit(1);
