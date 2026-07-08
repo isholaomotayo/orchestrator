@@ -36,10 +36,34 @@ Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the Git
 ## Direct CLI
 
 ```bash
-bash .pipeline/orchestrate.sh "task description" [--runner ...] [--sandbox]
+bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--sandbox]
 bash .pipeline/orchestrate.sh --resume --extend 5
-node pipeline/orchestrator.mjs --task "description"
+node pipeline/orchestrator.mjs --task "description" --model-profile auto
 ```
+
+## Per-stage model selection
+
+Each pipeline stage (Planner, Coder, Tester, Reviewer) can use a different model. Coder fix cycles reuse the Coder model.
+
+| Mode | Behavior |
+|------|----------|
+| `--model-profile auto` (default) | Uses `modelProfiles.auto` from `.pipeline/config.json` — high-tier for Planner, mid-tier for Coder/Tester/Reviewer |
+| `--model-profile manual` | Requires `--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'` |
+
+**Chat mode:** resolved models are written to `stage-handoff.json` (`model`, `modelNote`). Switch IDE model before each stage.
+
+**CLI mode:** `--model` is passed to `claude`, `cursor-agent`, `codex`, and `gemini` subprocesses.
+
+Slash command (`/orchestrate`): the IDE agent must ask the model-selection question before calling `orchestrate.sh` — this is the only pre-run user prompt.
+
+Default auto profiles (override in `.pipeline/config.json`):
+
+| Runner | Planner | Coder / Tester / Reviewer |
+|--------|---------|---------------------------|
+| host / cursor | opus-4 | sonnet-4 |
+| claude | opus | sonnet |
+| codex | o3 | gpt-5 |
+| gemini | gemini-2.5-pro | gemini-2.5-flash |
 
 ## Halt reasons
 

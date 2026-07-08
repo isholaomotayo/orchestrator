@@ -15,9 +15,14 @@ import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAliv
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode } from './invocation.mjs';
+import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mjs';
 
 function parseArgs(argv) {
-  const args = { task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null, maxCycles: null, maxPostTesterCycles: null, mode: null };
+  const args = {
+    task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
+    maxCycles: null, maxPostTesterCycles: null, mode: null,
+    modelProfile: 'auto', models: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--task') args.task = argv[++i];
@@ -29,12 +34,14 @@ function parseArgs(argv) {
     else if (a === '--max-cycles') args.maxCycles = parseInt(argv[++i], 10);
     else if (a === '--max-post-tester-cycles') args.maxPostTesterCycles = parseInt(argv[++i], 10);
     else if (a === '--mode') args.mode = argv[++i];
+    else if (a === '--model-profile') args.modelProfile = argv[++i];
+    else if (a === '--models') args.models = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume --extend <n> [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume --extend <n> [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -67,7 +74,21 @@ if (fs.existsSync(paths.lock)) {
 fs.mkdirSync(paths.dir, { recursive: true });
 fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
 
-let status, history, workCwd, runner;
+let status, history, workCwd, runner, models;
+
+function resolveModelsForRun(runnerName) {
+  if (args.modelProfile !== 'auto' && args.modelProfile !== 'manual') {
+    console.error('[Orchestrator] --model-profile must be "auto" or "manual".');
+    haltAndExit(2);
+  }
+  const manualStages = args.modelProfile === 'manual' ? parseModelsJson(args.models) : null;
+  return resolveModelProfile({
+    config,
+    runner: runnerName,
+    profile: args.modelProfile,
+    manualStages,
+  });
+}
 
 function loadWorkCwdFromStatus() {
   workCwd = repoRoot;
@@ -115,6 +136,7 @@ if (args.continue) {
   status.overall = 'running';
   status.awaitingStage = null;
   runner = status.runner || 'host';
+  models = status.models || null;
   loadWorkCwdFromStatus();
   loadHistory();
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
@@ -132,6 +154,7 @@ if (args.continue) {
   status = onDisk;
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles }; // back-compat
   runner = args.runner || status.runner;
+  models = status.models || null;
   loadWorkCwdFromStatus();
   loadHistory();
   console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles). Dashboard: http://localhost:${uiPort}`);
@@ -168,9 +191,16 @@ if (args.continue) {
   fs.writeFileSync(paths.vagueRequest, args.task);
 
   runner = detectRunner(config, { invocationMode });
+  try {
+    models = resolveModelsForRun(runner);
+  } catch (err) {
+    console.error(`[Orchestrator] ${err.message}`);
+    haltAndExit(2);
+  }
   status = newStatus(args.task);
   status.invocationMode = invocationMode;
   status.runner = runner;
+  status.models = models;
   status.sandbox = args.sandbox;
   status.haltedPhase = null;
   status.extensions = [];
@@ -181,9 +211,10 @@ if (args.continue) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode });
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models });
   const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}). Dashboard: http://localhost:${uiPort}`);
+  const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}). Dashboard: http://localhost:${uiPort}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -227,11 +258,14 @@ function requestChatHandoff(stageName, chatResume) {
   status.chatResume = chatResume;
   status.overall = 'awaiting_chat';
   status.awaitingStage = stageName;
+  status.dashboardUrl = `http://localhost:${uiPort}`;
+  try { fs.writeFileSync(path.join(paths.dir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
   setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
   console.log('  bash .pipeline/orchestrate.sh --continue');
-  console.log('[Orchestrator] Stage brief: .pipeline/stage-handoff.json\n');
+  console.log('[Orchestrator] Stage brief: .pipeline/stage-handoff.json');
+  console.log(`[Orchestrator] Live dashboard: ${status.dashboardUrl}\n`);
   haltAndExit(0);
 }
 
@@ -261,7 +295,12 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
-  const res = await runAgent({ runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config });
+  const stageModel = modelForStage(models, name);
+  const res = await runAgent({
+    runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+    model: stageModel,
+    modelSelection: models?.selection,
+  });
   if (res.hostHandoff) {
     if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
     requestChatHandoff(name, chatResume);

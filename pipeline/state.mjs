@@ -1,6 +1,7 @@
 // Shared state helpers for the pipeline: paths, config, status.json, events.jsonl.
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_MODEL_PROFILES, mergeModelProfiles } from './models.mjs';
 
 export const STAGES = ['planner', 'coder', 'tester', 'reviewer'];
 
@@ -58,10 +59,13 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    modelProfiles: DEFAULT_MODEL_PROFILES,
   };
   try {
     const raw = JSON.parse(fs.readFileSync(paths.config, 'utf8'));
-    return { ...defaults, ...raw, checks: { ...defaults.checks, ...(raw.checks || {}) } };
+    const merged = { ...defaults, ...raw, checks: { ...defaults.checks, ...(raw.checks || {}) } };
+    merged.modelProfiles = mergeModelProfiles({ modelProfiles: raw.modelProfiles });
+    return merged;
   } catch {
     return defaults;
   }
@@ -75,6 +79,7 @@ export function newStatus(task) {
     overall: 'running', // running | awaiting_chat | done | halted
     invocationMode: 'cli', // chat | cli — how agent stages are executed
     runner: 'auto',
+    models: null,
     awaitingStage: null,
     chatResume: null,   // { step, context } — set when handing off to IDE chat
     verdict: null,      // APPROVED | REQUEST_CHANGES | BLOCK

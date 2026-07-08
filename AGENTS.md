@@ -8,11 +8,13 @@ It runs: **Planner → Coder (self-healing builder-checker loop) → Tester → 
 When the user invokes `/orchestrate`, or tasks you with building a feature, resolving complex requirements, or a multi-stage refactor:
 
 1. Do NOT plan and edit many files manually in a single run.
-2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--runner claude|cursor|codex|gemini|host`, `--sandbox`, `--no-ui`).
-3. **Chat mode** (auto-detected in IDE): when `.pipeline/stage-handoff.json` exists, complete that stage in chat, then `bash .pipeline/orchestrate.sh --continue` — repeat until done.
-4. **CLI mode** (terminal): wait for the orchestrator to finish.
-5. Read `.pipeline/review_report.md` and present the audit verdict.
-6. If the pipeline halts (`MAX_CYCLES`, `REGRESSION_BLOCKED`, `MISSING_ARTIFACT`, `AGENT_ERROR`), surface `.pipeline/checker_report.md` or `.pipeline/logs/` and ask the human how to proceed.
+2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--runner claude|cursor|codex|gemini|host`, `--model-profile auto|manual`, `--models JSON`, `--sandbox`, `--no-ui`).
+3. **Before starting** (slash command / chat): ask the user whether to use automatic cost-optimized per-stage models or manual model selection. This is the only pre-run question. Then pass `--model-profile auto` or `--model-profile manual --models '...'`.
+4. **Tell the user** to open the live dashboard URL from the script output or `.pipeline/ui.url` (e.g. http://localhost:4600) so they can follow stage progress while chat handoffs run.
+5. **Chat mode**: complete each stage from `.pipeline/stage-handoff.json` in the IDE session (honor `handoff.model` — switch model before each stage), then `bash .pipeline/orchestrate.sh --continue`.
+6. **CLI mode**: wait for the orchestrator to finish.
+7. Read `.pipeline/review_report.md` and present the audit verdict.
+8. If the pipeline halts (`MAX_CYCLES`, `REGRESSION_BLOCKED`, `MISSING_ARTIFACT`, `AGENT_ERROR`), surface `.pipeline/checker_report.md` or `.pipeline/logs/` and ask the human how to proceed.
 
 Install in other projects:
 

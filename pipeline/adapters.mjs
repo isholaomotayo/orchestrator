@@ -43,7 +43,7 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 
 // Build argv for each supported CLI. Every adapter runs non-interactively with
 // verbose/streamed output so the dashboard can show live activity.
-function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
+function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }) {
   const combined = `${systemPrompt}\n\n---\nTASK:\n${task}`;
   switch (runner) {
     case 'claude': {
@@ -53,6 +53,7 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
         '--verbose',
         '--output-format', 'stream-json',
       ];
+      if (model) args.push('--model', model);
       if (readOnly) {
         // Headless mode denies anything not allowlisted: reviewer may read,
         // run git diff/log, and write ONLY its report file.
@@ -64,14 +65,18 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
     }
     case 'cursor': {
       const args = ['-p', combined, '--output-format', 'stream-json', '--force'];
+      if (model) args.push('--model', model);
       return { bin: 'cursor-agent', args, parse: 'jsonl-or-text' };
     }
     case 'codex': {
-      const args = ['exec', '--full-auto', '--json', combined];
+      const args = ['exec', '--full-auto', '--json'];
+      if (model) args.push('--model', model);
+      args.push(combined);
       return { bin: 'codex', args, parse: 'jsonl-or-text' };
     }
     case 'gemini': {
       const args = ['-p', combined, '--yolo'];
+      if (model) args.push('--model', model);
       return { bin: 'gemini', args, parse: 'text' };
     }
     default: {
@@ -86,7 +91,7 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths }) {
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection }) {
   const handoff = {
     stage,
     cycle: cycle || 1,
@@ -96,6 +101,11 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     readOnly: !!readOnly,
     createdAt: new Date().toISOString(),
   };
+  if (model) {
+    handoff.model = model;
+    handoff.modelSelection = modelSelection || 'auto';
+    handoff.modelNote = `Switch to ${model} before completing this stage.`;
+  }
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact });
 }
@@ -153,25 +163,27 @@ function blockToLogLine(b) {
   return b.text;
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config }) {
+export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, modelSelection }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
-    fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host (IDE chat) — ${new Date().toISOString()} =====\n`);
-    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host' });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths });
+    const modelLabel = model ? ` · model ${model}` : '';
+    fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host (IDE chat)${modelLabel} — ${new Date().toISOString()} =====\n`);
+    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection });
     appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse } = buildInvocation({ runner, systemPrompt, task, readOnly, config });
+  const { bin, args, parse } = buildInvocation({ runner, systemPrompt, task, readOnly, config, model });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
   const log = fs.createWriteStream(logFile, { flags: cycle > 1 ? 'a' : 'w' });
-  log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner} — ${new Date().toISOString()} =====\n`);
-  appendEvent(paths, { stage, cycle, type: 'agent_start', runner });
+  const modelLabel = model ? ` · model ${model}` : '';
+  log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
+  appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined });
 
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });

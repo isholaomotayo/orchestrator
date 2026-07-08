@@ -37,19 +37,29 @@ Override: `--mode chat` or `--mode cli`. Force a CLI runner: `--runner claude` (
    bash skills/orchestrate/scripts/bootstrap.sh
    ```
 3. **Extract the task** from the user's message (text after `/orchestrate`).
-4. **Start the pipeline**:
+4. **Model selection (required before starting):** Ask:
+   > Use automatic cost-optimized models per stage, or pick models manually for Planner / Coder / Tester / Reviewer?
+   - **Automatic** → `--model-profile auto`
+   - **Manual** → collect four model IDs, then `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
+   This is the **only** pre-run user question for an autonomous builder run.
+5. **Start the pipeline**:
    ```bash
-   bash .pipeline/orchestrate.sh "TASK_HERE"
+   bash .pipeline/orchestrate.sh "TASK_HERE" --model-profile auto
    ```
-5. **Chat mode loop** (when `.pipeline/stage-handoff.json` exists or status is `awaiting_chat`):
+6. **Tell the user to open the dashboard** as soon as the command starts (do not skip):
+   - Read the URL from the script output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`.
+   - Example message: *"Pipeline started. Open **http://localhost:4600** in your browser to watch stage progress, checker results, and artifacts while I work each stage in chat."*
+   - Port may differ if 4600 is taken — always use the URL from the run output.
+7. **Chat mode loop** (when `.pipeline/stage-handoff.json` exists or status is `awaiting_chat`):
    - Read `.pipeline/stage-handoff.json` and the referenced `promptFile`.
+   - If `handoff.model` is set, switch to that model in the IDE before working the stage.
    - Complete that pipeline stage **in this chat session** (write the required `artifact`, follow the stage prompt).
    - For **Reviewer**: read-only audit — only write `.pipeline/review_report.md`.
    - Run: `bash .pipeline/orchestrate.sh --continue`
    - Repeat until the pipeline finishes or halts.
-6. **CLI mode**: wait for the orchestrator to finish (no handoff loop).
-7. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.
-8. **On halt**:
+7. **CLI mode**: wait for the orchestrator to finish (no handoff loop).
+8. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.
+9. **On halt**:
    - `MAX_CYCLES` / `REGRESSION_BLOCKED`: surface `.pipeline/checker_report.md`
    - `MISSING_ARTIFACT` at Planner: inspect `.pipeline/logs/planner.log` (often CLI auth failure in CLI mode)
    - `AGENT_ERROR`: CLI auth or spawn failure — suggest `--mode chat` from IDE or log in to the CLI
@@ -58,6 +68,8 @@ Override: `--mode chat` or `--mode cli`. Force a CLI runner: `--runner claude` (
 
 | Flag | Purpose |
 |------|---------|
+| `--model-profile auto\|manual` | Auto = cost-optimized per-stage defaults; manual requires `--models` |
+| `--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'` | Manual model map (JSON) |
 | `--mode chat\|cli` | Override auto-detected invocation mode |
 | `--runner claude\|cursor\|codex\|gemini\|host` | Force a specific agent backend (`host` = IDE chat handoffs) |
 | `--continue` | Resume after completing a chat handoff stage |

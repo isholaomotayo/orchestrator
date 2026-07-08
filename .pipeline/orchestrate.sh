@@ -3,7 +3,7 @@
 #
 # Start a new run:
 #   bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini] \
-#     [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+#     [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
 #
 # Extend a run that halted with MAX_CYCLES (continues the same fix loop,
 # repeatable as many times as needed):
@@ -15,7 +15,7 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PIPELINE_DIR="$SCRIPT_DIR"
 BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume --extend <n> [--runner ...] [--no-ui]'
 
@@ -85,6 +85,44 @@ if [ "$NO_UI" -eq 0 ]; then
   else
     echo "[orchestrate] Live dashboard: http://localhost:$UI_PORT"
   fi
+  if [ "$NO_UI" -eq 0 ]; then
+    echo "http://localhost:$UI_PORT" > "$PIPELINE_DIR/ui.url"
+  fi
+fi
+
+# Detect IDE chat invocation (host mode) for user-facing guidance.
+is_chat_invocation() {
+  node -e "
+    const e = process.env;
+    if (e.PIPELINE_INVOCATION === 'chat') process.exit(0);
+    if (e.PIPELINE_INVOCATION === 'cli') process.exit(1);
+    if (e.CURSOR_AGENT === '1' || e.CLAUDE_CODE === '1' || e.CLAUDECODE) process.exit(0);
+    if (e.CI === 'true' || e.GITHUB_ACTIONS) process.exit(1);
+    if (process.stdout.isTTY && process.stdin.isTTY) process.exit(1);
+    if (e.VSCODE_PID && !process.stdout.isTTY) process.exit(0);
+    process.exit(1);
+  "
+}
+
+print_dashboard_banner() {
+  [ "$NO_UI" -eq 0 ] || return 0
+  local url="http://localhost:$UI_PORT"
+  echo ""
+  echo "================================================================"
+  echo "  LIVE DASHBOARD (open in your browser to follow progress)"
+  echo "  $url"
+  echo "================================================================"
+  if is_chat_invocation; then
+    echo ""
+    echo "  Chat mode: the orchestrator hands each stage to this chat."
+    echo "  Use the dashboard for stage status, checker results, and artifacts."
+    echo "  After each handoff, complete the stage here, then run --continue."
+    echo ""
+  fi
+}
+
+if is_chat_invocation || [ "$NO_UI" -eq 0 ]; then
+  print_dashboard_banner
 fi
 
 cd "$REPO_ROOT"
@@ -102,7 +140,23 @@ set -e
 echo ""
 if [ -f "$PIPELINE_DIR/review_report.md" ]; then
   echo "[orchestrate] Final review: .pipeline/review_report.md"
+  if [ -f "$PIPELINE_DIR/ui.url" ]; then
+    echo "[orchestrate] Dashboard: $(cat "$PIPELINE_DIR/ui.url")"
+  fi
+elif [ -f "$PIPELINE_DIR/stage-handoff.json" ]; then
+  echo "[orchestrate] ── Chat handoff (expected in IDE chat mode) ─────────────"
+  echo "[orchestrate] 1. Complete the stage in this chat (see .pipeline/stage-handoff.json)"
+  echo "[orchestrate] 2. Then run: bash .pipeline/orchestrate.sh --continue"
+  if [ -f "$PIPELINE_DIR/ui.url" ]; then
+    echo "[orchestrate] Dashboard: $(cat "$PIPELINE_DIR/ui.url")"
+  elif [ "$NO_UI" -eq 0 ]; then
+    echo "[orchestrate] Dashboard: http://localhost:$UI_PORT"
+  fi
+  echo "[orchestrate] ────────────────────────────────────────────────────────"
 elif [ -f "$PIPELINE_DIR/checker_report.md" ]; then
   echo "[orchestrate] Pipeline halted — inspect .pipeline/checker_report.md and .pipeline/changes.md"
+  if [ -f "$PIPELINE_DIR/ui.url" ]; then
+    echo "[orchestrate] Dashboard: $(cat "$PIPELINE_DIR/ui.url")"
+  fi
 fi
 exit $EXIT_CODE

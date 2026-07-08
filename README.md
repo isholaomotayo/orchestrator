@@ -355,6 +355,8 @@ Archived run views (selected from the run-history dropdown) intentionally **stop
 # Start a new run
 node pipeline/orchestrator.mjs --task "description" \
   [--runner claude|cursor|codex|gemini|<customRunner>] \
+  [--model-profile auto|manual] \
+  [--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'] \
   [--sandbox] \
   [--max-cycles N] \
   [--max-post-tester-cycles N]
@@ -366,13 +368,15 @@ node pipeline/orchestrator.mjs --resume --extend N [--runner ...]
 `.pipeline/orchestrate.sh` wraps the same two forms and additionally boots the dashboard:
 
 ```
-bash .pipeline/orchestrate.sh "description" [--runner ...] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
+bash .pipeline/orchestrate.sh "description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
 bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 ```
 
 | Flag | Applies to | Meaning |
 |---|---|---|
 | `--runner <name>` | both | Force a specific agent CLI instead of auto-detecting. |
+| `--model-profile auto\|manual` | new run | Auto = cost-optimized per-stage defaults; manual requires `--models`. |
+| `--models <json>` | new run | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`. |
 | `--sandbox` | new run | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge. |
 | `--max-cycles N` | new run | Override `maxCoderCycles` for this run only. |
 | `--max-post-tester-cycles N` | new run | Override `maxPostTesterCycles` for this run only. |
@@ -397,6 +401,15 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
   },
   "checkTimeoutMs": 300000,      // kill a check command after this long
   "agentTimeoutMs": 1800000,     // kill an agent invocation after this long
+  "modelProfiles": {             // per-stage model defaults when --model-profile auto
+    "auto": {
+      "host":   { "planner": "opus-4", "coder": "sonnet-4", "tester": "sonnet-4", "reviewer": "sonnet-4" },
+      "claude": { "planner": "opus",   "coder": "sonnet",   "tester": "sonnet",   "reviewer": "sonnet" },
+      "cursor": { "planner": "opus-4", "coder": "sonnet-4", "tester": "sonnet-4", "reviewer": "sonnet-4" },
+      "codex":  { "planner": "o3",     "coder": "gpt-5",    "tester": "gpt-5",    "reviewer": "gpt-5" },
+      "gemini": { "planner": "gemini-2.5-pro", "coder": "gemini-2.5-flash", "tester": "gemini-2.5-flash", "reviewer": "gemini-2.5-flash" }
+    }
+  },
   "customRunners": {             // optional: wire up any CLI-shaped agent
     "my-agent": {
       "command": "bash",

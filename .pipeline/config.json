@@ -9,5 +9,39 @@
     "typecheck": "npm run typecheck --if-present --silent"
   },
   "checkTimeoutMs": 300000,
-  "agentTimeoutMs": 1800000
+  "agentTimeoutMs": 1800000,
+  "modelProfiles": {
+    "auto": {
+      "host": {
+        "planner": "opus-4",
+        "coder": "sonnet-4",
+        "tester": "sonnet-4",
+        "reviewer": "sonnet-4"
+      },
+      "claude": {
+        "planner": "opus",
+        "coder": "sonnet",
+        "tester": "sonnet",
+        "reviewer": "sonnet"
+      },
+      "cursor": {
+        "planner": "opus-4",
+        "coder": "sonnet-4",
+        "tester": "sonnet-4",
+        "reviewer": "sonnet-4"
+      },
+      "codex": {
+        "planner": "o3",
+        "coder": "gpt-5",
+        "tester": "gpt-5",
+        "reviewer": "gpt-5"
+      },
+      "gemini": {
+        "planner": "gemini-2.5-pro",
+        "coder": "gemini-2.5-flash",
+        "tester": "gemini-2.5-flash",
+        "reviewer": "gemini-2.5-flash"
+      }
+    }
+  }
 }

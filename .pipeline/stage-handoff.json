@@ -1,9 +1,12 @@
 {
   "stage": "planner",
   "cycle": 1,
-  "task": "Produce a technical specification for this feature request:\n\ntest chat mode detection\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.",
+  "task": "Produce a technical specification for this feature request:\n\nbanner test\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.",
   "promptFile": ".pipeline/prompts/planner_prompt.txt",
   "artifact": ".pipeline/specs.md",
   "readOnly": false,
-  "createdAt": "2026-07-08T05:18:27.671Z"
+  "createdAt": "2026-07-08T05:49:11.462Z",
+  "model": "opus-4",
+  "modelSelection": "auto",
+  "modelNote": "Switch to opus-4 before completing this stage."
 }

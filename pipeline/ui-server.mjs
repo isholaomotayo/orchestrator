@@ -10,6 +10,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths, loadConfig, pidAlive, readLock } from './state.mjs';
+import { DEFAULT_MODEL_PROFILES } from './models.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = process.cwd();
@@ -102,7 +103,12 @@ function readState(runId) {
     canExtend,
     runners: [...RUNNERS, ...Object.keys(config.customRunners || {})],
     // Config-driven defaults — the UI should never hardcode a cycle count.
-    defaults: { maxCoderCycles: config.maxCoderCycles, maxPostTesterCycles: config.maxPostTesterCycles, extendCycles: config.maxCoderCycles },
+    defaults: {
+      maxCoderCycles: config.maxCoderCycles,
+      maxPostTesterCycles: config.maxPostTesterCycles,
+      extendCycles: config.maxCoderCycles,
+      modelProfiles: config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto,
+    },
     now: new Date().toISOString(),
   };
 }
@@ -122,11 +128,21 @@ function positiveInt(v) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles }) {
+function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles, modelProfile, models }) {
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
   if (runner && !RUNNERS.includes(runner) && !config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
   if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
-  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--task', task.trim()];
+  const profile = modelProfile === 'manual' ? 'manual' : 'auto';
+  if (profile === 'manual') {
+    if (!models || typeof models !== 'object') return { error: 'manual model profile requires models object', code: 400 };
+    for (const stage of AGENT_STAGES) {
+      if (typeof models[stage] !== 'string' || !models[stage].trim()) {
+        return { error: `models.${stage} is required for manual profile`, code: 400 };
+      }
+    }
+  }
+  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--task', task.trim(), '--model-profile', profile];
+  if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
   if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
   if (sandbox) nodeArgs.push('--sandbox');
   const mc = positiveInt(maxCycles);
