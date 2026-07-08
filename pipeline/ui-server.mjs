@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { pipelinePaths, loadConfig, pidAlive, readLock } from './state.mjs';
 import { DEFAULT_MODEL_PROFILES } from './models.mjs';
 import { routeMessage } from './router.mjs';
+import { isTrustedRequest } from './http-guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = process.cwd();
@@ -248,7 +249,11 @@ function readBody(req, cb) {
 const sseClients = new Set();
 function broadcast(payload) {
   const msg = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const res of sseClients) res.write(msg);
+  for (const res of sseClients) {
+    // A client can disconnect between its 'close' cleanup and this write; guard
+    // so one dead socket can't throw out of the broadcast / ping interval.
+    try { res.write(msg); } catch { sseClients.delete(res); }
+  }
 }
 
 let debounceTimer = null;
@@ -270,8 +275,16 @@ function attachWatchers() {
   }
 }
 
+// State-changing endpoints that must be protected from CSRF / DNS-rebinding.
+const GUARDED_POST_PATHS = new Set([
+  '/api/followup', '/api/orchestrate', '/api/run', '/api/cancel', '/api/extend', '/api/resume',
+]);
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  if (req.method === 'POST' && GUARDED_POST_PATHS.has(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
+    return json(res, { error: 'forbidden: untrusted origin' }, 403);
+  }
   if (req.method === 'POST' && url.pathname === '/api/followup') {
     readBody(req, (body) => {
       if (!body || !AGENT_STAGES.includes(body.stage) || typeof body.text !== 'string' || !body.text.trim()) {
@@ -351,6 +364,15 @@ const server = http.createServer((req, res) => {
 });
 
 setInterval(() => broadcast({ type: 'ping' }), 25000);
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[UI] Port ${PORT} is already in use. Set PIPELINE_UI_PORT or config.uiPort to a free port, or stop the process using it.`);
+  } else {
+    console.error(`[UI] Server error: ${err.message}`);
+  }
+  process.exit(1);
+});
 
 server.listen(PORT, HOST, () => {
   attachWatchers();

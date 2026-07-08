@@ -46,6 +46,19 @@ export function readLock(paths) {
   try { return JSON.parse(fs.readFileSync(paths.lock, 'utf8')); } catch { return null; }
 }
 
+// Coerce a value to a positive integer, or return the fallback (with a warning)
+// when it is missing/invalid. Guards against a mistyped config.json silently
+// disabling a guardrail (e.g. uiPort: "4600" or maxCoderCycles: 0).
+export function coercePositiveInt(value, fallback, label) {
+  if (value === undefined) return fallback;
+  const n = Number(value);
+  if (Number.isInteger(n) && n > 0) return n;
+  console.warn(`[config] Ignoring invalid ${label}=${JSON.stringify(value)}; using default ${fallback}.`);
+  return fallback;
+}
+
+const NUMERIC_CONFIG_FIELDS = ['maxCoderCycles', 'maxPostTesterCycles', 'maxReviewCycles', 'uiPort', 'checkTimeoutMs', 'agentTimeoutMs'];
+
 export function loadConfig(paths) {
   const defaults = {
     runner: 'auto',
@@ -62,14 +75,24 @@ export function loadConfig(paths) {
     agentTimeoutMs: 1800000,
     modelProfiles: DEFAULT_MODEL_PROFILES,
   };
+  let raw;
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.config, 'utf8'));
-    const merged = { ...defaults, ...raw, checks: { ...defaults.checks, ...(raw.checks || {}) } };
-    merged.modelProfiles = mergeModelProfiles({ modelProfiles: raw.modelProfiles });
-    return merged;
-  } catch {
+    raw = JSON.parse(fs.readFileSync(paths.config, 'utf8'));
+  } catch (err) {
+    // ENOENT is the normal "no config file" case — stay silent. Anything else
+    // (malformed JSON, permission error) is a real misconfiguration: warn so it
+    // is not masked by a silent fallback to defaults.
+    if (err.code !== 'ENOENT') {
+      console.warn(`[config] Could not read ${paths.config} (${err.message}); using defaults.`);
+    }
     return defaults;
   }
+  const merged = { ...defaults, ...raw, checks: { ...defaults.checks, ...(raw.checks || {}) } };
+  merged.modelProfiles = mergeModelProfiles({ modelProfiles: raw.modelProfiles });
+  for (const field of NUMERIC_CONFIG_FIELDS) {
+    merged[field] = coercePositiveInt(raw[field], defaults[field], field);
+  }
+  return merged;
 }
 
 export function newStatus(task) {
@@ -102,9 +125,18 @@ export function newStatus(task) {
   };
 }
 
+// Write to a temp file in the same directory then rename over the target.
+// rename(2) is atomic on POSIX within one filesystem, so a crash/kill mid-write
+// can never leave readers observing a truncated file.
+export function atomicWrite(file, contents) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, file);
+}
+
 export function writeStatus(paths, status) {
   fs.mkdirSync(paths.dir, { recursive: true });
-  fs.writeFileSync(paths.status, JSON.stringify(status, null, 2));
+  atomicWrite(paths.status, JSON.stringify(status, null, 2));
 }
 
 export function appendEvent(paths, event) {

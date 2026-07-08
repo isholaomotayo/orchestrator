@@ -63,17 +63,33 @@ const invocation = detectInvocationMode({ env: process.env, argv: process.argv }
 const invocationMode = args.mode === 'chat' || args.mode === 'cli' ? args.mode : invocation.mode;
 
 // ---- Guardrail 3: mutex lock -----------------------------------------------
-if (fs.existsSync(paths.lock)) {
-  const lock = readLock(paths);
-  if (lock && pidAlive(lock.pid)) {
-    console.error(`[Orchestrator] Pipeline execution is locked by a running orchestrator (pid ${lock.pid}).`);
-    process.exit(1);
-  }
-  console.error('[Orchestrator] Clearing stale lock (owning process is gone).');
-  try { fs.unlinkSync(paths.lock); } catch {}
-}
+// Acquire atomically with the 'wx' (exclusive create) flag so two orchestrators
+// launched in the same tick cannot both pass an existsSync check and clobber the
+// lock. On EEXIST, inspect the owner: reclaim only if its process is gone.
 fs.mkdirSync(paths.dir, { recursive: true });
-fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+function acquireLock() {
+  const payload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(paths.lock, 'wx');
+      fs.writeSync(fd, payload);
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const lock = readLock(paths);
+      if (lock && pidAlive(lock.pid)) {
+        console.error(`[Orchestrator] Pipeline execution is locked by a running orchestrator (pid ${lock.pid}).`);
+        process.exit(1);
+      }
+      console.error('[Orchestrator] Clearing stale lock (owning process is gone).');
+      try { fs.unlinkSync(paths.lock); } catch {}
+    }
+  }
+  console.error('[Orchestrator] Could not acquire lock after clearing a stale one (lost a race to another orchestrator).');
+  process.exit(1);
+}
+acquireLock();
 
 let status, history, workCwd, runner, models;
 

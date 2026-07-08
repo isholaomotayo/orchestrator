@@ -43,7 +43,14 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 
 // Build argv for each supported CLI. Every adapter runs non-interactively with
 // verbose/streamed output so the dashboard can show live activity.
-function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }) {
+//
+// readOnly (the Reviewer's read-only audit) MUST be honored by every runner, not
+// just claude — otherwise the "read-only" review stage could mutate the repo or
+// weaken tests. Each branch sets `readOnlyEnforced` to signal whether the CLI can
+// hard-guarantee read-only at the process level. When it cannot, we drop the
+// auto-approve/write flags (--force / --full-auto / --yolo) so the agent cannot
+// silently apply edits — a best-effort constraint the caller can still reject.
+export function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }) {
   const combined = `${systemPrompt}\n\n---\nTASK:\n${task}`;
   switch (runner) {
     case 'claude': {
@@ -58,26 +65,36 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }
         // Headless mode denies anything not allowlisted: reviewer may read,
         // run git diff/log, and write ONLY its report file.
         args.push('--allowedTools', 'Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(.pipeline/review_report.md)');
-      } else {
-        args.push('--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch');
+        return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: true };
       }
-      return { bin: 'claude', args, parse: 'claude-stream-json' };
+      args.push('--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch');
+      return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: false };
     }
     case 'cursor': {
-      const args = ['-p', combined, '--output-format', 'stream-json', '--force'];
+      // cursor-agent has no read-only allowlist; withhold --force so it cannot
+      // auto-approve writes during a read-only audit (best-effort).
+      const args = ['-p', combined, '--output-format', 'stream-json'];
+      if (!readOnly) args.push('--force');
       if (model) args.push('--model', model);
-      return { bin: 'cursor-agent', args, parse: 'jsonl-or-text' };
+      return { bin: 'cursor-agent', args, parse: 'jsonl-or-text', readOnlyEnforced: false };
     }
     case 'codex': {
-      const args = ['exec', '--full-auto', '--json'];
+      // codex exec supports a hard read-only sandbox.
+      const args = ['exec'];
+      if (readOnly) args.push('--sandbox', 'read-only');
+      else args.push('--full-auto');
+      args.push('--json');
       if (model) args.push('--model', model);
       args.push(combined);
-      return { bin: 'codex', args, parse: 'jsonl-or-text' };
+      return { bin: 'codex', args, parse: 'jsonl-or-text', readOnlyEnforced: !!readOnly };
     }
     case 'gemini': {
-      const args = ['-p', combined, '--yolo'];
+      // gemini has no read-only flag; withhold --yolo so it cannot auto-run
+      // mutating actions during a read-only audit (best-effort).
+      const args = ['-p', combined];
+      if (!readOnly) args.push('--yolo');
       if (model) args.push('--model', model);
-      return { bin: 'gemini', args, parse: 'text' };
+      return { bin: 'gemini', args, parse: 'text', readOnlyEnforced: false };
     }
     default: {
       const custom = config.customRunners?.[runner];
@@ -86,7 +103,7 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }
         .replaceAll('{task}', task)
         .replaceAll('{systemPrompt}', systemPrompt)
         .replaceAll('{readOnly}', String(!!readOnly));
-      return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text' };
+      return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text', readOnlyEnforced: false };
     }
   }
 }
@@ -176,13 +193,18 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse } = buildInvocation({ runner, systemPrompt, task, readOnly, config, model });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, systemPrompt, task, readOnly, config, model });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
   const log = fs.createWriteStream(logFile, { flags: cycle > 1 ? 'a' : 'w' });
   const modelLabel = model ? ` · model ${model}` : '';
   log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
+  if (readOnly && !readOnlyEnforced) {
+    const warn = `[warn] runner "${runner}" cannot hard-enforce read-only; auto-approve flags withheld (best-effort). Use claude or codex for a guaranteed read-only audit.`;
+    log.write(warn + '\n');
+    appendEvent(paths, { stage, cycle, type: 'readonly_best_effort', runner });
+  }
   appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined });
 
   return new Promise((resolve) => {

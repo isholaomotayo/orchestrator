@@ -186,6 +186,10 @@
   .artifact-card code { font: 11.5px ui-monospace, Menlo, monospace; background: var(--inline-code-bg); border-radius: 4px; padding: 1px 4px; }
   .artifact-card pre code { background: none; padding: 0; }
   .artifact-card ul { padding-left: 20px; margin: 6px 0; }
+  .artifact-card table, .txt table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 11.5px; display: block; overflow-x: auto; }
+  .artifact-card th, .artifact-card td, .txt th, .txt td { border: 1px solid var(--border); padding: 5px 10px; text-align: left; vertical-align: top; }
+  .artifact-card th, .txt th { background: var(--pre-bg); font-weight: 700; }
+  .artifact-card tbody tr:nth-child(even) td, .txt tbody tr:nth-child(even) td { background: var(--pre-bg); }
   .kw { color: var(--syntax-kw); } .str { color: var(--syntax-str); } .cmt { color: var(--syntax-cmt); } .typ { color: var(--syntax-typ); }
   .diffcard { background: var(--diff-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 0; margin-bottom: 10px; font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; }
   .diffcard .dl { padding: 0 14px; white-space: pre; }
@@ -449,7 +453,25 @@ function renderMd(md) {
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/\*(?!\s)([^*]+)\*/g, '<em>$1</em>');
-    for (const line of lines) {
+    const isTableRow = (l) => /\|/.test(l) && /^\s*\|?.*\|.*$/.test(l);
+    const isTableSep = (l) => /^\s*\|?(\s*:?-{2,}:?\s*\|)+\s*:?-{2,}:?\s*\|?\s*$/.test(l) || /^\s*\|(\s*:?-{2,}:?\s*\|)+\s*$/.test(l);
+    const splitRow = (l) => l.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      if (isTableRow(line) && li + 1 < lines.length && isTableSep(lines[li + 1])) {
+        flush(); if (inList) { html += '</ul>'; inList = false; }
+        const headers = splitRow(line);
+        let body = '';
+        li += 2;
+        while (li < lines.length && isTableRow(lines[li]) && !isTableSep(lines[li])) {
+          const cells = splitRow(lines[li]);
+          body += '<tr>' + headers.map((_, ci) => `<td>${inline(cells[ci] ?? '')}</td>`).join('') + '</tr>';
+          li++;
+        }
+        li--;
+        html += '<table><thead><tr>' + headers.map((hd) => `<th>${inline(hd)}</th>`).join('') + '</tr></thead><tbody>' + body + '</tbody></table>';
+        continue;
+      }
       const h = line.match(/^(#{1,4})\s+(.*)/);
       if (h) { flush(); if (inList) { html += '</ul>'; inList = false; } html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
       if (/^\s*[-*]\s+/.test(line)) { flush(); if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + inline(line.replace(/^\s*[-*]\s+/, '')) + '</li>'; continue; }
@@ -805,8 +827,19 @@ function renderFeed() {
     html += isDiff ? `<div class="diffcard">${renderDiff(content)}</div>` : `<div class="artifact-card">${renderMd(content)}</div>`;
   }
 
-  feed.innerHTML = html || '<div class="empty-feed">No activity yet for this agent.</div>';
+  const finalHtml = html || '<div class="empty-feed">No activity yet for this agent.</div>';
+  const key = name + '\u0000' + finalHtml;
+  if (feed._renderKey === key) return;
+  if (feed._renderKey !== undefined && feed._renderKey.split('\u0000')[0] === name && selectionInside(feed)) return;
+  feed._renderKey = key;
+  feed.innerHTML = finalHtml;
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+
+function selectionInside(el) {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+  return el.contains(sel.getRangeAt(0).commonAncestorContainer);
 }
 
 async function loadArtifacts() {

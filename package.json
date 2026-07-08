@@ -3,9 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
   "description": "Portable unified agentic pipeline (Planner -> Coder self-healing loop -> Tester -> Reviewer) with a live zero-dependency dashboard.",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "test": "node --test demo/*.test.js",
+    "test": "node --test pipeline/*.test.mjs",
+    "typecheck": "for f in pipeline/*.mjs; do node --check \"$f\" || exit 1; done",
     "ui": "node pipeline/ui-server.mjs",
     "orchestrate": "bash .pipeline/orchestrate.sh",
     "pipeline": "bash .pipeline/orchestrate.sh",

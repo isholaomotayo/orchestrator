@@ -12,6 +12,9 @@
 .pipeline/.lock
 .pipeline/ui-server.pid
 .pipeline/ui-server.out
+.pipeline/orchestrator.out
+.pipeline/ui.url
+.pipeline/stage-handoff.json
 .pipeline/followups/
 .pipeline/diff.patch
 .pipeline/runs/
