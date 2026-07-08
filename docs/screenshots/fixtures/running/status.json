@@ -1,0 +1,57 @@
+{
+  "task": "Add input validation to the auth API login endpoint",
+  "startedAt": "2026-07-08T04:10:00.000Z",
+  "endedAt": null,
+  "overall": "running",
+  "verdict": null,
+  "haltReason": null,
+  "runner": "claude",
+  "sandbox": false,
+  "limits": { "coderMax": 5, "postTesterMax": 2 },
+  "stages": [
+    {
+      "name": "planner",
+      "status": "passed",
+      "cycle": 1,
+      "maxCycles": 1,
+      "startedAt": "2026-07-08T04:10:00.000Z",
+      "endedAt": "2026-07-08T04:10:48.000Z",
+      "artifact": "specs.md",
+      "detail": null,
+      "checks": null
+    },
+    {
+      "name": "coder",
+      "status": "running",
+      "cycle": 2,
+      "maxCycles": 5,
+      "startedAt": "2026-07-08T04:10:49.000Z",
+      "endedAt": null,
+      "artifact": null,
+      "detail": "fix cycle 2",
+      "checks": { "passedCount": 2, "failedCount": 1 }
+    },
+    {
+      "name": "tester",
+      "status": "pending",
+      "cycle": 0,
+      "maxCycles": 1,
+      "startedAt": null,
+      "endedAt": null,
+      "artifact": null,
+      "detail": null,
+      "checks": null
+    },
+    {
+      "name": "reviewer",
+      "status": "pending",
+      "cycle": 0,
+      "maxCycles": 1,
+      "startedAt": null,
+      "endedAt": null,
+      "artifact": null,
+      "detail": null,
+      "checks": null
+    }
+  ]
+}

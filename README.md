@@ -5,9 +5,11 @@ A portable, zero-dependency multi-agent pipeline that turns a vague feature requ
 It works with whichever coding-agent CLI you already have installed (Claude Code, Cursor, Codex, or Gemini/Antigravity) and lives entirely inside your repository as plain files: no server to deploy, no database, no npm install.
 
 ```bash
-bash .pipeline/spawn.sh "Add rate limiting to the auth API" --runner claude
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
 # → http://localhost:4600
 ```
+
+![Completed pipeline run in the live dashboard](docs/screenshots/03-dashboard-completed.png)
 
 ---
 
@@ -16,6 +18,7 @@ bash .pipeline/spawn.sh "Add rate limiting to the auth API" --runner claude
 - [Why this exists](#why-this-exists)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
+- [Dashboard walkthrough](#dashboard-walkthrough)
 - [Installing an agent CLI](#installing-an-agent-cli)
 - [The pipeline stages](#the-pipeline-stages)
 - [The self-healing loop, in depth](#the-self-healing-loop-in-depth)
@@ -28,6 +31,7 @@ bash .pipeline/spawn.sh "Add rate limiting to the auth API" --runner claude
 - [Run history and state files](#run-history-and-state-files)
 - [Multiple repos on one machine](#multiple-repos-on-one-machine)
 - [Editor / agent discovery](#editor--agent-discovery)
+- [Install in any project (`/orchestrate`)](#install-in-any-project-orchestrate)
 - [Where this excels](#where-this-excels)
 - [Limitations and known trade-offs](#limitations-and-known-trade-offs)
 - [Future improvements](#future-improvements)
@@ -72,7 +76,7 @@ sequenceDiagram
     participant A as Agent CLI (claude/cursor/codex/gemini)
     participant Ck as checker.mjs
 
-    U->>O: spawn.sh "task"
+    U->>O: orchestrate.sh "task"
     O->>A: Planner prompt
     A-->>O: specs.md
     loop fix cycle (until pass or max)
@@ -88,7 +92,7 @@ sequenceDiagram
     O-->>U: status.json + verdict
 ```
 
-Everything the agents produce is a plain file under `.pipeline/`. The orchestrator is the only thing that reads/writes `status.json` and `events.jsonl`; the dashboard only ever reads them (plus two small control endpoints to start/stop/extend a run). This means you can run the whole pipeline with **no dashboard running at all** — `spawn.sh` and `orchestrator.mjs` work standalone from any terminal or CI job.
+Everything the agents produce is a plain file under `.pipeline/`. The orchestrator is the only thing that reads/writes `status.json` and `events.jsonl`; the dashboard only ever reads them (plus two small control endpoints to start/stop/extend a run). This means you can run the whole pipeline with **no dashboard running at all** — `orchestrate.sh` and `orchestrator.mjs` work standalone from any terminal or CI job.
 
 ## Quickstart
 
@@ -99,7 +103,7 @@ git clone <this-repo>
 cd <this-repo>
 
 # Start a run — the dashboard boots automatically on first use
-bash .pipeline/spawn.sh "Add rate limiting to the auth API" --runner claude
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
 ```
 
 Open **http://localhost:4600** to watch it live. Or run the dashboard on its own:
@@ -109,6 +113,75 @@ npm run ui   # equivalent to: node pipeline/ui-server.mjs
 ```
 
 From the dashboard's **New run** button you can start a pipeline entirely from the browser — no terminal needed after the first launch.
+
+## Dashboard walkthrough
+
+The dashboard at **http://localhost:4600** is the control surface for every run. You can start from the CLI, from `/orchestrate` in your agent, or from the UI itself.
+
+### Step 1 — Open the workspace
+
+After cloning, start the UI alone (optional) or let `orchestrate.sh` boot it on first run:
+
+```bash
+npm run ui
+# or
+bash .pipeline/orchestrate.sh "your task"
+```
+
+On a fresh repo you see the idle workspace with agent sidebar, progress stepper, and **New run**:
+
+![Idle dashboard before the first run](docs/screenshots/01-dashboard-idle.png)
+
+### Step 2 — Start a run
+
+**Option A — Cursor / agent slash command**
+
+```bash
+/orchestrate Fix the failing multiply test in demo/math.js
+```
+
+**Option B — CLI**
+
+```bash
+bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
+```
+
+**Option C — Dashboard modal** (task, runner, cycle limits, sandbox):
+
+![New run modal in the dashboard](docs/screenshots/05-new-run-modal.png)
+
+### Step 3 — Watch agents work
+
+The sidebar shows each agent's status. During the Coder fix loop you see the active cycle, checker pass/fail counts, and a live activity feed:
+
+![Dashboard while the Coder self-healing loop is running](docs/screenshots/02-dashboard-running.png)
+
+### Step 4 — Review the verdict
+
+When all stages finish, the header shows `completed — APPROVED` (or another verdict). Select **Reviewer** to read `review_report.md` and the colorized `diff.patch`:
+
+![Completed run with review report and diff](docs/screenshots/03-dashboard-completed.png)
+
+### Step 5 — Extend if cycles are exhausted
+
+If the Coder hits `MAX_CYCLES`, the dashboard halts with an **Extend & continue** banner (same as `bash .pipeline/orchestrate.sh --resume --extend 5`):
+
+![Halted run with extend banner after MAX_CYCLES](docs/screenshots/04-dashboard-halted.png)
+
+### Preview the UI locally (demo fixtures)
+
+Regenerate or preview screenshots without running a real agent:
+
+```bash
+# Load a completed demo run into .pipeline/
+node scripts/seed-demo-ui.mjs completed
+npm run ui
+
+# Regenerate README screenshots (requires playwright — dev dependency)
+pnpm run screenshots
+```
+
+Fixture data lives in [`docs/screenshots/fixtures/`](docs/screenshots/fixtures/).
 
 ## Installing an agent CLI
 
@@ -166,7 +239,7 @@ There's a **second** fix loop, distinct from the first: after the Tester adds ne
 A `MAX_CYCLES` halt is not a dead end — it's a checkpoint. Nothing is discarded: `specs.md`, `changes.md`, and all prior cycle history stay exactly as they were. From either the CLI or the dashboard you can add more cycles to the **same** loop and keep going, as many times as you want:
 
 ```bash
-bash .pipeline/spawn.sh --resume --extend 5 --runner claude
+bash .pipeline/orchestrate.sh --resume --extend 5 --runner claude
 ```
 
 or click **Extend & continue** in the dashboard's halt banner, which lets you type in exactly how many extra cycles to allow.
@@ -225,11 +298,11 @@ node pipeline/orchestrator.mjs --task "description" \
 node pipeline/orchestrator.mjs --resume --extend N [--runner ...]
 ```
 
-`.pipeline/spawn.sh` wraps the same two forms and additionally boots the dashboard:
+`.pipeline/orchestrate.sh` wraps the same two forms and additionally boots the dashboard:
 
 ```
-bash .pipeline/spawn.sh "description" [--runner ...] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
-bash .pipeline/spawn.sh --resume --extend N [--runner ...] [--no-ui]
+bash .pipeline/orchestrate.sh "description" [--runner ...] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
+bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 ```
 
 | Flag | Applies to | Meaning |
@@ -240,7 +313,7 @@ bash .pipeline/spawn.sh --resume --extend N [--runner ...] [--no-ui]
 | `--max-post-tester-cycles N` | new run | Override `maxPostTesterCycles` for this run only. |
 | `--resume` | extend | Continue the most recently halted run instead of starting a new one. |
 | `--extend N` | extend | How many additional cycles to grant the loop that halted. Required with `--resume`. |
-| `--no-ui` | both (spawn.sh only) | Skip auto-starting the dashboard server. |
+| `--no-ui` | both (orchestrate.sh only) | Skip auto-starting the dashboard server. |
 
 ## Configuration reference
 
@@ -283,7 +356,7 @@ bash .pipeline/spawn.sh --resume --extend N [--runner ...] [--no-ui]
 
 ## Run history and state files
 
-Every file below lives under `.pipeline/` and is gitignored (only the prompts, `skill.json`, `config.json`, and `spawn.sh` are committed):
+Every file below lives under `.pipeline/` and is gitignored (only the prompts, `skill.json`, `config.json`, and `orchestrate.sh` are committed):
 
 | File | Purpose |
 |---|---|
@@ -299,20 +372,45 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 
 ## Multiple repos on one machine
 
-Each repository gets its own dashboard. `spawn.sh` probes `/healthz` (which reports which `repoRoot` it's serving): a server already serving *this* repo is reused, a server serving a *different* repo is skipped, and the next free port (`uiPort` up to `uiPort + 20`) is used instead. You'll never accidentally watch repo B's pipeline from repo A's terminal.
+Each repository gets its own dashboard. `orchestrate.sh` probes `/healthz` (which reports which `repoRoot` it's serving): a server already serving *this* repo is reused, a server serving a *different* repo is skipped, and the next free port (`uiPort` up to `uiPort + 20`) is used instead. You'll never accidentally watch repo B's pipeline from repo A's terminal.
 
 Concurrent runs **within** the same repo are intentionally blocked by the mutex lock — the dashboard always reflects exactly one active (or most-recently-halted) run at a time, with history for the rest.
 
 ## Editor / agent discovery
 
-The skill declares itself to every supported CLI via committed rule files, so any of them picks it up automatically in this repo:
+The `/orchestrate` skill declares itself to every supported CLI via committed rule files:
 
+- [.cursor/commands/orchestrate.md](.cursor/commands/orchestrate.md) — Cursor slash command `/orchestrate`
 - [.clauderules](.clauderules) — Claude Code
-- [.cursorrules](.cursorrules) — Cursor
+- [.cursorrules](.cursorrules) — Cursor rules
 - [AGENTS.md](AGENTS.md) — Codex, Antigravity (and any other `AGENTS.md`-aware tool)
 - [GEMINI.md](GEMINI.md) — Gemini CLI
+- [skills/orchestrate/SKILL.md](skills/orchestrate/SKILL.md) — open skills ecosystem (`npx skills add`)
+- [.pipeline/skill.json](.pipeline/skill.json) — workspace manifest
 
-All four also encode the isolation guardrails (treat `.pipeline/` and `.pipeline_sandbox/` as read-only, respect `.lock`) so a general-purpose coding assistant working in the same repo doesn't collide with an active pipeline run.
+All of these route to `bash .pipeline/orchestrate.sh "<task>"` and encode isolation guardrails (treat `.pipeline/` and `.pipeline_sandbox/` as read-only, respect `.lock`).
+
+## Install in any project (`/orchestrate`)
+
+Add the skill to any repository, bootstrap the pipeline scaffold, then invoke `/orchestrate` from your agent:
+
+```bash
+# 1. Install agent instructions (Cursor example)
+npx skills add isholaomotayo/orchestrator --skill orchestrate -a cursor -y --copy
+
+# 2. Bootstrap .pipeline/ + pipeline/ into the current repo (once)
+bash .agents/skills/orchestrate/scripts/bootstrap.sh
+
+# 3. In Cursor chat
+/orchestrate Add rate limiting to the auth API
+```
+
+Or run directly:
+
+```bash
+bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
+pnpm orchestrate "Add rate limiting to the auth API"
+```
 
 ## Where this excels
 
@@ -346,14 +444,14 @@ All four also encode the isolation guardrails (treat `.pipeline/` and `.pipeline
 | `No agent CLI found on PATH` | None of `claude`/`cursor-agent`/`codex`/`gemini` are installed | Install one (see [above](#installing-an-agent-cli)) or set `runner` in `config.json` to a `customRunners` entry |
 | Extend button doesn't appear | The halt reason wasn't `MAX_CYCLES` (e.g. it was `REGRESSION_BLOCKED` or `MISSING_ARTIFACT`) | These require a human fix, not more cycles — inspect `checker_report.md` / `review_report.md` directly |
 | `Cannot resume: sandbox worktree ... no longer exists` | You manually removed `.pipeline_sandbox/` between runs | Start a fresh run instead of extending |
-| Two repos fighting over port 4600 | Rare — should auto-resolve | `spawn.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once |
+| Two repos fighting over port 4600 | Rare — should auto-resolve | `orchestrate.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once |
 
 ## Demo
 
 [demo/math.js](demo/math.js) ships with an intentional bug (`multiply` adds instead of multiplying):
 
 ```bash
-bash .pipeline/spawn.sh "Fix the failing multiply test in demo/math.js" --runner claude
+bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
 ```
 
 Watch the full Planner → Coder (fix loop) → Tester → Reviewer flow reach a verdict on the dashboard.

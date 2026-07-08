@@ -1,7 +1,9 @@
 {
-  "name": "execute_agent_pipeline",
-  "description": "Executes a unified self-healing agentic pipeline (Planner -> Coder[builder-checker loop] -> Tester -> Reviewer) to build software features from vague descriptions, with a live progress dashboard.",
-  "command": "bash .pipeline/spawn.sh",
+  "name": "orchestrate",
+  "slash_command": "/orchestrate",
+  "description": "Runs a self-healing multi-agent pipeline (Planner → Coder fix loop → Tester → Reviewer) with a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh.",
+  "command": "bash .pipeline/orchestrate.sh",
+  "repository": "https://github.com/isholaomotayo/orchestrator",
   "arguments": {
     "task_description": {
       "type": "string",

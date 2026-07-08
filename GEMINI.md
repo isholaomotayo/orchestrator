@@ -1,9 +1,9 @@
 # Gemini CLI Instructions
 
-This repository ships a portable multi-agent pipeline skill declared in `.pipeline/skill.json` (Planner → Coder self-healing loop → Tester → Reviewer, live dashboard at http://localhost:4600).
+This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → Coder self-healing loop → Tester → Reviewer, live dashboard at http://localhost:4600).
 
-For non-trivial feature or refactoring requests:
-1. Invoke: `bash .pipeline/spawn.sh "<user requirements>"`
+For `/orchestrate` or non-trivial feature/refactoring requests:
+1. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"`
 2. When it exits, read `.pipeline/review_report.md` and report the verdict.
 
 Isolation rules:

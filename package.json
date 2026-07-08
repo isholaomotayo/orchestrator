@@ -7,6 +7,12 @@
   "scripts": {
     "test": "node --test demo/*.test.js",
     "ui": "node pipeline/ui-server.mjs",
-    "pipeline": "bash .pipeline/spawn.sh"
+    "orchestrate": "bash .pipeline/orchestrate.sh",
+    "pipeline": "bash .pipeline/orchestrate.sh",
+    "demo:ui": "node scripts/seed-demo-ui.mjs completed && npm run ui",
+    "screenshots": "node scripts/capture-screenshots.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.52.0"
   }
 }

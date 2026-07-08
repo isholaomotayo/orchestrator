@@ -1,0 +1,59 @@
+{
+  "task": "Refactor user service into smaller modules",
+  "startedAt": "2026-07-08T02:15:00.000Z",
+  "endedAt": "2026-07-08T02:52:00.000Z",
+  "overall": "halted",
+  "verdict": null,
+  "haltReason": "MAX_CYCLES",
+  "haltedPhase": "coder",
+  "runner": "claude",
+  "sandbox": false,
+  "limits": { "coderMax": 5, "postTesterMax": 2 },
+  "extensions": [],
+  "stages": [
+    {
+      "name": "planner",
+      "status": "passed",
+      "cycle": 1,
+      "maxCycles": 1,
+      "startedAt": "2026-07-08T02:15:00.000Z",
+      "endedAt": "2026-07-08T02:16:10.000Z",
+      "artifact": "specs.md",
+      "detail": null,
+      "checks": null
+    },
+    {
+      "name": "coder",
+      "status": "failed",
+      "cycle": 5,
+      "maxCycles": 5,
+      "startedAt": "2026-07-08T02:16:11.000Z",
+      "endedAt": "2026-07-08T02:52:00.000Z",
+      "artifact": "changes.md",
+      "detail": "max cycles exhausted",
+      "checks": { "passedCount": 4, "failedCount": 1 }
+    },
+    {
+      "name": "tester",
+      "status": "pending",
+      "cycle": 0,
+      "maxCycles": 1,
+      "startedAt": null,
+      "endedAt": null,
+      "artifact": null,
+      "detail": null,
+      "checks": null
+    },
+    {
+      "name": "reviewer",
+      "status": "pending",
+      "cycle": 0,
+      "maxCycles": 1,
+      "startedAt": null,
+      "endedAt": null,
+      "artifact": null,
+      "detail": null,
+      "checks": null
+    }
+  ]
+}

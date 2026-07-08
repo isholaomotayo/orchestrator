@@ -1,0 +1,13 @@
+diff --git a/demo/math.js b/demo/math.js
+index 1111111..2222222 100644
+--- a/demo/math.js
++++ b/demo/math.js
+@@ -4,7 +4,7 @@ export function add(a, b) {
+ }
+ 
+ export function multiply(a, b) {
+-  return a + b;
++  return a * b;
+ }
+ 
+ export function divide(a, b) {
