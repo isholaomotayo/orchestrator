@@ -22,7 +22,7 @@ const HOST = '127.0.0.1';
 
 const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const AGENT_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
-const RUNNERS = ['auto', 'claude', 'cursor', 'codex', 'gemini'];
+const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
 
 // A "run" is either the live .pipeline/ dir (runId null) or an archived
@@ -135,6 +135,24 @@ function positiveInt(v) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
+function spawnOrchestrator(nodeArgs, options = {}) {
+  const outPath = path.join(paths.dir, 'orchestrator.out');
+  const flags = options.append ? 'a' : 'w';
+  const outFd = fs.openSync(outPath, flags);
+  fs.writeSync(outFd, `\n[UI] Spawning at ${new Date().toISOString()}: ${process.execPath} ${nodeArgs.join(' ')}\n`);
+  
+  const child = spawn(process.execPath, nodeArgs, {
+    cwd: repoRoot,
+    detached: true,
+    stdio: ['ignore', outFd, outFd],
+    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
+  });
+  
+  child.unref();
+  fs.closeSync(outFd);
+  return child;
+}
+
 function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles, modelProfile, models }) {
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
   if (runner && !RUNNERS.includes(runner) && !config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
@@ -150,19 +168,16 @@ function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles, model
   }
   const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--task', task.trim(), '--model-profile', profile];
   if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
-  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
+  if (runner && runner !== 'auto') {
+    nodeArgs.push('--runner', runner);
+    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+  }
   if (sandbox) nodeArgs.push('--sandbox');
   const mc = positiveInt(maxCycles);
   if (mc) nodeArgs.push('--max-cycles', String(mc));
   const mptc = positiveInt(maxPostTesterCycles);
   if (mptc) nodeArgs.push('--max-post-tester-cycles', String(mptc));
-  const child = spawn(process.execPath, nodeArgs, {
-    cwd: repoRoot,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
-  });
-  child.unref();
+  const child = spawnOrchestrator(nodeArgs, { append: false });
   return { ok: true, pid: child.pid };
 }
 
@@ -181,14 +196,11 @@ function extendRun({ extend, runner }) {
     return { error: `cannot extend: last halt reason was "${status.haltReason || status.overall}", not MAX_CYCLES`, code: 409 };
   }
   const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume', '--extend', String(n)];
-  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
-  const child = spawn(process.execPath, nodeArgs, {
-    cwd: repoRoot,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
-  });
-  child.unref();
+  if (runner && runner !== 'auto') {
+    nodeArgs.push('--runner', runner);
+    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+  }
+  const child = spawnOrchestrator(nodeArgs, { append: true });
   return { ok: true, pid: child.pid, extend: n };
 }
 
@@ -205,14 +217,11 @@ function resumeInterruptedRunUi({ runner }) {
     return { error: `cannot resume: run is not interrupted or stale (overall=${status.overall}, haltReason=${status.haltReason})`, code: 409 };
   }
   const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume'];
-  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
-  const child = spawn(process.execPath, nodeArgs, {
-    cwd: repoRoot,
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
-  });
-  child.unref();
+  if (runner && runner !== 'auto') {
+    nodeArgs.push('--runner', runner);
+    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+  }
+  const child = spawnOrchestrator(nodeArgs, { append: true });
   return { ok: true, pid: child.pid };
 }
 

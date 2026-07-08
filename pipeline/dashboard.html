@@ -498,7 +498,8 @@ const RUNNER_LABELS = {
   cursor: 'Cursor',
   codex: 'Codex',
   gemini: 'Gemini',
-  host: 'IDE Chat',
+  agy: 'Antigravity',
+  host: 'Chat (host)',
 };
 
 function formatRunner(runner) {
@@ -619,8 +620,8 @@ function renderTop() {
   if (dur) parts.push(dur);
   totals.textContent = parts.join(' · ');
   if (state.stale) { pill.textContent = 'stale — resume to continue'; pill.className = 'pill stale'; }
-  else if (s.overall === 'awaiting_chat') { pill.textContent = 'awaiting chat — complete stage in IDE'; pill.className = 'pill awaiting'; }
-  else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? 'chat mode — stage in IDE' : '1 agent active'; pill.className = 'pill active'; }
+  else if (s.overall === 'awaiting_chat') { pill.textContent = `awaiting ${formatRunner(s.runner)} — complete stage in agent`; pill.className = 'pill awaiting'; }
+  else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? `${formatRunner(s.runner)} agent active` : '1 agent active'; pill.className = 'pill active'; }
   else if (s.overall === 'halted') {
     if (s.haltReason === 'INTERRUPTED') {
       pill.textContent = 'stopped — resume to continue';
@@ -673,7 +674,7 @@ function renderHeader() {
   const stageModel = modelForAgent(name);
   const runner = state?.status?.runner;
   const runtimeLine = runner
-    ? `<div class="runtime-line"><span class="lbl">CLI</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${esc(stageModel)}</strong>` : ''}</div>`
+    ? `<div class="runtime-line"><span class="lbl">Agent</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${esc(stageModel)}</strong>` : ''}</div>`
     : '';
   const modelBadge = stageModel ? `<span class="model-badge">${esc(stageModel)}</span>` : '';
   document.getElementById('agent-header').innerHTML = `
@@ -681,7 +682,7 @@ function renderHeader() {
     <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}</div>
     <div class="spacer"></div>
     ${modelBadge}
-    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? 'Awaiting chat' : cap(st.status)}</span>`;
+    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? `Awaiting ${formatRunner(state?.status?.runner)}` : cap(st.status)}</span>`;
   const banner = document.getElementById('halt-banner');
   const s = state?.status;
   if (state?.canResume) {
@@ -712,7 +713,7 @@ function renderHeader() {
   if (s?.overall === 'awaiting_chat') {
     const dash = s.dashboardUrl || (state?.live !== false ? `http://localhost:${window.location.port || '4600'}` : '');
     awaiting.style.display = 'block';
-    awaiting.innerHTML = `Chat handoff — complete the <strong>${esc(s.awaitingStage || 'current')}</strong> stage in your IDE, then run <code>bash .pipeline/orchestrate.sh --continue</code>. Brief: <code>.pipeline/stage-handoff.json</code>${dash ? ` · Dashboard: <a href="${esc(dash)}" target="_blank" rel="noopener">${esc(dash)}</a>` : ''}`;
+    awaiting.innerHTML = `Waiting for <strong>${esc(formatRunner(s.runner))}</strong> — complete the <strong>${esc(s.awaitingStage || 'current')}</strong> stage in your agent CLI, then run <code>bash .pipeline/orchestrate.sh --continue</code>. Brief: <code>.pipeline/stage-handoff.json</code>${dash ? ` · Dashboard: <a href="${esc(dash)}" target="_blank" rel="noopener">${esc(dash)}</a>` : ''}`;
   } else awaiting.style.display = 'none';
   const archived = document.getElementById('archive-banner');
   archived.style.display = state?.live === false ? 'block' : 'none';
@@ -778,7 +779,7 @@ function renderFeed() {
     if (ev.type === 'checks_start') { flushChips(); html += `<div class="cycle-divider">Checker · verification</div>`; continue; }
     if (ev.type === 'check_end') { flushChips(); html += `<div class="sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`; continue; }
     if (ev.type === 'followup_applied') { flushChips(); html += `<div class="note-card">${ICONS.pin} Follow-up applied: ${esc(ev.text)}</div>`; continue; }
-    if (ev.type === 'chat_handoff') { flushChips(); html += `<div class="note-card">${ICONS.pin} Chat handoff — write ${esc(ev.artifact || 'artifact')} in IDE, then run <code>bash .pipeline/orchestrate.sh --continue</code></div>`; continue; }
+    if (ev.type === 'chat_handoff') { flushChips(); html += `<div class="note-card">${ICONS.pin} ${esc(formatRunner(state?.status?.runner))} handoff — write ${esc(ev.artifact || 'artifact')} in agent CLI, then run <code>bash .pipeline/orchestrate.sh --continue</code></div>`; continue; }
     if (ev.type !== 'agent_output') continue;
     if (ev.kind === 'tool') {
       const chip = chipFor(ev);

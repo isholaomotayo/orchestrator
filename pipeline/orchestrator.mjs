@@ -618,9 +618,16 @@ async function afterReviewerAudit() {
   }
 
   status.reviewPass = (status.reviewPass || 0) + 1;
+  const prevVerdict = status.verdict;
+  status.verdict = null; // Clear the verdict for the new pass
+
+  // Reset the tester and reviewer stages so they are not shown as stale passed/failed in the UI/status
+  setStage('tester', { status: 'pending', cycle: 0, startedAt: null, endedAt: null, artifact: null, detail: null, checks: null });
+  setStage('reviewer', { status: 'pending', cycle: 0, startedAt: null, endedAt: null, artifact: null, detail: null });
+
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'reviewer', type: 'review_fix_start', pass: status.reviewPass, verdict: status.verdict });
-  console.log(`[Orchestrator] Verdict ${status.verdict} — starting automatic review fix pass ${status.reviewPass}/${status.limits.reviewMax}.`);
+  appendEvent(paths, { stage: 'reviewer', type: 'review_fix_start', pass: status.reviewPass, verdict: prevVerdict });
+  console.log(`[Orchestrator] Verdict ${prevVerdict} — starting automatic review fix pass ${status.reviewPass}/${status.limits.reviewMax}.`);
   await runReviewFixPass(status.reviewPass);
 }
 
