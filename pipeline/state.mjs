@@ -23,9 +23,17 @@ export function pipelinePaths(repoRoot) {
     reviewReport: path.join(dir, 'review_report.md'),
     testHistory: path.join(dir, 'test_history.json'),
     diff: path.join(dir, 'diff.patch'),
+    stageHandoff: path.join(dir, 'stage-handoff.json'),
     runs: path.join(dir, 'runs'),
   };
 }
+
+export const STAGE_ARTIFACT_FILES = {
+  planner: 'specs.md',
+  coder: 'changes.md',
+  tester: 'test_suite.md',
+  reviewer: 'review_report.md',
+};
 
 // True when the given PID belongs to a live process we can signal.
 export function pidAlive(pid) {
@@ -64,7 +72,11 @@ export function newStatus(task) {
     task,
     startedAt: new Date().toISOString(),
     endedAt: null,
-    overall: 'running', // running | done | halted
+    overall: 'running', // running | awaiting_chat | done | halted
+    invocationMode: 'cli', // chat | cli — how agent stages are executed
+    runner: 'auto',
+    awaitingStage: null,
+    chatResume: null,   // { step, context } — set when handing off to IDE chat
     verdict: null,      // APPROVED | REQUEST_CHANGES | BLOCK
     haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR
     stages: STAGES.map((name) => ({

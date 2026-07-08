@@ -11,27 +11,30 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock } from './state.mjs';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
+import { detectInvocationMode } from './invocation.mjs';
 
 function parseArgs(argv) {
-  const args = { task: null, runner: null, sandbox: false, resume: false, extend: null, maxCycles: null, maxPostTesterCycles: null };
+  const args = { task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null, maxCycles: null, maxPostTesterCycles: null, mode: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--task') args.task = argv[++i];
     else if (a === '--runner') args.runner = argv[++i];
     else if (a === '--sandbox') args.sandbox = true;
     else if (a === '--resume') args.resume = true;
+    else if (a === '--continue') args.continue = true;
     else if (a === '--extend') args.extend = parseInt(argv[++i], 10);
     else if (a === '--max-cycles') args.maxCycles = parseInt(argv[++i], 10);
     else if (a === '--max-post-tester-cycles') args.maxPostTesterCycles = parseInt(argv[++i], 10);
+    else if (a === '--mode') args.mode = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --resume --extend <n> [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume --extend <n> [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -41,10 +44,15 @@ const uiPort = process.env.PIPELINE_UI_PORT || config.uiPort;
 
 if (args.resume) {
   if (!Number.isInteger(args.extend) || args.extend < 1) { console.error(USAGE); process.exit(2); }
+} else if (args.continue) {
+  // no task required
 } else if (!args.task) {
   console.error(USAGE); process.exit(2);
 }
 if (args.runner) config.runner = args.runner;
+
+const invocation = detectInvocationMode({ env: process.env, argv: process.argv });
+const invocationMode = args.mode === 'chat' || args.mode === 'cli' ? args.mode : invocation.mode;
 
 // ---- Guardrail 3: mutex lock -----------------------------------------------
 if (fs.existsSync(paths.lock)) {
@@ -60,6 +68,23 @@ fs.mkdirSync(paths.dir, { recursive: true });
 fs.writeFileSync(paths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
 
 let status, history, workCwd, runner;
+
+function loadWorkCwdFromStatus() {
+  workCwd = repoRoot;
+  if (status.sandbox) {
+    const sandbox = path.join(repoRoot, '.pipeline_sandbox');
+    if (!fs.existsSync(sandbox)) {
+      console.error(`[Orchestrator] Sandbox worktree ${sandbox} no longer exists.`);
+      haltAndExit(1);
+    }
+    workCwd = sandbox;
+  }
+}
+
+function loadHistory() {
+  try { history = JSON.parse(fs.readFileSync(paths.testHistory, 'utf8')); } catch { history = { coder: [], postTester: [] }; }
+}
+
 function releaseLock() {
   try { fs.unlinkSync(paths.lock); } catch {}
 }
@@ -75,8 +100,26 @@ process.on('SIGINT', () => interrupted(130));
 process.on('SIGTERM', () => interrupted(143));
 process.on('exit', releaseLock);
 
-// ---- Set up run state: either resume an existing halted run, or start fresh --
-if (args.resume) {
+// ---- Set up run state: continue chat handoff, resume halted run, or fresh --
+if (args.continue) {
+  let onDisk;
+  try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
+    console.error('[Orchestrator] Nothing to continue: no status.json found.');
+    haltAndExit(1);
+  }
+  if (onDisk.overall !== 'awaiting_chat' || !onDisk.chatResume?.step) {
+    console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff.');
+    haltAndExit(1);
+  }
+  status = onDisk;
+  status.overall = 'running';
+  status.awaitingStage = null;
+  runner = status.runner || 'host';
+  loadWorkCwdFromStatus();
+  loadHistory();
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
+  console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner}). Dashboard: http://localhost:${uiPort}`);
+} else if (args.resume) {
   let onDisk;
   try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
     console.error('[Orchestrator] Nothing to resume: no previous run found.');
@@ -89,16 +132,8 @@ if (args.resume) {
   status = onDisk;
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles }; // back-compat
   runner = args.runner || status.runner;
-  workCwd = repoRoot;
-  if (status.sandbox) {
-    const sandbox = path.join(repoRoot, '.pipeline_sandbox');
-    if (!fs.existsSync(sandbox)) {
-      console.error(`[Orchestrator] Cannot resume: sandbox worktree ${sandbox} no longer exists.`);
-      haltAndExit(1);
-    }
-    workCwd = sandbox;
-  }
-  try { history = JSON.parse(fs.readFileSync(paths.testHistory, 'utf8')); } catch { history = { coder: [], postTester: [] }; }
+  loadWorkCwdFromStatus();
+  loadHistory();
   console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles). Dashboard: http://localhost:${uiPort}`);
 } else {
   // ---- Guardrail 1: sandbox worktree ------------------------------------------
@@ -118,7 +153,7 @@ if (args.resume) {
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
-  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.diff];
+  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.diff, paths.stageHandoff];
   if (fs.existsSync(paths.status)) {
     let runId = 'run';
     try { runId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
@@ -132,8 +167,9 @@ if (args.resume) {
   fs.rmSync(paths.logs, { recursive: true, force: true });
   fs.writeFileSync(paths.vagueRequest, args.task);
 
-  runner = detectRunner(config);
+  runner = detectRunner(config, { invocationMode });
   status = newStatus(args.task);
+  status.invocationMode = invocationMode;
   status.runner = runner;
   status.sandbox = args.sandbox;
   status.haltedPhase = null;
@@ -145,8 +181,9 @@ if (args.resume) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner });
-  console.log(`[Orchestrator] Pipeline started (runner=${runner}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}). Dashboard: http://localhost:${uiPort}`);
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode });
+  const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}). Dashboard: http://localhost:${uiPort}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -186,6 +223,28 @@ function requireArtifact(stageName, file) {
   if (!artifactOk(file)) halt(stageName, 'MISSING_ARTIFACT', `${stageName} did not produce ${path.relative(repoRoot, file)}`);
 }
 
+function requestChatHandoff(stageName, chatResume) {
+  status.chatResume = chatResume;
+  status.overall = 'awaiting_chat';
+  status.awaitingStage = stageName;
+  setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
+  finalize();
+  console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
+  console.log('  bash .pipeline/orchestrate.sh --continue');
+  console.log('[Orchestrator] Stage brief: .pipeline/stage-handoff.json\n');
+  haltAndExit(0);
+}
+
+function agentAuthHint(runnerName) {
+  const hints = {
+    cursor: "Run `agent login` or set CURSOR_API_KEY.",
+    claude: 'Run `claude auth login`.',
+    codex: 'Run `codex login`.',
+    gemini: 'Run `gemini auth login` (see Gemini CLI docs).',
+  };
+  return hints[runnerName] || 'Log in to the agent CLI or invoke from IDE chat (host mode).';
+}
+
 // Human follow-up notes queued from the dashboard are injected into the next
 // invocation of that agent, then cleared.
 function consumeFollowups(name) {
@@ -198,12 +257,23 @@ function consumeFollowups(name) {
   } catch { return ''; }
 }
 
-async function runStageAgent(name, task, { cycle = 1, readOnly = false } = {}) {
+async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null } = {}) {
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const res = await runAgent({ runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config });
-  if (!res.ok && res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed: ${res.error}`);
+  if (res.hostHandoff) {
+    if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
+    requestChatHandoff(name, chatResume);
+  }
+  if (!res.ok) {
+    const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
+    if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
+      halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
+    }
+    if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed: ${res.error}`);
+    halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}. Inspect .pipeline/logs/${name}.log`);
+  }
   return res;
 }
 
@@ -236,36 +306,76 @@ function evaluateChecks(phase, stageName, check) {
   return 'continue';
 }
 
-// ---- Composable stage runners (shared by fresh runs and --resume) ------------
+// ---- Composable stage runners (shared by fresh runs, --continue, and --resume) -
+
+function coderTask(cycle) {
+  return cycle === 1
+    ? `Implement the specification in .pipeline/specs.md for this feature request:\n\n${status.task}\n\nDocument your work in .pipeline/changes.md.`
+    : `Fix cycle ${cycle}: the checker found failures. Read .pipeline/checker_report.md, fix the root causes for the task "${status.task}", and append a "## Fix Cycle ${cycle}" section to .pipeline/changes.md. Do NOT weaken or remove tests.`;
+}
+
+function postTesterCoderTask(localCycle) {
+  return `The Tester added new tests that expose failures. Read .pipeline/checker_report.md, fix the root causes for the task "${status.task}", and append a "## Post-Tester Fix Cycle ${localCycle}" section to .pipeline/changes.md. Do NOT weaken or remove the new tests.`;
+}
+
+async function invokeInitialCoderCycle(cycle) {
+  setStage('coder', { status: 'running', cycle, maxCycles: status.limits.coderMax });
+  console.log(`[Stage] Coder — fix cycle ${cycle}/${status.limits.coderMax}...`);
+  await runStageAgent('coder', coderTask(cycle), {
+    cycle,
+    chatResume: { step: 'after_coder', context: { cycle, loop: 'initial' } },
+  });
+}
+
+async function runCoderChecksAfterInitialCycle(cycle) {
+  requireArtifact('coder', paths.changes);
+  console.log('[Checker] Running verification (test / lint / typecheck)...');
+  appendEvent(paths, { stage: 'coder', cycle, type: 'checks_start' });
+  const check = runChecks({ cwd: workCwd, config, paths });
+  console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
+  if (evaluateChecks('coder', 'coder', check) === 'pass') return 'pass';
+  if (cycle >= status.limits.coderMax) return 'exhausted';
+  return 'continue';
+}
 
 async function runInitialCoderLoop(startCycle) {
   for (let cycle = startCycle; cycle <= status.limits.coderMax; cycle++) {
-    setStage('coder', { cycle, maxCycles: status.limits.coderMax });
-    console.log(`[Stage] Coder — fix cycle ${cycle}/${status.limits.coderMax}...`);
-    const task = cycle === 1
-      ? `Implement the specification in .pipeline/specs.md for this feature request:\n\n${status.task}\n\nDocument your work in .pipeline/changes.md.`
-      : `Fix cycle ${cycle}: the checker found failures. Read .pipeline/checker_report.md, fix the root causes for the task "${status.task}", and append a "## Fix Cycle ${cycle}" section to .pipeline/changes.md. Do NOT weaken or remove tests.`;
-    await runStageAgent('coder', task, { cycle });
-    requireArtifact('coder', paths.changes);
-    console.log('[Checker] Running verification (test / lint / typecheck)...');
-    appendEvent(paths, { stage: 'coder', cycle, type: 'checks_start' });
-    const check = runChecks({ cwd: workCwd, config, paths });
-    console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
-    if (evaluateChecks('coder', 'coder', check) === 'pass') return true;
+    await invokeInitialCoderCycle(cycle);
+    const outcome = await runCoderChecksAfterInitialCycle(cycle);
+    if (outcome === 'pass') return true;
+    if (outcome === 'exhausted') return false;
   }
   return false;
+}
+
+async function invokePostTesterCoderCycle(cycle) {
+  const localCycle = cycle - status.limits.coderMax;
+  const totalMax = status.limits.coderMax + status.limits.postTesterMax;
+  setStage('coder', { status: 'running', cycle, maxCycles: totalMax });
+  console.log(`[Stage] Coder (post-tester fix) — cycle ${localCycle}/${status.limits.postTesterMax}...`);
+  await runStageAgent('coder', postTesterCoderTask(localCycle), {
+    cycle,
+    chatResume: { step: 'after_coder', context: { cycle, loop: 'postTester' } },
+  });
+}
+
+async function runCoderChecksAfterPostTesterCycle(cycle) {
+  requireArtifact('coder', paths.changes);
+  const check = runChecks({ cwd: workCwd, config, paths });
+  console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
+  if (evaluateChecks('postTester', 'tester', check) === 'pass') return 'pass';
+  const totalMax = status.limits.coderMax + status.limits.postTesterMax;
+  if (cycle >= totalMax) return 'exhausted';
+  return 'continue';
 }
 
 async function runPostTesterLoop(startCycle) {
   const totalMax = status.limits.coderMax + status.limits.postTesterMax;
   for (let cycle = startCycle; cycle <= totalMax; cycle++) {
-    const localCycle = cycle - status.limits.coderMax;
-    setStage('coder', { status: 'running', cycle, maxCycles: totalMax });
-    console.log(`[Stage] Coder (post-tester fix) — cycle ${localCycle}/${status.limits.postTesterMax}...`);
-    await runStageAgent('coder', `The Tester added new tests that expose failures. Read .pipeline/checker_report.md, fix the root causes for the task "${status.task}", and append a "## Post-Tester Fix Cycle ${localCycle}" section to .pipeline/changes.md. Do NOT weaken or remove the new tests.`, { cycle });
-    const check = runChecks({ cwd: workCwd, config, paths });
-    console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
-    if (evaluateChecks('postTester', 'tester', check) === 'pass') return true;
+    await invokePostTesterCoderCycle(cycle);
+    const outcome = await runCoderChecksAfterPostTesterCycle(cycle);
+    if (outcome === 'pass') return true;
+    if (outcome === 'exhausted') return false;
   }
   return false;
 }
@@ -273,7 +383,9 @@ async function runPostTesterLoop(startCycle) {
 async function runPlannerStage() {
   setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Planner...');
-  await runStageAgent('planner', `Produce a technical specification for this feature request:\n\n${status.task}\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.`);
+  await runStageAgent('planner', `Produce a technical specification for this feature request:\n\n${status.task}\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.`, {
+    chatResume: { step: 'after_planner', context: {} },
+  });
   requireArtifact('planner', paths.specs);
   setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
 }
@@ -289,7 +401,9 @@ async function runCoderStage() {
 async function runTesterStage() {
   setStage('tester', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Tester...');
-  await runStageAgent('tester', `Write rigorous tests for the implementation of: ${status.task}\n\nRead .pipeline/specs.md and .pipeline/changes.md first. Summarize coverage in .pipeline/test_suite.md.`);
+  await runStageAgent('tester', `Write rigorous tests for the implementation of: ${status.task}\n\nRead .pipeline/specs.md and .pipeline/changes.md first. Summarize coverage in .pipeline/test_suite.md.`, {
+    chatResume: { step: 'after_tester', context: {} },
+  });
   requireArtifact('tester', paths.testSuite);
 
   console.log('[Checker] Re-running full suite with the new tests...');
@@ -313,7 +427,14 @@ async function runReviewerStage() {
   writeDiffArtifact();
   setStage('reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
   console.log('[Stage] Reviewer (read-only audit)...');
-  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, run git diff, and write your verdict to .pipeline/review_report.md.`, { readOnly: true });
+  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, run git diff, and write your verdict to .pipeline/review_report.md.`, {
+    readOnly: true,
+    chatResume: { step: 'after_reviewer', context: {} },
+  });
+  await finishReviewerStage();
+}
+
+async function finishReviewerStage() {
   requireArtifact('reviewer', paths.reviewReport);
   const report = fs.readFileSync(paths.reviewReport, 'utf8');
   const verdictMatch = report.match(/##\s*Verdict:\s*\[?\s*(APPROVED|REQUEST_CHANGES|BLOCK)/i);
@@ -321,10 +442,86 @@ async function runReviewerStage() {
   setStage('reviewer', { status: status.verdict === 'APPROVED' ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
   status.overall = 'done';
+  status.chatResume = null;
   finalize();
   console.log(`\n[Orchestrator] Pipeline complete. Verdict: ${status.verdict}`);
   console.log(`Review: ${path.relative(repoRoot, paths.reviewReport)}`);
   haltAndExit(status.verdict === 'APPROVED' ? 0 : 1);
+}
+
+async function chatContinueRun() {
+  const resume = status.chatResume;
+  status.chatResume = null;
+  try { fs.unlinkSync(paths.stageHandoff); } catch {}
+
+  const step = resume.step;
+  const context = resume.context || {};
+
+  if (step === 'after_planner') {
+    requireArtifact('planner', paths.specs);
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
+    if (!(await runCoderStage())) return;
+    if (!(await runTesterStage())) return;
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'after_coder') {
+    if (context.loop === 'postTester') {
+      const outcome = await runCoderChecksAfterPostTesterCycle(context.cycle);
+      if (outcome === 'pass') {
+        setStage('coder', { status: 'passed' });
+        setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: stage('coder').checks });
+        await runReviewerStage();
+        return;
+      }
+      if (outcome === 'exhausted') {
+        haltMaxCycles('postTester', 'tester', status.limits.postTesterMax);
+        return;
+      }
+      await invokePostTesterCoderCycle(context.cycle + 1);
+      return;
+    }
+
+    const outcome = await runCoderChecksAfterInitialCycle(context.cycle);
+    if (outcome === 'pass') {
+      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
+      if (!(await runTesterStage())) return;
+      await runReviewerStage();
+      return;
+    }
+    if (outcome === 'exhausted') {
+      haltMaxCycles('coder', 'coder', status.limits.coderMax);
+      return;
+    }
+    await invokeInitialCoderCycle(context.cycle + 1);
+    return;
+  }
+
+  if (step === 'after_tester') {
+    requireArtifact('tester', paths.testSuite);
+    console.log('[Checker] Re-running full suite with the new tests...');
+    let check = runChecks({ cwd: workCwd, config, paths });
+    console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
+    if (!check.isPassed) {
+      history.postTester.push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: false, at: new Date().toISOString() });
+      saveHistory();
+      const green = await runPostTesterLoop(status.limits.coderMax + 1);
+      if (!green) { haltMaxCycles('postTester', 'tester', status.limits.postTesterMax); return; }
+      setStage('coder', { status: 'passed' });
+      check = stage('coder').checks;
+    }
+    setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
+    await runReviewerStage();
+    return;
+  }
+
+  if (step === 'after_reviewer') {
+    await finishReviewerStage();
+    return;
+  }
+
+  halt('orchestrator', 'AGENT_ERROR', `Unknown chat resume step "${step}".`);
 }
 
 async function freshRun() {
@@ -367,7 +564,7 @@ async function resumeRun() {
   }
 }
 
-(args.resume ? resumeRun() : freshRun()).catch((err) => {
+(args.continue ? chatContinueRun() : args.resume ? resumeRun() : freshRun()).catch((err) => {
   console.error('[Orchestrator] Uncaught error:', err);
   if (status) { status.overall = 'halted'; status.haltReason = 'AGENT_ERROR'; finalize(); }
   haltAndExit(1);

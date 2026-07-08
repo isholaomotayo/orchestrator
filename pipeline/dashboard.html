@@ -32,6 +32,7 @@
   .pill.active { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
   .pill.halted { background: var(--red-bg); color: var(--red-text); border-color: transparent; }
   .pill.stale { background: var(--amber-bg); color: var(--amber-text); border-color: transparent; }
+  .pill.awaiting { background: var(--purple-bg); color: var(--purple-text); border-color: transparent; }
   #run-select { font: 11.5px inherit; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; background: #f7f6f4; padding: 4px 6px; max-width: 210px; }
   .tb-btn { display: inline-flex; align-items: center; gap: 5px; font: 600 11.5px inherit; border: 1px solid var(--border); background: #fff; color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
   .tb-btn:hover { background: #f7f6f4; }
@@ -89,6 +90,7 @@
   .badge.passed { background: var(--green-bg); color: var(--green-text); }
   .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
   .badge.pending { background: #f0efec; color: var(--muted); }
+  .badge.awaiting_host { background: var(--purple-bg); color: var(--purple-text); }
 
   #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid #fecaca; align-items: center; gap: 10px; flex-wrap: wrap; }
   #halt-banner .msg { flex: 1; min-width: 220px; }
@@ -405,7 +407,8 @@ function renderTop() {
   if (dur) parts.push(dur);
   totals.textContent = parts.join(' · ');
   if (state.stale) { pill.textContent = 'stale — process gone'; pill.className = 'pill stale'; }
-  else if (s.overall === 'running') { pill.textContent = '1 agent active'; pill.className = 'pill active'; }
+  else if (s.overall === 'awaiting_chat') { pill.textContent = 'awaiting chat — complete stage in IDE'; pill.className = 'pill awaiting'; }
+  else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? 'chat mode — stage in IDE' : '1 agent active'; pill.className = 'pill active'; }
   else if (s.overall === 'halted') { pill.textContent = 'halted — needs attention'; pill.className = 'pill halted'; }
   else { pill.textContent = s.verdict ? `completed — ${s.verdict}` : 'completed'; pill.className = 'pill active'; }
 }
@@ -429,7 +432,7 @@ function renderHeader() {
     ${agentIco(name)}
     <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div></div>
     <div class="spacer"></div>
-    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : cap(st.status)}</span>`;
+    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? 'Awaiting chat' : cap(st.status)}</span>`;
   const banner = document.getElementById('halt-banner');
   const s = state?.status;
   if (s?.haltReason) {
@@ -486,6 +489,7 @@ function renderFeed() {
     if (ev.type === 'checks_start') { flushChips(); html += `<div class="cycle-divider">Checker · verification</div>`; continue; }
     if (ev.type === 'check_end') { flushChips(); html += `<div class="sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`; continue; }
     if (ev.type === 'followup_applied') { flushChips(); html += `<div class="note-card">${ICONS.pin} Follow-up applied: ${esc(ev.text)}</div>`; continue; }
+    if (ev.type === 'chat_handoff') { flushChips(); html += `<div class="note-card">${ICONS.pin} Chat handoff — write ${esc(ev.artifact || 'artifact')} in IDE, then run <code>bash .pipeline/orchestrate.sh --continue</code></div>`; continue; }
     if (ev.type !== 'agent_output') continue;
     if (ev.kind === 'tool') {
       const chip = chipFor(ev);

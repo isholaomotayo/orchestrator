@@ -15,13 +15,17 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PIPELINE_DIR="$SCRIPT_DIR"
 BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+   or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume --extend <n> [--runner ...] [--no-ui]'
 
 RESUME=0
+CONTINUE=0
 TASK=""
 if [ "${1:-}" = "--resume" ]; then
   RESUME=1
+elif [ "${1:-}" = "--continue" ]; then
+  CONTINUE=1
 else
   TASK="${1:-}"
   if [ -z "$TASK" ] || [[ "$TASK" == --* ]]; then
@@ -41,9 +45,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-# Guardrail 3: pre-flight mutex check. A lock owned by a dead process (kill -9,
-# crash, reboot) is cleared automatically; a live one blocks.
-if [ -f "$PIPELINE_DIR/.lock" ]; then
+# Guardrail 3: pre-flight mutex check. Allow --continue when awaiting chat handoff.
+if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
   LOCK_PID="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/.lock','utf8')).pid||'')}catch{console.log('')}")"
   if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
     echo "[orchestrate] Pipeline is locked by a running orchestrator (pid $LOCK_PID). Retry after it finishes." >&2
@@ -86,7 +89,9 @@ fi
 
 cd "$REPO_ROOT"
 set +e
-if [ "$RESUME" -eq 1 ]; then
+if [ "$CONTINUE" -eq 1 ]; then
+  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --continue "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+elif [ "$RESUME" -eq 1 ]; then
   PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
 else
   PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"

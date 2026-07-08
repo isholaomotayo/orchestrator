@@ -230,10 +230,30 @@ If the Coder hits `MAX_CYCLES`, the dashboard halts with an **Extend & continue*
 
 ---
 
-The pipeline auto-detects whichever of these is on your `PATH` (or force one with `--runner`):
+## Chat mode vs CLI mode
+
+Invoking `/orchestrate` from **Cursor or another IDE chat** is not the same as running a headless **agent CLI** subprocess.
+
+| Mode | When | How stages run |
+|------|------|----------------|
+| **Chat** | `/orchestrate` in Cursor (`CURSOR_AGENT=1`), Claude Code, IDE-integrated shells | **Host runner** — the IDE chat session completes each stage. Orchestrator writes `.pipeline/stage-handoff.json` and exits; you finish the stage in chat, then `bash .pipeline/orchestrate.sh --continue`. Checker/tests still run in Node (deterministic). **No `cursor-agent login` required.** |
+| **CLI** | Interactive terminal, CI, `bash .pipeline/orchestrate.sh` with TTY | Subprocess via first **authenticated** CLI on PATH (`claude`, `cursor-agent`, `codex`, `gemini`). |
+
+```bash
+# Chat mode handoff (typical from /orchestrate in Cursor)
+bash .pipeline/orchestrate.sh "your task"     # → stage-handoff.json, exits
+# … complete Planner (etc.) in IDE chat …
+bash .pipeline/orchestrate.sh --continue      # → checker / next stage
+
+# Force CLI subprocesses even from IDE
+bash .pipeline/orchestrate.sh "task" --mode cli --runner claude
+```
+
+The pipeline auto-detects whichever **CLI** runner is authenticated on your `PATH` in CLI mode (or force one with `--runner`):
 
 | Runner | CLI | Install | Notes |
 |---|---|---|---|
+| `host` | *(none — IDE chat)* | — | **Chat mode only.** Hands each stage to the IDE session via `stage-handoff.json`. |
 | `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
 | `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`) | see Cursor docs | Headless `-p` mode with `--output-format stream-json`. |
 | `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) | `npm install -g @openai/codex` | Non-interactive `codex exec --full-auto`. |
@@ -464,6 +484,9 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| Planner fails with `MISSING_ARTIFACT`, log shows `Authentication required` | CLI mode picked an unauthenticated runner (often `cursor-agent` from IDE) | Re-run from IDE chat (auto **chat/host** mode) or `agent login` / `--runner claude` |
+| `cursor-agent is not authenticated` in CLI mode | `cursor-agent` on PATH but not logged in | `agent login`, set `CURSOR_API_KEY`, or use `--mode chat` from IDE |
+| Pipeline exits immediately with `stage-handoff.json` | **Expected in chat mode** — complete the stage in IDE, then `--continue` | Read handoff file, write artifact, `bash .pipeline/orchestrate.sh --continue` |
 | `.pipeline/orchestrate.sh` not found | Skill installed but scaffold not bootstrapped | `bash .agents/skills/orchestrate/scripts/bootstrap.sh` |
 | `Pipeline execution is locked by a running orchestrator (pid N)` | A run is genuinely active | Wait, watch the dashboard, or `Stop run` from the UI |
 | Dashboard shows **stale — process gone** | The orchestrator process died without exiting cleanly | Start a new run — the halted state is preserved in run history |

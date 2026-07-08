@@ -1,23 +1,44 @@
 // Agent CLI adapters: invoke claude / cursor-agent / codex / gemini headlessly,
-// stream verbose output to .pipeline/logs/<stage>.log and events.jsonl.
+// or hand off to the IDE chat session (host runner) when in chat mode.
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendEvent } from './state.mjs';
+import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
 
-const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini' };
+const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
 
 export function binExists(bin) {
   const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { encoding: 'utf8' });
   return res.status === 0;
 }
 
-export function detectRunner(config) {
-  if (config.runner && config.runner !== 'auto') return config.runner;
+export function detectRunner(config, { invocationMode = 'cli' } = {}) {
+  const forced = config.runner && config.runner !== 'auto' ? config.runner : null;
+  if (forced) {
+    if (forced === 'host') return 'host';
+    if (!RUNNER_BINS[forced] && !config.customRunners?.[forced]) {
+      throw new Error(`Unknown runner "${forced}".`);
+    }
+    if (invocationMode === 'cli' && forced !== 'host' && !probeRunnerAuth(forced)) {
+      throw new Error(`Runner "${forced}" is on PATH but not authenticated. Log in to that CLI or use --mode chat from your IDE.`);
+    }
+    return forced;
+  }
+
+  // Chat mode: the IDE session is the agent — no separate CLI auth required.
+  if (invocationMode === 'chat') return 'host';
+
+  // CLI mode: pick the first authenticated agent CLI.
+  const authed = firstAuthenticatedRunner();
+  if (authed) return authed;
+
+  // Fall back to first binary on PATH (may fail with a clear auth error).
   for (const [name, bin] of Object.entries(RUNNER_BINS)) {
+    if (name === 'host' || !bin) continue;
     if (binExists(bin)) return name;
   }
-  throw new Error('No agent CLI found on PATH (looked for: claude, cursor-agent, codex, gemini). Set "runner" in .pipeline/config.json or pass --runner.');
+  throw new Error('No agent CLI found on PATH (looked for: claude, cursor-agent, codex, gemini). Set "runner" in .pipeline/config.json, pass --runner, or invoke from an IDE chat for host mode.');
 }
 
 // Build argv for each supported CLI. Every adapter runs non-interactively with
@@ -63,6 +84,20 @@ function buildInvocation({ runner, systemPrompt, task, readOnly, config }) {
       return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text' };
     }
   }
+}
+
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths }) {
+  const handoff = {
+    stage,
+    cycle: cycle || 1,
+    task,
+    promptFile: path.relative(paths.root, systemPromptFile),
+    artifact: `.pipeline/${STAGE_ARTIFACT_FILES[stage]}`,
+    readOnly: !!readOnly,
+    createdAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
+  appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact });
 }
 
 // Turn a claude stream-json event line into structured activity blocks the
@@ -119,6 +154,16 @@ function blockToLogLine(b) {
 }
 
 export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config }) {
+  if (runner === 'host') {
+    fs.mkdirSync(paths.logs, { recursive: true });
+    const logFile = path.join(paths.logs, `${stage}.log`);
+    fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host (IDE chat) — ${new Date().toISOString()} =====\n`);
+    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host' });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths });
+    appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
+    return Promise.resolve({ ok: false, hostHandoff: true });
+  }
+
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
   const { bin, args, parse } = buildInvocation({ runner, systemPrompt, task, readOnly, config });
 

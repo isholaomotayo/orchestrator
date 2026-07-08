@@ -18,7 +18,7 @@ const config = loadConfig(paths);
 const PORT = Number(process.env.PIPELINE_UI_PORT || config.uiPort || 4600);
 const HOST = '127.0.0.1';
 
-const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt'];
+const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const AGENT_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
 const RUNNERS = ['auto', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
@@ -53,7 +53,7 @@ function readEventsByStage(dir) {
     try { ev = JSON.parse(line); } catch { continue; }
     if (typeof ev.costUsd === 'number') totalCost += ev.costUsd;
     if (!byStage[ev.stage]) continue;
-    if (['agent_output', 'agent_start', 'checks_start', 'check_end', 'followup_applied'].includes(ev.type)) {
+    if (['agent_output', 'agent_start', 'checks_start', 'check_end', 'followup_applied', 'chat_handoff'].includes(ev.type)) {
       byStage[ev.stage].push(ev);
     }
   }

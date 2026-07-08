@@ -14,17 +14,20 @@ Self-healing multi-agent workflow: **Planner → Coder (builder-checker loop) �
 
 Source: [isholaomotayo/orchestrator](https://github.com/isholaomotayo/orchestrator)
 
-## Install
+## Chat mode vs CLI mode
 
-```bash
-npx skills add isholaomotayo/orchestrator --skill orchestrate -a cursor -y --copy
-```
+The pipeline auto-detects how it was invoked:
 
-`npx skills add` installs agent instructions. Bootstrap the pipeline scaffold once per project (see below).
+| Mode | When | How agent stages run |
+|------|------|----------------------|
+| **Chat** | `/orchestrate` from Cursor, Claude Code, or other IDE chat (`CURSOR_AGENT=1`, etc.) | **You** (the chat agent) complete each stage. The orchestrator hands off via `.pipeline/stage-handoff.json` and waits for `--continue`. No separate `cursor-agent` / CLI login required. |
+| **CLI** | `bash .pipeline/orchestrate.sh` from a terminal, or CI | Headless subprocesses (`claude`, `cursor-agent`, `codex`, `gemini`). Requires the chosen CLI to be **authenticated**. Auto-picks the first logged-in CLI on PATH. |
+
+Override: `--mode chat` or `--mode cli`. Force a CLI runner: `--runner claude` (even from chat).
 
 ## When the user invokes `/orchestrate`
 
-1. **Pre-flight**: If `.pipeline/.lock` exists, a run is active — do not start overlapping work.
+1. **Pre-flight**: If `.pipeline/.lock` exists and status is not `awaiting_chat`, a run is active — do not start overlapping work.
 2. **Bootstrap** if `.pipeline/orchestrate.sh` is missing:
    ```bash
    bash .agents/skills/orchestrate/scripts/bootstrap.sh
@@ -34,19 +37,30 @@ npx skills add isholaomotayo/orchestrator --skill orchestrate -a cursor -y --cop
    bash skills/orchestrate/scripts/bootstrap.sh
    ```
 3. **Extract the task** from the user's message (text after `/orchestrate`).
-4. **Run**:
+4. **Start the pipeline**:
    ```bash
    bash .pipeline/orchestrate.sh "TASK_HERE"
    ```
-5. **Wait** for the orchestrator to finish (do not manually edit code during the run).
-6. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.
-7. **On halt**: Surface `.pipeline/checker_report.md` for `MAX_CYCLES`, `REGRESSION_BLOCKED`, or `MISSING_ARTIFACT`.
+5. **Chat mode loop** (when `.pipeline/stage-handoff.json` exists or status is `awaiting_chat`):
+   - Read `.pipeline/stage-handoff.json` and the referenced `promptFile`.
+   - Complete that pipeline stage **in this chat session** (write the required `artifact`, follow the stage prompt).
+   - For **Reviewer**: read-only audit — only write `.pipeline/review_report.md`.
+   - Run: `bash .pipeline/orchestrate.sh --continue`
+   - Repeat until the pipeline finishes or halts.
+6. **CLI mode**: wait for the orchestrator to finish (no handoff loop).
+7. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.
+8. **On halt**:
+   - `MAX_CYCLES` / `REGRESSION_BLOCKED`: surface `.pipeline/checker_report.md`
+   - `MISSING_ARTIFACT` at Planner: inspect `.pipeline/logs/planner.log` (often CLI auth failure in CLI mode)
+   - `AGENT_ERROR`: CLI auth or spawn failure — suggest `--mode chat` from IDE or log in to the CLI
 
 ## CLI flags
 
 | Flag | Purpose |
 |------|---------|
-| `--runner claude\|cursor\|codex\|gemini` | Force a specific agent CLI |
+| `--mode chat\|cli` | Override auto-detected invocation mode |
+| `--runner claude\|cursor\|codex\|gemini\|host` | Force a specific agent backend (`host` = IDE chat handoffs) |
+| `--continue` | Resume after completing a chat handoff stage |
 | `--sandbox` | Run in isolated git worktree (`.pipeline_sandbox/`) |
 | `--max-cycles N` | Override Coder fix-loop budget |
 | `--max-post-tester-cycles N` | Override post-Tester fix-loop budget |
@@ -60,7 +74,7 @@ bash .pipeline/orchestrate.sh --resume --extend 5
 
 ## Workspace isolation (strict)
 
-Unless you **are** the pipeline orchestrator:
+Unless you **are** the pipeline orchestrator completing a chat handoff:
 
 - Treat `.pipeline/` and `.pipeline_sandbox/` as **READ-ONLY**
 - Never auto-fix errors inside `.pipeline_sandbox/`
@@ -70,6 +84,7 @@ Unless you **are** the pipeline orchestrator:
 
 | File | Stage |
 |------|-------|
+| `.pipeline/stage-handoff.json` | Chat handoff brief (chat mode only) |
 | `.pipeline/specs.md` | Planner |
 | `.pipeline/changes.md` | Coder |
 | `.pipeline/checker_report.md` | Checker |

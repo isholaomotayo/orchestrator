@@ -47,7 +47,15 @@ node pipeline/orchestrator.mjs --task "description"
 |--------|--------|
 | `MAX_CYCLES` | `bash .pipeline/orchestrate.sh --resume --extend N` |
 | `REGRESSION_BLOCKED` | Human review required |
-| `MISSING_ARTIFACT` | Inspect `.pipeline/logs/` |
+| `MISSING_ARTIFACT` | Inspect `.pipeline/logs/` (Planner: often CLI auth in CLI mode) |
+| `AGENT_ERROR` | CLI auth/spawn failure — use chat mode from IDE or log in to CLI |
+
+## Invocation modes
+
+| Mode | Flag / signal | Runner default |
+|------|---------------|----------------|
+| Chat | `CURSOR_AGENT=1`, IDE shell, `--mode chat` | `host` (IDE session) |
+| CLI | TTY terminal, CI, `--mode cli` | First authenticated CLI on PATH |
 
 ## Two manifests
 
