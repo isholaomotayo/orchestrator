@@ -32,10 +32,10 @@
         "reviewer": "sonnet-5"
       },
       "codex": {
-        "planner": "gpt-5",
-        "coder": "gpt-5",
-        "tester": "gpt-5",
-        "reviewer": "gpt-5"
+        "planner": "gpt-5.5",
+        "coder": "gpt-5.5",
+        "tester": "gpt-5.5",
+        "reviewer": "gpt-5.5"
       },
       "gemini": {
         "planner": "gemini-3.1-pro",

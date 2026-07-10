@@ -417,7 +417,7 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
       "host":   { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
       "claude": { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
       "cursor": { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
-      "codex":  { "planner": "gpt-5",    "coder": "gpt-5",    "tester": "gpt-5",    "reviewer": "gpt-5" },
+      "codex":  { "planner": "gpt-5.5",  "coder": "gpt-5.5",  "tester": "gpt-5.5",  "reviewer": "gpt-5.5" },
       "gemini": { "planner": "gemini-3.1-pro", "coder": "gemini-3.5-flash", "tester": "gemini-3.5-flash", "reviewer": "gemini-3.5-flash" }
     }
   },

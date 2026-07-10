@@ -62,8 +62,19 @@ Default auto profiles (override in `.pipeline/config.json`):
 |--------|---------|---------------------------|
 | host / cursor | opus-4.8 | sonnet-5 |
 | claude | opus-4.8 | sonnet-5 |
-| codex | gpt-5 | gpt-5 |
+| codex | gpt-5.5 | gpt-5.5 |
 | gemini | gemini-3.1-pro | gemini-3.5-flash |
+
+Available models for manual selection (dashboard dropdowns and `--models`):
+
+| Provider | Model IDs |
+|----------|-----------|
+| Anthropic | `fable-5`, `opus-4.8`, `sonnet-5` |
+| OpenAI | `gpt-5.5-pro`, `gpt-5.5` |
+| Google | `gemini-3.1-pro`, `gemini-3.5-flash`, `gemini-3.1-flash-lite` |
+| xAI | `grok-4.5`, `grok-4.3` |
+
+Any other model ID can still be entered via the dashboard "Custom…" option or a raw `--models` JSON value.
 
 ## Halt reasons
 

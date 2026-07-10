@@ -1,6 +1,30 @@
 // Per-stage model profiles: cost-aware defaults per runner + manual overrides.
 import { STAGES } from './state.mjs';
 
+// Canonical, up-to-date model catalog surfaced in manual selection (dashboard
+// dropdowns + docs). Grouped by provider, ordered strongest -> cheapest.
+// Short-form IDs match the convention used by DEFAULT_MODEL_PROFILES and config.
+export const MODEL_CATALOG = {
+  anthropic: [
+    { id: 'fable-5', label: 'Claude Fable 5' },
+    { id: 'opus-4.8', label: 'Claude Opus 4.8' },
+    { id: 'sonnet-5', label: 'Claude Sonnet 5' },
+  ],
+  openai: [
+    { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro' },
+    { id: 'gpt-5.5', label: 'GPT-5.5' },
+  ],
+  google: [
+    { id: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash' },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite' },
+  ],
+  xai: [
+    { id: 'grok-4.5', label: 'Grok 4.5' },
+    { id: 'grok-4.3', label: 'Grok 4.3' },
+  ],
+};
+
 export const DEFAULT_MODEL_PROFILES = {
   auto: {
     host: {
@@ -22,10 +46,10 @@ export const DEFAULT_MODEL_PROFILES = {
       reviewer: 'sonnet-5',
     },
     codex: {
-      planner: 'gpt-5',
-      coder: 'gpt-5',
-      tester: 'gpt-5',
-      reviewer: 'gpt-5',
+      planner: 'gpt-5.5',
+      coder: 'gpt-5.5',
+      tester: 'gpt-5.5',
+      reviewer: 'gpt-5.5',
     },
     gemini: {
       planner: 'gemini-3.1-pro',

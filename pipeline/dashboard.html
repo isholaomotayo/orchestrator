@@ -228,6 +228,8 @@
   .modal #nr-manual-models { display: none; margin-top: 4px; }
   .modal #nr-manual-models.open { display: block; }
   .modal .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+  .modal .nr-model-custom { display: none; margin-top: 6px; }
+  .modal .nr-model-custom.open { display: block; }
   .modal .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
   .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .modal .err { color: var(--red-text); font-size: 12px; margin-top: 10px; }
@@ -307,10 +309,10 @@
     </div>
     <div id="nr-manual-models">
       <div class="model-grid">
-        <div><label>Planner</label><input type="text" id="nr-model-planner" placeholder="e.g. opus-4"></div>
-        <div><label>Coder</label><input type="text" id="nr-model-coder" placeholder="e.g. sonnet-4"></div>
-        <div><label>Tester</label><input type="text" id="nr-model-tester" placeholder="e.g. sonnet-4"></div>
-        <div><label>Reviewer</label><input type="text" id="nr-model-reviewer" placeholder="e.g. sonnet-4"></div>
+        <div><label>Planner</label><select id="nr-model-planner"></select><input type="text" id="nr-model-planner-custom" class="nr-model-custom" placeholder="custom model id"></div>
+        <div><label>Coder</label><select id="nr-model-coder"></select><input type="text" id="nr-model-coder-custom" class="nr-model-custom" placeholder="custom model id"></div>
+        <div><label>Tester</label><select id="nr-model-tester"></select><input type="text" id="nr-model-tester-custom" class="nr-model-custom" placeholder="custom model id"></div>
+        <div><label>Reviewer</label><select id="nr-model-reviewer"></select><input type="text" id="nr-model-reviewer-custom" class="nr-model-custom" placeholder="custom model id"></div>
       </div>
     </div>
     <div style="display:flex;gap:10px">
@@ -1013,19 +1015,41 @@ function toggleManualModels() {
 document.querySelectorAll('input[name="nr-model-profile"]').forEach((el) => {
   el.addEventListener('change', toggleManualModels);
 });
+const MODEL_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
+const CUSTOM_MODEL_VALUE = '__custom__';
+
+function catalogOptionsHtml(selectedId) {
+  const catalog = state?.defaults?.modelCatalog || {};
+  const groups = Object.entries(catalog).map(([provider, models]) => {
+    const opts = (models || []).map((m) => `<option value="${esc(m.id)}"${m.id === selectedId ? ' selected' : ''}>${esc(m.label)} (${esc(m.id)})</option>`).join('');
+    return `<optgroup label="${esc(provider)}">${opts}</optgroup>`;
+  }).join('');
+  const known = Object.values(catalog).flat().some((m) => m.id === selectedId);
+  const customSelected = !known && selectedId ? ' selected' : '';
+  return `${groups}<option value="${CUSTOM_MODEL_VALUE}"${customSelected}>Custom…</option>`;
+}
+function toggleCustomModel(stage) {
+  const sel = document.getElementById(`nr-model-${stage}`);
+  const custom = document.getElementById(`nr-model-${stage}-custom`);
+  custom.classList.toggle('open', sel.value === CUSTOM_MODEL_VALUE);
+}
 function fillModelPlaceholders(runner) {
   const key = !runner || runner === 'auto' ? 'host' : runner;
   const profiles = state?.defaults?.modelProfiles || {};
   const prof = profiles[key] || profiles.host || {};
-  document.getElementById('nr-model-planner').placeholder = prof.planner || 'planner model';
-  document.getElementById('nr-model-coder').placeholder = prof.coder || 'coder model';
-  document.getElementById('nr-model-tester').placeholder = prof.tester || 'tester model';
-  document.getElementById('nr-model-reviewer').placeholder = prof.reviewer || 'reviewer model';
+  MODEL_STAGES.forEach((stage) => {
+    const sel = document.getElementById(`nr-model-${stage}`);
+    sel.innerHTML = catalogOptionsHtml(prof[stage]);
+    toggleCustomModel(stage);
+  });
 }
 document.getElementById('newrun-btn').onclick = () => {
   const sel = document.getElementById('nr-runner');
   sel.innerHTML = (state?.runners || ['auto', 'claude', 'cursor', 'codex', 'gemini']).map((r) => `<option value="${r}">${r}</option>`).join('');
   sel.onchange = () => fillModelPlaceholders(sel.value);
+  MODEL_STAGES.forEach((stage) => {
+    document.getElementById(`nr-model-${stage}`).onchange = () => toggleCustomModel(stage);
+  });
   document.querySelector('input[name="nr-model-profile"][value="auto"]').checked = true;
   toggleManualModels();
   fillModelPlaceholders(sel.value);
@@ -1048,12 +1072,13 @@ document.getElementById('nr-start').onclick = async () => {
     modelProfile,
   };
   if (modelProfile === 'manual') {
-    body.models = {
-      planner: document.getElementById('nr-model-planner').value.trim(),
-      coder: document.getElementById('nr-model-coder').value.trim(),
-      tester: document.getElementById('nr-model-tester').value.trim(),
-      reviewer: document.getElementById('nr-model-reviewer').value.trim(),
-    };
+    body.models = {};
+    for (const stage of MODEL_STAGES) {
+      const sel = document.getElementById(`nr-model-${stage}`);
+      body.models[stage] = sel.value === CUSTOM_MODEL_VALUE
+        ? document.getElementById(`nr-model-${stage}-custom`).value.trim()
+        : sel.value.trim();
+    }
   }
   try {
     const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });

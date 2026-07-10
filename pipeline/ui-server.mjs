@@ -10,7 +10,7 @@ import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths, loadConfig, pidAlive, readLock } from './state.mjs';
-import { DEFAULT_MODEL_PROFILES } from './models.mjs';
+import { DEFAULT_MODEL_PROFILES, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
 
@@ -116,6 +116,7 @@ function readState(runId) {
       maxReviewCycles: config.maxReviewCycles,
       extendCycles: config.maxCoderCycles,
       modelProfiles: config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto,
+      modelCatalog: MODEL_CATALOG,
     },
     now: new Date().toISOString(),
   };
