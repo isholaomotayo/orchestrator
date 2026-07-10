@@ -33,9 +33,9 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
    bash .pipeline/orchestrate.sh "TASK_HERE" --model-profile manual --models '{"planner":"opus-4.8","coder":"sonnet-5","tester":"sonnet-5","reviewer":"sonnet-5"}'
    ```
 6. **Tell the user to open the dashboard** immediately after start:
-   - URL is in the command output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`.
-   - Say something like: *"Open **http://localhost:4600** in your browser to follow pipeline progress while I complete each stage here."*
-   - Use the actual port from the run if it is not 4600.
+   - Always read the URL dynamically from the script output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`. Do not hardcode 4600 as the port drifts if it is already taken or if running multiple repositories.
+   - Say something like: *"Open the live dashboard (URL in `.pipeline/ui.url`, e.g., **http://localhost:4600**) in your browser to follow pipeline progress while I complete each stage here."*
+   - Do NOT manually run/restart `ui-server.mjs` from this chat session. The orchestrator script handles startup.
 7. **Chat handoff loop** (while `.pipeline/stage-handoff.json` exists):
    - Read the handoff + stage prompt file.
    - If `handoff.model` is set, **switch to that model in Cursor** before completing the stage.

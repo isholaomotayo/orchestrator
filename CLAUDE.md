@@ -3,7 +3,7 @@
 ## Workspace skill: `/orchestrate`
 
 This repository ships a portable multi-agent pipeline declared in `.pipeline/skill.json`.
-It runs: **Planner → Coder (self-healing builder-checker loop) → Tester → Reviewer**, with a live dashboard at http://localhost:4600.
+It runs: **Planner → Coder (self-healing builder-checker loop) → Tester → Reviewer**, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` (usually starting at `http://localhost:4600`).
 
 When the user invokes `/orchestrate`, or tasks you with building a feature, resolving complex requirements, or implementing multi-stage refactoring:
 

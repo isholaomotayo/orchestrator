@@ -16,7 +16,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 PIPELINE_DIR="$SCRIPT_DIR"
-BASE_PORT="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
+
+# Determine JS runtime (prefer bun over node as per workspace guidelines)
+if command -v bun >/dev/null 2>&1; then
+  JS_RUNNER="bun"
+else
+  JS_RUNNER="node"
+fi
+
+BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
 USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --continue
@@ -50,7 +58,7 @@ done
 
 # Guardrail 3: pre-flight mutex check. Allow --continue when awaiting chat handoff.
 if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
-  LOCK_PID="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/.lock','utf8')).pid||'')}catch{console.log('')}")"
+  LOCK_PID="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/.lock','utf8')).pid||'')}catch{console.log('')}")"
   if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
     echo "[orchestrate] Pipeline is locked by a running orchestrator (pid $LOCK_PID). Retry after it finishes." >&2
     exit 1
@@ -62,40 +70,94 @@ fi
 # Find a dashboard for THIS repo: reuse a healthy server whose /healthz
 # repoRoot matches, skip ports serving other repos, start on the first free one.
 UI_PORT="$BASE_PORT"
-if [ "$NO_UI" -eq 0 ]; then
+if [ "$NO_UI" -eq 1 ]; then
+  UI_PORT="disabled"
+  rm -f "$PIPELINE_DIR/ui.url"
+else
   FOUND=0
   for PORT in $(seq "$BASE_PORT" $((BASE_PORT + 20))); do
     HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
-    if [ -z "$HEALTH" ]; then
+    if [ -n "$HEALTH" ]; then
+      SERVED_ROOT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$HEALTH")"
+      if [ "$SERVED_ROOT" = "$REPO_ROOT" ]; then
+        UI_PORT="$PORT"
+        FOUND=1
+        break
+      fi
+      # Healthy server for a different repo — try the next port.
+      continue
+    fi
+
+    # Port health check returned empty. Verify if the port is physically in use (zombie/other app).
+    PORT_FREE="$("$JS_RUNNER" -e "
+      const net = require('net');
+      const server = net.createServer();
+      server.once('error', () => process.exit(1));
+      server.once('listening', () => { server.close(); process.exit(0); });
+      server.listen($PORT, '127.0.0.1');
+    " 2>/dev/null && echo "1" || echo "0")"
+
+    if [ "$PORT_FREE" = "1" ]; then
       UI_PORT="$PORT"
       echo "[orchestrate] Starting dashboard at http://localhost:$UI_PORT ..."
-      (cd "$REPO_ROOT" && PIPELINE_UI_PORT="$UI_PORT" nohup node pipeline/ui-server.mjs > "$PIPELINE_DIR/ui-server.out" 2>&1 & echo $! > "$PIPELINE_DIR/ui-server.pid")
-      sleep 0.5
-      FOUND=1
-      break
+      (cd "$REPO_ROOT" && PIPELINE_UI_PORT="$UI_PORT" nohup "$JS_RUNNER" pipeline/ui-server.mjs > "$PIPELINE_DIR/ui-server.out" 2>&1 & echo $! > "$PIPELINE_DIR/ui-server.pid")
+      
+      # Poll /healthz to make sure it started successfully and is responsive
+      START_OK=0
+      for RETRY in $(seq 1 15); do
+        sleep 0.2
+        # Check if the process is still running
+        PID_FILE="$PIPELINE_DIR/ui-server.pid"
+        if [ -f "$PID_FILE" ]; then
+          PID="$(cat "$PID_FILE")"
+          if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
+            # Process died immediately
+            break
+          fi
+        fi
+
+        NEW_HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$UI_PORT/healthz" 2>/dev/null || true)"
+        if [ -n "$NEW_HEALTH" ]; then
+          NEW_SERVED_ROOT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$NEW_HEALTH")"
+          if [ "$NEW_SERVED_ROOT" = "$REPO_ROOT" ]; then
+            START_OK=1
+            break
+          fi
+        fi
+      done
+
+      if [ "$START_OK" -eq 1 ]; then
+        FOUND=1
+        break
+      else
+        echo "[orchestrate] Warning: Dashboard failed to start on port $UI_PORT. Cleaning up and trying next port." >&2
+        # Clean up failed process
+        PID_FILE="$PIPELINE_DIR/ui-server.pid"
+        if [ -f "$PID_FILE" ]; then
+          PID="$(cat "$PID_FILE")"
+          if [ -n "$PID" ]; then
+            kill "$PID" 2>/dev/null || true
+          fi
+          rm -f "$PID_FILE"
+        fi
+      fi
     fi
-    SERVED_ROOT="$(node -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$HEALTH")"
-    if [ "$SERVED_ROOT" = "$REPO_ROOT" ]; then
-      UI_PORT="$PORT"
-      FOUND=1
-      break
-    fi
-    # Healthy server for a different repo — try the next port.
   done
+
   if [ "$FOUND" -eq 0 ]; then
     echo "[orchestrate] No free port in $BASE_PORT-$((BASE_PORT + 20)); continuing without dashboard." >&2
     NO_UI=1
+    rm -f "$PIPELINE_DIR/ui.url"
+    UI_PORT="disabled"
   else
     echo "[orchestrate] Live dashboard: http://localhost:$UI_PORT"
-  fi
-  if [ "$NO_UI" -eq 0 ]; then
     echo "http://localhost:$UI_PORT" > "$PIPELINE_DIR/ui.url"
   fi
 fi
 
 # Detect IDE chat invocation (host mode) for user-facing guidance.
 is_chat_invocation() {
-  node -e "
+  "$JS_RUNNER" -e "
     const e = process.env;
     if (e.PIPELINE_INVOCATION === 'chat') process.exit(0);
     if (e.PIPELINE_INVOCATION === 'cli') process.exit(1);
@@ -131,11 +193,11 @@ fi
 cd "$REPO_ROOT"
 set +e
 if [ "$CONTINUE" -eq 1 ]; then
-  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --continue "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+  PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --continue "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 elif [ "$RESUME" -eq 1 ]; then
-  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
+  PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
 else
-  PIPELINE_UI_PORT="$UI_PORT" node pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
+  PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 fi
 EXIT_CODE=$?
 set -e

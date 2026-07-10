@@ -48,7 +48,10 @@ const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
 const config = loadConfig(paths);
 const args = parseArgs(process.argv.slice(2));
-const uiPort = process.env.PIPELINE_UI_PORT || config.uiPort;
+const rawUiPort = process.env.PIPELINE_UI_PORT;
+const uiPort = (rawUiPort === 'disabled') ? null : (rawUiPort || config.uiPort);
+const dashboardUrl = uiPort ? `http://localhost:${uiPort}` : null;
+const dashboardMsg = dashboardUrl ? `. Dashboard: ${dashboardUrl}` : '';
 
 if (args.resume) {
   if (args.extend !== null && (!Number.isInteger(args.extend) || args.extend < 1)) { console.error(USAGE); process.exit(2); }
@@ -170,7 +173,7 @@ if (args.continue) {
   loadWorkCwdFromStatus();
   loadHistory();
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
-  console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner}). Dashboard: http://localhost:${uiPort}`);
+  console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner})${dashboardMsg}`);
 } else if (args.resume) {
   let onDisk;
   try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
@@ -191,7 +194,7 @@ if (args.continue) {
     models = status.models || null;
     loadWorkCwdFromStatus();
     loadHistory();
-    console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles). Dashboard: http://localhost:${uiPort}`);
+    console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles)${dashboardMsg}`);
   } else {
     const lock = readLock(paths);
     const stale = onDisk.overall === 'running' && !(lock && pidAlive(lock.pid));
@@ -213,7 +216,7 @@ if (args.continue) {
     models = status.models || null;
     loadWorkCwdFromStatus();
     loadHistory();
-    console.log(`[Orchestrator] Resuming interrupted/stale run. Dashboard: http://localhost:${uiPort}`);
+    console.log(`[Orchestrator] Resuming interrupted/stale run${dashboardMsg}`);
   }
 } else {
   // ---- Guardrail 1: sandbox worktree ------------------------------------------
@@ -278,7 +281,7 @@ if (args.continue) {
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models });
   const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}). Dashboard: http://localhost:${uiPort}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax})${dashboardMsg}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -326,8 +329,13 @@ function requestChatHandoff(stageName, chatResume) {
   status.chatResume = chatResume;
   status.overall = 'awaiting_chat';
   status.awaitingStage = stageName;
-  status.dashboardUrl = `http://localhost:${uiPort}`;
-  try { fs.writeFileSync(path.join(paths.dir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
+  if (dashboardUrl) {
+    status.dashboardUrl = dashboardUrl;
+    try { fs.writeFileSync(path.join(paths.dir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
+  } else {
+    status.dashboardUrl = null;
+    try { fs.unlinkSync(path.join(paths.dir, 'ui.url')); } catch {}
+  }
   setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
@@ -337,7 +345,9 @@ function requestChatHandoff(stageName, chatResume) {
     console.log(`[Orchestrator] Suggested model: ${stageModel} (Note: actual model is determined by your active chat model)`);
   }
   console.log('[Orchestrator] Stage brief: .pipeline/stage-handoff.json');
-  console.log(`[Orchestrator] Live dashboard: ${status.dashboardUrl}\n`);
+  if (status.dashboardUrl) {
+    console.log(`[Orchestrator] Live dashboard: ${status.dashboardUrl}\n`);
+  }
   haltAndExit(0);
 }
 

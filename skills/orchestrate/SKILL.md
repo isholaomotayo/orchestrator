@@ -10,7 +10,7 @@ metadata:
 
 # /orchestrate
 
-Self-healing multi-agent workflow: **Planner → Coder (builder-checker loop) → Tester → Reviewer**, with artifacts in `.pipeline/` and a live dashboard at http://localhost:4600.
+Self-healing multi-agent workflow: **Planner → Coder (builder-checker loop) → Tester → Reviewer**, with artifacts in `.pipeline/` and a live dashboard (port is dynamically selected starting at 4600 and saved to `.pipeline/ui.url` to prevent port drift).
 
 Source: [isholaomotayo/orchestrator](https://github.com/isholaomotayo/orchestrator)
 
@@ -47,9 +47,9 @@ Override: `--mode chat` or `--mode cli`. Force a CLI runner: `--runner claude` (
    bash .pipeline/orchestrate.sh "TASK_HERE" --model-profile auto
    ```
 6. **Tell the user to open the dashboard** as soon as the command starts (do not skip):
-   - Read the URL from the script output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`.
-   - Example message: *"Pipeline started. Open **http://localhost:4600** in your browser to watch stage progress, checker results, and artifacts while I work each stage in chat."*
-   - Port may differ if 4600 is taken — always use the URL from the run output.
+   - Always read the URL dynamically from the script output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`. Do not hardcode `http://localhost:4600` since the port drifts dynamically when running multiple repos or if the port is busy.
+   - Example message: *"Pipeline started. Open the dashboard (URL is in `.pipeline/ui.url`, e.g., **http://localhost:4600**) in your browser to watch stage progress, checker results, and artifacts while I work each stage in chat."*
+   - Do **NOT** manually start or restart `ui-server.mjs` from the chat. The orchestrator shell script manages UI startup. If the dashboard is unavailable, inspect `.pipeline/ui-server.pid`, `.pipeline/ui-server.out`, and check for listening ports using `lsof -nP -iTCP:4600-4620 -sTCP:LISTEN`.
 7. **Chat mode loop** (when `.pipeline/stage-handoff.json` exists or status is `awaiting_chat`):
    - Read `.pipeline/stage-handoff.json` and the referenced `promptFile`.
    - If `handoff.model` is set, switch to that model in the IDE before working the stage.
