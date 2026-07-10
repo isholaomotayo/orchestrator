@@ -24,10 +24,13 @@
     --syntax-kw: #7c3aed; --syntax-str: #b45309; --syntax-cmt: #9ca3af; --syntax-typ: #0e7490;
     --terminal-bg: #1c1917; --terminal-text: #e7e5e4; --terminal-muted: #a8a29e;
     --overlay: rgba(28, 25, 23, .35); --shadow: rgba(0, 0, 0, .2);
+    --shadow-sm: rgba(0, 0, 0, .06);
     --agent-planner-bg: #ede9fe; --agent-planner-fg: #6d28d9;
     --agent-coder-bg: #dbeafe; --agent-coder-fg: #1d4ed8;
     --agent-tester-bg: #dcfce7; --agent-tester-fg: #166534;
     --agent-reviewer-bg: #fef3c7; --agent-reviewer-fg: #92400e;
+    --topbar-h: 52px;
+    --sidebar-w: 236px;
   }
   [data-theme="dark"] {
     --bg: #1c1917; --panel: #292524; --sidebar: #231f1e; --border: #44403c;
@@ -48,6 +51,7 @@
     --syntax-kw: #c4b5fd; --syntax-str: #fdba74; --syntax-cmt: #78716c; --syntax-typ: #67e8f9;
     --terminal-bg: #0c0a09; --terminal-text: #e7e5e4; --terminal-muted: #78716c;
     --overlay: rgba(0, 0, 0, .55); --shadow: rgba(0, 0, 0, .45);
+    --shadow-sm: rgba(0, 0, 0, .2);
     --agent-planner-bg: #2e1065; --agent-planner-fg: #c4b5fd;
     --agent-coder-bg: #1e3a5f; --agent-coder-fg: #93c5fd;
     --agent-tester-bg: #14532d; --agent-tester-fg: #86efac;
@@ -58,132 +62,453 @@
   html[data-theme="dark"] { color-scheme: dark; }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
   svg.ic { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
-  .app { display: flex; flex-direction: column; height: 100vh; max-width: 1400px; margin: 0 auto; background: var(--panel); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
 
-  /* ---- top bar ---- */
-  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-  .topbar .appicon { width: 24px; height: 24px; border-radius: 7px; background: var(--inverse); color: var(--on-inverse); display: grid; place-items: center; }
-  .topbar .appicon svg.ic { width: 13px; height: 13px; }
-  .topbar .title { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 320px; }
-  .runtime-strip { display: none; align-items: center; gap: 8px; flex-shrink: 0; }
+  /* ===== APP SHELL ===== */
+  .app { display: flex; flex-direction: column; height: 100vh; max-width: 1440px; margin: 0 auto; background: var(--panel); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+
+  /* ===== MENUBAR (slim top bar) ===== */
+  .topbar {
+    display: flex;
+    align-items: center;
+    padding: 0 14px 0 0;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    height: 40px;
+    gap: 0;
+  }
+
+  /* Brand zone — aligns with sidebar width */
+  .topbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 16px;
+    height: 100%;
+    flex-shrink: 0;
+    min-width: var(--sidebar-w);
+    border-right: 1px solid var(--border);
+  }
+  .appicon {
+    width: 24px; height: 24px; border-radius: 7px;
+    background: var(--inverse); color: var(--on-inverse);
+    display: grid; place-items: center; flex-shrink: 0;
+  }
+  .appicon svg.ic { width: 12px; height: 12px; }
+  .brand-name { font-weight: 700; font-size: 12.5px; color: var(--text); letter-spacing: -.01em; white-space: nowrap; }
+
+  /* Center — runtime context + status */
+  .topbar-center {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 14px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+  .topbar-center .spacer { flex: 1; min-width: 0; }
+  .totals { font-size: 11px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
+
+  /* Runtime chips — shown when a run is active */
+  .runtime-strip { display: none; align-items: center; gap: 6px; flex-shrink: 0; }
   .runtime-strip.visible { display: inline-flex; }
-  .runtime-chip { display: inline-flex; align-items: baseline; gap: 5px; font-size: 11px; color: var(--muted); padding: 4px 10px; border-radius: 8px; background: var(--surface-muted); border: 1px solid var(--border); white-space: nowrap; }
-  .runtime-chip .lbl { font-size: 9.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
-  .runtime-chip strong { font-size: 13px; font-weight: 800; color: var(--text); letter-spacing: -.01em; }
+  .runtime-sep { width: 1px; height: 12px; background: var(--border); }
+  .runtime-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--muted); white-space: nowrap;
+  }
+  .runtime-chip .lbl { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
+  .runtime-chip strong { font-size: 11.5px; font-weight: 700; color: var(--text); letter-spacing: -.01em; }
   .runtime-chip.runner strong { color: var(--purple-text); }
   .runtime-chip.model strong { color: var(--info-text); }
-  .topbar .spacer { flex: 1; }
-  .totals { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
-  .pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: var(--surface-hover); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+
+  /* Status pill */
+  .pill {
+    font-size: 10.5px; font-weight: 500;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--surface-hover); color: var(--muted);
+    border: 1px solid var(--border);
+    white-space: nowrap; flex-shrink: 0;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .pill::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .5; }
   .pill.active { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
+  .pill.active::before { opacity: 1; animation: pulse 1.4s infinite; }
   .pill.halted { background: var(--red-bg); color: var(--red-text); border-color: transparent; }
   .pill.stale { background: var(--amber-bg); color: var(--amber-text); border-color: transparent; }
   .pill.awaiting { background: var(--purple-bg); color: var(--purple-text); border-color: transparent; }
-  #run-select { font: 11.5px inherit; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); padding: 4px 6px; max-width: 210px; }
-  #project-select { font: 600 12.5px inherit; color: var(--text); border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); padding: 4px 10px; max-width: 250px; cursor: pointer; outline: none; }
-  #project-select:hover { background: var(--surface-hover); border-color: var(--muted); }
-  .tb-btn { display: inline-flex; align-items: center; gap: 5px; font: 600 11.5px inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
-  .tb-btn:hover { background: var(--surface-muted); }
-  .tb-btn.primary { background: var(--inverse); border-color: var(--inverse); color: var(--on-inverse); }
-  .tb-btn.danger { background: var(--red-bg); border-color: transparent; color: var(--red-text); }
-  #theme-btn { padding: 5px 8px; }
 
+  /* Menubar right — theme toggle only */
+  .topbar-end {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 0 0 10px;
+    height: 100%;
+    flex-shrink: 0;
+  }
+
+  /* Shared button base */
+  .tb-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font: 500 11.5px inherit;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 4px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    height: 28px;
+    transition: background .1s, border-color .1s;
+  }
+  .tb-btn:hover { background: var(--surface-muted); }
+  .tb-btn svg.ic { opacity: .7; }
+  .tb-btn.primary {
+    background: var(--inverse); border-color: var(--inverse);
+    color: var(--on-inverse); font-weight: 600;
+  }
+  .tb-btn.primary svg.ic { opacity: 1; }
+  .tb-btn.primary:hover { opacity: .88; }
+  .tb-btn.danger {
+    background: var(--red-bg); border-color: transparent;
+    color: var(--red-text);
+  }
+  #theme-btn { padding: 4px 7px; }
+
+  /* ===== SIDEBAR CONTROL PANEL ===== */
+  /* Fixed header inside sidebar — project picker + run controls */
+  /* ===== BODY LAYOUT ===== */
   .body { display: flex; flex: 1; min-height: 0; }
 
-  /* ---- sidebar ---- */
-  .sidebar { width: 232px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--border); padding: 14px 10px; overflow-y: auto; }
-  .side-label { font-size: 10px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin: 14px 8px 6px; }
-  .side-label:first-child { margin-top: 0; }
-  .agent-row { display: flex; align-items: center; gap: 9px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+  /* ===== SIDEBAR ===== */
+  .sidebar {
+    width: var(--sidebar-w);
+    flex-shrink: 0;
+    background: var(--sidebar);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px 10px 4px; }
+
+  /* Section headings — visible, structured labels */
+  .side-section { margin-bottom: 2px; }
+  .side-heading {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px; font-weight: 700; letter-spacing: .08em;
+    color: var(--faint); text-transform: uppercase;
+    padding: 10px 8px 4px;
+  }
+  .side-heading::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .side-heading:first-child { padding-top: 4px; }
+
+  /* Project selector row — inside sidebar scroll */
+  .project-row {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    background: var(--surface-muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    height: 30px;
+    overflow: hidden;
+    margin: 0 0 2px;
+  }
+  .project-row .proj-icon {
+    display: grid; place-items: center;
+    width: 30px; height: 30px; flex-shrink: 0;
+    color: var(--faint);
+  }
+  .project-row .proj-icon svg.ic { width: 12px; height: 12px; }
+  #project-select {
+    font: 600 12px inherit;
+    color: var(--text);
+    border: none;
+    background: transparent;
+    padding: 0 8px 0 0;
+    outline: none;
+    cursor: pointer;
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* ===== SIDEBAR FOOTER (run controls) ===== */
+  /* Pinned at the bottom of the sidebar, aligned with the main composer */
+  .sidebar-footer {
+    flex-shrink: 0;
+    border-top: 1px solid var(--border);
+    background: var(--sidebar);
+    padding: 10px 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .sidebar-footer .sf-heading {
+    font-size: 9.5px; font-weight: 700; letter-spacing: .08em;
+    color: var(--faint); text-transform: uppercase;
+    padding-bottom: 2px;
+  }
+  /* Run history dropdown — full width */
+  #run-select {
+    width: 100%;
+    font: 11px inherit;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface-muted);
+    padding: 5px 7px;
+    outline: none;
+    cursor: pointer;
+  }
+  #run-select:hover { border-color: var(--neutral); }
+  /* Action buttons row */
+  .run-controls {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  /* Sidebar action buttons */
+  .side-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    font: 500 11px inherit;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 7px;
+    padding: 5px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+    height: 28px;
+    flex-shrink: 0;
+    transition: background .1s;
+  }
+  .side-btn:hover { background: var(--surface-hover); }
+  .side-btn svg.ic { width: 12px; height: 12px; opacity: .7; }
+  .side-btn.primary {
+    flex: 1;
+    justify-content: center;
+    background: var(--inverse); border-color: var(--inverse);
+    color: var(--on-inverse); font-weight: 600;
+  }
+  .side-btn.primary svg.ic { opacity: 1; }
+  .side-btn.primary:hover { opacity: .88; }
+  .side-btn.danger {
+    background: var(--red-bg); border-color: transparent; color: var(--red-text);
+  }
+
+  /* Agent list */
+  .agent-row {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 8px; border-radius: 8px;
+    cursor: pointer; transition: background .1s;
+  }
   .agent-row:hover { background: var(--surface-hover); }
   .agent-row.selected { background: var(--accent-row); }
-  .agent-ico { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex-shrink: 0; }
+  .agent-ico {
+    width: 26px; height: 26px; border-radius: 7px;
+    display: grid; place-items: center; flex-shrink: 0;
+  }
   .agent-ico.planner { background: var(--agent-planner-bg); color: var(--agent-planner-fg); }
-  .agent-ico.coder { background: var(--agent-coder-bg); color: var(--agent-coder-fg); }
-  .agent-ico.tester { background: var(--agent-tester-bg); color: var(--agent-tester-fg); }
-  .agent-ico.reviewer { background: var(--agent-reviewer-bg); color: var(--agent-reviewer-fg); }
+  .agent-ico.coder   { background: var(--agent-coder-bg); color: var(--agent-coder-fg); }
+  .agent-ico.tester  { background: var(--agent-tester-bg); color: var(--agent-tester-fg); }
+  .agent-ico.reviewer{ background: var(--agent-reviewer-bg); color: var(--agent-reviewer-fg); }
   .agent-ico svg.ic { width: 13px; height: 13px; }
-  .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
-  .agent-row .sub { font-size: 11px; color: var(--muted); line-height: 1.25; }
   .agent-row .grow { flex: 1; min-width: 0; }
+  .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
+  .agent-row .sub { font-size: 10.5px; color: var(--muted); line-height: 1.25; }
   .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral); flex-shrink: 0; }
   .sdot.running { background: var(--green); animation: pulse 1.2s infinite; }
-  .sdot.passed { background: var(--green); }
+  .sdot.passed  { background: var(--green); }
   .sdot.failed, .sdot.blocked { background: var(--red); }
   @keyframes pulse { 50% { opacity: .35; } }
-  .cycle-mini { font-size: 10.5px; color: var(--muted); padding: 0 8px 4px 43px; margin-top: -4px; }
 
-  /* ---- stepper ---- */
-  .stepper { display: flex; align-items: flex-start; padding: 4px 8px 2px; }
+  .cycle-mini { font-size: 10.5px; color: var(--muted); padding: 0 8px 4px 43px; margin-top: -4px; }
+  .ext-history { font-size: 10.5px; color: var(--faint); margin: 2px 0 0 43px; }
+
+  /* ===== STEPPER ===== */
+  .stepper { display: flex; align-items: flex-start; padding: 6px 8px 4px; }
   .step { display: flex; flex-direction: column; align-items: center; gap: 4px; position: relative; flex: 1; }
-  .step .circ { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--neutral); color: var(--faint); display: grid; place-items: center; font-size: 10.5px; font-weight: 600; background: var(--sidebar); z-index: 1; }
+  .step .circ {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--neutral); color: var(--faint);
+    display: grid; place-items: center;
+    font-size: 10.5px; font-weight: 600;
+    background: var(--sidebar); z-index: 1;
+  }
   .step .circ svg.ic { width: 11px; height: 11px; }
-  .step.done .circ { background: var(--green); border-color: var(--green); color: var(--on-inverse); }
+  .step.done   .circ { background: var(--green); border-color: var(--green); color: var(--on-inverse); }
   .step.active .circ { background: var(--inverse); border-color: var(--inverse); color: var(--on-inverse); }
   .step.failed .circ { background: var(--red); border-color: var(--red); color: var(--on-inverse); }
-  .step .lbl { font-size: 10px; color: var(--muted); }
+  .step .lbl { font-size: 9.5px; color: var(--faint); text-align: center; }
   .step::before { content: ''; position: absolute; top: 11px; left: -50%; width: 100%; height: 1.5px; background: var(--neutral); }
   .step:first-child::before { display: none; }
   .step.done::before, .step.active::before { background: var(--green); }
 
-  .task-box { padding: 2px 8px; font-size: 12.5px; }
-  .task-box .when { font-size: 11px; color: var(--faint); margin-top: 3px; }
+  /* Task box */
+  .task-box { padding: 2px 8px 8px; }
+  .task-box .task-text { font-size: 12px; line-height: 1.5; }
+  .task-box .when { font-size: 10.5px; color: var(--faint); margin-top: 3px; }
 
-  /* ---- main ---- */
+  /* ===== MAIN ===== */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-  .agent-header { display: flex; align-items: center; gap: 11px; padding: 13px 22px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+
+  /* Agent header */
+  .agent-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    background: var(--surface-muted);
+  }
   .agent-header .agent-ico { width: 30px; height: 30px; }
   .agent-header .agent-ico svg.ic { width: 15px; height: 15px; }
-  .agent-header .nm { font-weight: 700; font-size: 14px; }
-  .agent-header .sub { font-size: 11.5px; color: var(--muted); }
-  .agent-header .runtime-line { font-size: 12px; margin-top: 3px; color: var(--muted); }
-  .agent-header .runtime-line strong { font-weight: 800; color: var(--text); }
+  .agent-header .nm { font-weight: 700; font-size: 14px; line-height: 1.2; }
+  .agent-header .sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .agent-header .runtime-line { font-size: 11.5px; margin-top: 2px; color: var(--muted); }
+  .agent-header .runtime-line strong { font-weight: 700; color: var(--text); }
   .agent-header .runtime-line .runner-strong { color: var(--purple-text); }
   .agent-header .runtime-line .model-strong { color: var(--info-text); }
   .agent-header .spacer { flex: 1; }
-  .model-badge { font-size: 12px; font-weight: 800; padding: 4px 11px; border-radius: 999px; background: var(--info-bg); color: var(--info-text); border: 1px solid var(--info-border); white-space: nowrap; }
-  .badge { font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px; display: inline-flex; align-items: center; gap: 5px; }
+  .model-badge {
+    font-size: 11.5px; font-weight: 700;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--info-bg); color: var(--info-text);
+    border: 1px solid var(--info-border);
+    white-space: nowrap;
+  }
+  .badge {
+    font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
   .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
   .badge.running { background: var(--purple-bg); color: var(--purple-text); }
-  .badge.passed { background: var(--green-bg); color: var(--green-text); }
+  .badge.passed  { background: var(--green-bg); color: var(--green-text); }
   .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
   .badge.pending { background: var(--surface-hover); color: var(--muted); }
   .badge.awaiting_host { background: var(--purple-bg); color: var(--purple-text); }
 
-  #halt-banner { display: none; background: var(--red-bg); color: var(--red-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid var(--halt-border); align-items: center; gap: 10px; flex-wrap: wrap; }
-  #halt-banner .msg { flex: 1; min-width: 220px; }
+  /* Banners */
+  #halt-banner {
+    display: none;
+    background: var(--red-bg); color: var(--red-text);
+    font-size: 12px; padding: 9px 20px;
+    border-bottom: 1px solid var(--halt-border);
+    align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  #halt-banner .msg { flex: 1; min-width: 220px; font-weight: 500; }
   #halt-banner .extend { display: flex; align-items: center; gap: 6px; }
-  #halt-banner input[type=number] { width: 54px; border: 1px solid var(--halt-input-border); border-radius: 6px; padding: 3px 6px; font: inherit; background: var(--surface); color: var(--text); }
-  #halt-banner button { font: 600 11.5px inherit; border: none; background: var(--inverse); color: var(--on-inverse); border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+  #halt-banner input[type=number] {
+    width: 54px; border: 1px solid var(--halt-input-border);
+    border-radius: 6px; padding: 3px 6px; font: inherit;
+    background: var(--surface); color: var(--text);
+  }
+  #halt-banner button {
+    font: 600 11.5px inherit; border: none;
+    background: var(--inverse); color: var(--on-inverse);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer; white-space: nowrap;
+  }
   #halt-banner button:disabled { opacity: .5; cursor: default; }
-  .ext-history { font-size: 10.5px; color: var(--faint); margin: 2px 0 0 43px; }
-  #archive-banner { display: none; background: var(--info-bg); color: var(--info-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid var(--info-border); }
-  #awaiting-banner { display: none; background: var(--purple-bg); color: var(--purple-text); font-size: 12px; padding: 8px 22px; border-bottom: 1px solid var(--purple-border); }
+  .ext-history-banner { font-size: 10.5px; color: var(--faint); margin: 2px 0 0 0; }
+  #archive-banner {
+    display: none;
+    background: var(--info-bg); color: var(--info-text);
+    font-size: 12px; padding: 8px 20px;
+    border-bottom: 1px solid var(--info-border);
+  }
+  #awaiting-banner {
+    display: none;
+    background: var(--purple-bg); color: var(--purple-text);
+    font-size: 12px; padding: 8px 20px;
+    border-bottom: 1px solid var(--purple-border);
+  }
   #awaiting-banner a { color: inherit; font-weight: 600; }
 
-  .feed { flex: 1; overflow-y: auto; padding: 18px 22px 26px; }
+  /* Feed */
+  .feed { flex: 1; overflow-y: auto; padding: 18px 22px 24px; }
   .feed-inner { max-width: 760px; }
+
+  /* Feed virtualization helpers */
+  /* content-visibility: auto lets browser skip paint/layout for off-screen blocks */
+  .feed-block {
+    content-visibility: auto;
+    contain-intrinsic-block-size: 40px; /* estimated height hint for scroll accuracy */
+  }
+  .feed-overflow-bar {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 14px; color: var(--faint); font-size: 11px;
+  }
+  .feed-overflow-bar::before, .feed-overflow-bar::after {
+    content: ''; flex: 1; height: 1px; background: var(--border);
+  }
+  .feed-show-all {
+    font: 500 11px inherit;
+    border: 1px solid var(--border);
+    background: var(--surface-muted); color: var(--muted);
+    border-radius: 6px; padding: 3px 10px;
+    cursor: pointer; white-space: nowrap;
+    transition: background .1s;
+  }
+  .feed-show-all:hover { background: var(--surface-hover); color: var(--text); }
+
   .chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0; }
-  .chip { font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 3.5px 9px; border-radius: 7px; display: inline-flex; align-items: center; gap: 5px; }
+  .chip {
+    font: 11.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 3.5px 9px; border-radius: 7px;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
   .chip svg.ic { width: 11px; height: 11px; }
-  .chip.edit { background: var(--amber-bg); color: var(--amber-text); }
+  .chip.edit   { background: var(--amber-bg); color: var(--amber-text); }
   .chip.create { background: var(--green-bg); color: var(--green-text); }
-  .chip.read { background: var(--surface-hover); color: var(--muted); }
-  .cmdcard { font: 11.5px/1.55 ui-monospace, Menlo, monospace; background: var(--terminal-bg); color: var(--terminal-text); border-radius: 8px; padding: 8px 12px; margin: 8px 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  .chip.read   { background: var(--surface-hover); color: var(--muted); }
+
+  .cmdcard {
+    font: 11.5px/1.55 ui-monospace, Menlo, monospace;
+    background: var(--terminal-bg); color: var(--terminal-text);
+    border-radius: 8px; padding: 8px 12px; margin: 8px 0;
+    overflow-x: auto; white-space: pre-wrap; word-break: break-all;
+  }
   .cmdcard .dollar { color: var(--terminal-muted); }
   .txt { margin: 10px 0; }
   .txt p { margin: 6px 0; }
   .sysline { font-size: 11px; color: var(--faint); margin: 10px 0; font-family: ui-monospace, Menlo, monospace; }
   .errline { font-size: 11.5px; color: var(--red-text); margin: 6px 0; font-family: ui-monospace, Menlo, monospace; }
-  .cycle-divider { display: flex; align-items: center; gap: 10px; margin: 18px 0 10px; color: var(--faint); font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+  .cycle-divider {
+    display: flex; align-items: center; gap: 10px;
+    margin: 18px 0 10px; color: var(--faint);
+    font-size: 10.5px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  }
   .cycle-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-  .note-card { display: flex; align-items: center; gap: 8px; background: var(--info-bg); color: var(--info-text); border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px; }
-
-  .sec-label { font-size: 10.5px; font-weight: 700; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; margin: 22px 0 8px; display: flex; align-items: center; gap: 6px; }
-  .artifact-card { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: 4px 18px 14px; margin-bottom: 10px; }
-  .artifact-card h1 { font-size: 15px; } .artifact-card h2 { font-size: 13px; margin: 16px 0 6px; } .artifact-card h3, .artifact-card h4 { font-size: 12px; margin: 12px 0 4px; }
+  .note-card {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--info-bg); color: var(--info-text);
+    border-radius: 8px; padding: 8px 12px; margin: 10px 0; font-size: 12px;
+  }
+  .sec-label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .08em;
+    color: var(--faint); text-transform: uppercase;
+    margin: 22px 0 8px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .artifact-card {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 4px 18px 14px; margin-bottom: 10px;
+  }
+  .artifact-card h1 { font-size: 15px; }
+  .artifact-card h2 { font-size: 13px; margin: 16px 0 6px; }
+  .artifact-card h3, .artifact-card h4 { font-size: 12px; margin: 12px 0 4px; }
   .artifact-card pre { background: var(--pre-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font: 11.5px/1.6 ui-monospace, Menlo, monospace; }
   .artifact-card code { font: 11.5px ui-monospace, Menlo, monospace; background: var(--inline-code-bg); border-radius: 4px; padding: 1px 4px; }
   .artifact-card pre code { background: none; padding: 0; }
@@ -193,38 +518,137 @@
   .artifact-card th, .txt th { background: var(--pre-bg); font-weight: 700; }
   .artifact-card tbody tr:nth-child(even) td, .txt tbody tr:nth-child(even) td { background: var(--pre-bg); }
   .kw { color: var(--syntax-kw); } .str { color: var(--syntax-str); } .cmt { color: var(--syntax-cmt); } .typ { color: var(--syntax-typ); }
-  .diffcard { background: var(--diff-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 0; margin-bottom: 10px; font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; }
+  .diffcard {
+    background: var(--diff-bg); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 0; margin-bottom: 10px;
+    font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto;
+  }
   .diffcard .dl { padding: 0 14px; white-space: pre; }
   .diffcard .add { background: var(--diff-add-bg); color: var(--diff-add-text); }
   .diffcard .del { background: var(--diff-del-bg); color: var(--diff-del-text); }
   .diffcard .hunk { color: var(--diff-hunk-text); background: var(--diff-hunk-bg); }
   .diffcard .meta { color: var(--faint); }
-  .empty-feed { color: var(--faint); font-size: 12.5px; padding: 30px 0; text-align: center; }
+  .empty-feed { color: var(--faint); font-size: 12.5px; padding: 40px 0; text-align: center; }
 
-  /* ---- follow-up composer ---- */
-  .composer { display: flex; gap: 9px; padding: 12px 22px 16px; border-top: 1px solid var(--border); flex-shrink: 0; align-items: center; position: relative; }
-  .composer .queued { position: absolute; top: -13px; left: 22px; font-size: 11px; color: var(--purple-text); background: var(--purple-bg); padding: 2px 9px; border-radius: 999px; }
-  .composer input { flex: 1; border: 1px solid var(--border); background: var(--surface-muted); border-radius: 10px; padding: 10px 14px; font: inherit; color: var(--text); outline: none; }
+  /* ===== COMPOSER ===== */
+  .composer-wrap {
+    border-top: 1px solid var(--border);
+    padding: 10px 16px 12px;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .queued-pill {
+    display: none;
+    position: absolute; top: -13px; left: 16px;
+    font-size: 11px; color: var(--purple-text);
+    background: var(--purple-bg); padding: 2px 9px;
+    border-radius: 999px;
+  }
+  .composer {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .composer-input-wrap {
+    flex: 1; position: relative; min-width: 0;
+  }
+  .composer input {
+    width: 100%;
+    border: 1px solid var(--border);
+    background: var(--surface-muted);
+    border-radius: 10px;
+    padding: 8px 12px;
+    font: inherit; color: var(--text);
+    outline: none;
+    transition: border-color .15s, background .15s;
+  }
   .composer input:focus { border-color: var(--neutral); background: var(--surface); }
   .composer input:disabled { opacity: .5; }
-  .composer button { width: 36px; height: 36px; border: none; border-radius: 10px; background: var(--orange); color: var(--on-inverse); cursor: pointer; flex-shrink: 0; display: grid; place-items: center; }
-  .composer button:hover { filter: brightness(1.07); }
-  .composer button:disabled { opacity: .4; cursor: default; }
-  #followup-resume { background: var(--green); }
 
-  footer.statusline { font-size: 10.5px; color: var(--faint); padding: 0 22px 8px; display: flex; justify-content: space-between; }
+  /* Composer action buttons — grouped by context */
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+  /* Primary send group */
+  .send-group {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    overflow: hidden;
+  }
+  .send-group .c-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font: 500 11.5px inherit;
+    border: none;
+    background: var(--surface);
+    color: var(--text);
+    padding: 0 10px;
+    height: 34px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background .1s;
+    border-right: 1px solid var(--border);
+  }
+  .send-group .c-btn:last-child { border-right: none; }
+  .send-group .c-btn:hover { background: var(--surface-muted); }
+  .send-group .c-btn.primary-action {
+    background: var(--inverse); color: var(--on-inverse); font-weight: 600;
+  }
+  .send-group .c-btn.primary-action:hover { opacity: .88; }
+  .send-group .c-btn:disabled { opacity: .4; cursor: default; pointer-events: none; }
+
+  /* Resume-only button */
+  #followup-resume {
+    display: none;
+    align-items: center; gap: 5px;
+    height: 34px; padding: 0 12px;
+    font: 600 11.5px inherit;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: var(--green-bg); color: var(--green-text);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: opacity .1s;
+  }
+  #followup-resume:hover { opacity: .85; }
+  #followup-resume:disabled { opacity: .4; cursor: default; }
+  #followup-resume svg.ic { width: 13px; height: 13px; }
+
+  /* Footer status */
+  footer.statusline {
+    font-size: 10.5px; color: var(--faint);
+    padding: 4px 16px 6px;
+    display: flex; justify-content: space-between;
+    border-top: 1px solid var(--border);
+  }
   #conn.on { color: var(--green); }
 
-  /* ---- new run modal ---- */
+  /* ===== NEW RUN MODAL ===== */
   .overlay { display: none; position: fixed; inset: 0; background: var(--overlay); z-index: 10; }
   .overlay.open { display: grid; place-items: center; }
-  .modal { background: var(--surface); border-radius: 14px; width: 440px; max-width: calc(100vw - 40px); padding: 20px 22px; box-shadow: 0 20px 50px var(--shadow); }
-  .modal h3 { margin: 0 0 14px; font-size: 14.5px; }
-  .modal label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); margin: 12px 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+  .modal {
+    background: var(--surface); border-radius: 14px;
+    width: 460px; max-width: calc(100vw - 40px);
+    padding: 22px 24px;
+    box-shadow: 0 20px 60px var(--shadow);
+  }
+  .modal-header { display: flex; align-items: center; gap: 10px; margin: 0 0 18px; }
+  .modal-header h3 { margin: 0; font-size: 14.5px; font-weight: 700; flex: 1; }
+  .modal-header .modal-close {
+    display: grid; place-items: center;
+    width: 26px; height: 26px; border-radius: 6px;
+    border: none; background: var(--surface-hover);
+    color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1;
+  }
+  .modal-close:hover { background: var(--surface-muted); }
+  .modal label { display: block; font-size: 10.5px; font-weight: 700; color: var(--muted); margin: 14px 0 4px; text-transform: uppercase; letter-spacing: .05em; }
+  .modal label:first-of-type { margin-top: 0; }
   .modal textarea { width: 100%; min-height: 74px; border: 1px solid var(--border); border-radius: 9px; padding: 9px 12px; font: inherit; resize: vertical; outline: none; background: var(--surface); color: var(--text); }
   .modal textarea:focus { border-color: var(--neutral); }
-  .modal select { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font: inherit; background: var(--surface); color: var(--text); }
-  .modal input[type=text], .modal input[type=number] { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font: inherit; background: var(--surface); color: var(--text); }
+  .modal select { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font: inherit; background: var(--surface); color: var(--text); outline: none; }
+  .modal input[type=text], .modal input[type=number] { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; font: inherit; background: var(--surface); color: var(--text); outline: none; }
   .modal .radio-row { display: flex; gap: 14px; margin-top: 6px; font-size: 12.5px; }
   .modal .radio-row label { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-weight: 500; color: var(--text); }
   .modal #nr-manual-models { display: none; margin-top: 4px; }
@@ -232,9 +656,14 @@
   .modal .model-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
   .modal .nr-model-custom { display: none; margin-top: 6px; }
   .modal .nr-model-custom.open { display: block; }
-  .modal .check { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--muted); }
-  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-  .modal .err { color: var(--red-text); font-size: 12px; margin-top: 10px; }
+  .modal .cycles-row { display: flex; gap: 10px; margin-top: 0; }
+  .modal .cycles-row > div { flex: 1; }
+  .modal .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 12.5px; color: var(--muted); }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .modal .err { color: var(--red-text); font-size: 12px; margin-top: 8px; }
+
+  /* Divider in modal */
+  .modal-divider { height: 1px; background: var(--border); margin: 16px 0 2px; }
 </style>
 <script>
 (function () {
@@ -247,64 +676,134 @@
 </head>
 <body>
 <div class="app">
+
+  <!-- ===== MENUBAR ===== -->
   <div class="topbar">
-    <div class="appicon" id="app-ico"></div>
-    <div class="title" id="ws-title" style="display:none">Agent workspace</div>
-    <select id="project-select" title="Active project"></select>
-    <div class="runtime-strip" id="runtime-strip" aria-live="polite">
-      <span class="runtime-chip runner"><span class="lbl">CLI</span> <strong id="runtime-runner">—</strong></span>
-      <span class="runtime-chip model"><span class="lbl">Model</span> <strong id="runtime-model">—</strong></span>
+    <!-- Brand zone -->
+    <div class="topbar-brand">
+      <div class="appicon" id="app-ico"></div>
+      <span class="brand-name">Orchestrator</span>
     </div>
-    <div class="spacer"></div>
-    <span class="totals" id="totals"></span>
-    <span class="pill" id="active-pill">idle</span>
-    <button class="tb-btn" id="theme-btn" title="Theme: System" aria-label="Theme: System"></button>
-    <select id="run-select" title="Run history"><option value="">Current run</option></select>
-    <button class="tb-btn danger" id="cancel-btn" style="display:none"></button>
-    <button class="tb-btn primary" id="newrun-btn"></button>
+
+    <!-- Center: runtime context + status -->
+    <div class="topbar-center">
+      <div class="runtime-strip" id="runtime-strip" aria-live="polite">
+        <span class="runtime-chip runner"><span class="lbl">via</span> <strong id="runtime-runner">—</strong></span>
+        <div class="runtime-sep"></div>
+        <span class="runtime-chip model"><span class="lbl">model</span> <strong id="runtime-model">—</strong></span>
+      </div>
+      <div class="spacer"></div>
+      <span class="totals" id="totals"></span>
+      <span class="pill" id="active-pill">idle</span>
+    </div>
+
+    <!-- End: theme toggle -->
+    <div class="topbar-end">
+      <button class="tb-btn" id="theme-btn" title="Theme: System" aria-label="Theme: System"></button>
+    </div>
   </div>
 
+  <!-- ===== BODY ===== -->
   <div class="body">
+
+    <!-- Sidebar -->
     <aside class="sidebar">
-      <div class="side-label">Agents</div>
-      <div id="agent-list"></div>
-      <div class="side-label">Progress</div>
-      <div class="stepper" id="stepper"></div>
-      <div class="side-label">Current task</div>
-      <div class="task-box">
-        <div id="task-text">No pipeline run yet. Start one with the New run button or<br><code style="font-size:11px">/orchestrate or bash .pipeline/orchestrate.sh "task"</code></div>
-        <div class="when" id="task-when"></div>
+
+      <!-- Scrollable content -->
+      <div class="sidebar-scroll">
+
+        <!-- 1. Workspace: project selector -->
+        <div class="side-section">
+          <div class="side-heading">Workspace</div>
+          <div class="project-row">
+            <div class="proj-icon" id="project-picker-icon"></div>
+            <select id="project-select" title="Active project"></select>
+          </div>
+        </div>
+
+        <!-- 2. Current task: what the pipeline is working on -->
+        <div class="side-section">
+          <div class="side-heading">Current task</div>
+          <div class="task-box">
+            <div class="task-text" id="task-text">No pipeline run yet. Use <strong>New run</strong> below or <code style="font-size:10.5px">/orchestrate</code></div>
+            <div class="when" id="task-when"></div>
+          </div>
+        </div>
+
+        <!-- 3. Agents: click to inspect each stage -->
+        <div class="side-section">
+          <div class="side-heading">Agents</div>
+          <div id="agent-list"></div>
+        </div>
+
+        <!-- 4. Pipeline progress stepper -->
+        <div class="side-section">
+          <div class="side-heading">Progress</div>
+          <div class="stepper" id="stepper"></div>
+        </div>
+
+      </div>
+
+      <!-- Pinned footer: run controls (aligned with composer below main) -->
+      <div class="sidebar-footer">
+        <div class="sf-heading">Run controls</div>
+        <select id="run-select" title="Browse run history"><option value="">Current run</option></select>
+        <div class="run-controls">
+          <button class="side-btn danger" id="cancel-btn" style="display:none"></button>
+          <button class="side-btn primary" id="newrun-btn"></button>
+        </div>
       </div>
     </aside>
 
+    <!-- Main content -->
     <main class="main">
       <div class="agent-header" id="agent-header"></div>
       <div id="halt-banner"></div>
       <div id="awaiting-banner"></div>
       <div id="archive-banner"></div>
       <div class="feed"><div class="feed-inner" id="feed"></div></div>
+
+      <!-- Composer -->
+      <div class="composer-wrap">
+        <span class="queued-pill" id="queued-pill"></span>
+        <div class="composer">
+          <div class="composer-input-wrap">
+            <input id="followup-input" placeholder="Add a follow-up note for the agent…">
+          </div>
+          <div class="composer-actions">
+            <!-- Send group: target agent + orchestrate route -->
+            <div class="send-group">
+              <button class="c-btn primary-action" id="followup-send" title="Queue note for selected agent"></button>
+              <button class="c-btn" id="orchestrate-send" title="Auto-route to best agent"></button>
+            </div>
+            <!-- Resume button — shown only when pipeline is halted -->
+            <button id="followup-resume" title="Queue note and resume pipeline"></button>
+          </div>
+        </div>
+      </div>
+
       <footer class="statusline">
         <span>Watching <code>.pipeline/</code></span>
         <span id="conn">● connecting…</span>
       </footer>
-      <div class="composer">
-        <span class="queued" id="queued-pill" style="display:none"></span>
-        <input id="followup-input" placeholder="Add a follow-up for the agent…">
-        <button id="followup-send" title="Send to selected agent"></button>
-        <button id="orchestrate-send" title="Send to orchestrator (auto-route)"></button>
-        <button id="followup-resume" title="Send & resume" style="display:none"></button>
-      </div>
     </main>
   </div>
 </div>
 
+<!-- ===== NEW RUN MODAL ===== -->
 <div class="overlay" id="newrun-overlay">
   <div class="modal">
-    <h3>Start a new pipeline run</h3>
+    <div class="modal-header">
+      <h3>Start a new pipeline run</h3>
+      <button class="modal-close" id="nr-cancel" aria-label="Close">✕</button>
+    </div>
+
     <label>Task</label>
     <textarea id="nr-task" placeholder="Describe the feature, fix, or refactor…"></textarea>
+
     <label>Runner</label>
     <select id="nr-runner"></select>
+
     <label>Models</label>
     <div class="radio-row">
       <label><input type="radio" name="nr-model-profile" value="auto" checked> Auto (cost-optimized per stage)</label>
@@ -318,20 +817,28 @@
         <div><label>Reviewer</label><select id="nr-model-reviewer"></select><input type="text" id="nr-model-reviewer-custom" class="nr-model-custom" placeholder="custom model id"></div>
       </div>
     </div>
-    <div style="display:flex;gap:10px">
-      <div style="flex:1">
+
+    <div class="modal-divider"></div>
+
+    <div class="cycles-row">
+      <div>
         <label>Coder fix cycles</label>
-        <input type="number" min="1" id="nr-max-cycles" style="width:100%;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font:inherit">
+        <input type="number" min="1" id="nr-max-cycles">
       </div>
-      <div style="flex:1">
+      <div>
         <label>Post-tester fix cycles</label>
-        <input type="number" min="1" id="nr-max-post-cycles" style="width:100%;border:1px solid var(--border);border-radius:9px;padding:8px 10px;font:inherit">
+        <input type="number" min="1" id="nr-max-post-cycles">
       </div>
     </div>
-    <div class="check"><input type="checkbox" id="nr-sandbox"> <label for="nr-sandbox" style="all:unset;cursor:pointer">Run in isolated git worktree (sandbox)</label></div>
+
+    <div class="check">
+      <input type="checkbox" id="nr-sandbox">
+      <label for="nr-sandbox" style="all:unset;cursor:pointer;font-size:12.5px;color:var(--muted)">Run in isolated git worktree (sandbox)</label>
+    </div>
+
     <div class="err" id="nr-err"></div>
     <div class="actions">
-      <button class="tb-btn" id="nr-cancel">Cancel</button>
+      <button class="tb-btn" id="nr-cancel-btn">Cancel</button>
       <button class="tb-btn primary" id="nr-start">Start run</button>
     </div>
   </div>
@@ -361,6 +868,7 @@ const ICONS = {
   moon:     I('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
   monitor:  I('<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>'),
   shuffle:  I('<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>'),
+  folder:   I('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'),
 };
 
 const AGENTS = {
@@ -385,11 +893,13 @@ let sseConnection = null;
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
 
+// Inject icons
 document.getElementById('app-ico').innerHTML = ICONS.app;
-document.getElementById('followup-send').innerHTML = ICONS.send;
-document.getElementById('orchestrate-send').innerHTML = ICONS.shuffle;
-document.getElementById('followup-resume').innerHTML = ICONS.play;
-document.getElementById('newrun-btn').innerHTML = ICONS.play + ' New run';
+document.getElementById('project-picker-icon').innerHTML = ICONS.folder;
+document.getElementById('followup-send').innerHTML = ICONS.send + ' Send';
+document.getElementById('orchestrate-send').innerHTML = ICONS.shuffle + ' Route';
+document.getElementById('followup-resume').innerHTML = ICONS.play + ' Send & Resume';
+document.getElementById('newrun-btn').innerHTML = ICONS.plus + ' New run';
 document.getElementById('cancel-btn').innerHTML = ICONS.stop + ' Stop run';
 
 // ---- theme (light / dark / system) ----
@@ -401,20 +911,16 @@ function getStoredTheme() {
   const v = localStorage.getItem(THEME_KEY);
   return v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
 }
-
 function resolveTheme(pref) {
   if (pref === 'system') return themeMq.matches ? 'dark' : 'light';
   return pref;
 }
-
 function themeLabel(pref) {
   return pref === 'light' ? 'Light' : pref === 'dark' ? 'Dark' : 'System';
 }
-
 function themeIcon(pref) {
   return pref === 'light' ? ICONS.sun : pref === 'dark' ? ICONS.moon : ICONS.monitor;
 }
-
 function applyTheme(pref) {
   document.documentElement.dataset.theme = resolveTheme(pref);
   const btn = document.getElementById('theme-btn');
@@ -424,14 +930,12 @@ function applyTheme(pref) {
   btn.title = label;
   btn.setAttribute('aria-label', label);
 }
-
 function cycleTheme() {
   const cur = getStoredTheme();
   const next = THEME_CYCLE[(THEME_CYCLE.indexOf(cur) + 1) % THEME_CYCLE.length];
   localStorage.setItem(THEME_KEY, next);
   applyTheme(next);
 }
-
 applyTheme(getStoredTheme());
 document.getElementById('theme-btn').onclick = cycleTheme;
 themeMq.addEventListener('change', () => {
@@ -525,44 +1029,30 @@ function fmtDur(a, b) {
 }
 
 const RUNNER_LABELS = {
-  claude: 'Claude',
-  cursor: 'Cursor',
-  codex: 'Codex',
-  gemini: 'Gemini',
-  agy: 'Antigravity',
-  host: 'Chat (host)',
+  claude: 'Claude', cursor: 'Cursor', codex: 'Codex',
+  gemini: 'Gemini', agy: 'Antigravity', host: 'Chat (host)',
 };
 
 function formatRunner(runner) {
   if (!runner) return '—';
   return RUNNER_LABELS[runner] || cap(runner);
 }
-
 function runningStageName() {
   return state?.status?.stages?.find((s) => s.status === 'running')?.name || null;
 }
-
 function modelForAgent(name) {
   const st = stageOf(name);
   if (st?.model) return st.model;
   return state?.status?.models?.stages?.[name] || null;
 }
-
 function currentRuntimeModel() {
   const running = runningStageName();
-  if (running) {
-    const m = modelForAgent(running);
-    if (m) return m;
-  }
+  if (running) { const m = modelForAgent(running); if (m) return m; }
   const active = activeAgent();
   const activeModel = modelForAgent(active);
   if (activeModel) return activeModel;
   const stages = state?.status?.models?.stages;
-  if (stages) {
-    for (const name of ORDER) {
-      if (stages[name]) return stages[name];
-    }
-  }
+  if (stages) { for (const name of ORDER) { if (stages[name]) return stages[name]; } }
   return null;
 }
 
@@ -571,18 +1061,13 @@ function renderRuntimeStrip() {
   const runnerEl = document.getElementById('runtime-runner');
   const modelEl = document.getElementById('runtime-model');
   const s = state?.status;
-  if (!s?.runner) {
-    strip.classList.remove('visible');
-    return;
-  }
+  if (!s?.runner) { strip.classList.remove('visible'); return; }
   strip.classList.add('visible');
   runnerEl.textContent = formatRunner(s.runner);
-  
   const running = runningStageName();
   const active = activeAgent();
   const currentStageName = running || active;
   const st = stageOf(currentStageName);
-  
   if (s.runner === 'host' && st?.status !== 'passed' && st?.status !== 'failed' && !st?.model) {
     const suggestedModel = state?.status?.models?.stages?.[currentStageName];
     modelEl.innerHTML = `determined by chat ${suggestedModel ? `<span style="opacity: 0.7; font-weight: normal;">(suggested: ${esc(suggestedModel)})</span>` : ''}`;
@@ -606,7 +1091,7 @@ function renderSidebar() {
     const row = document.createElement('div');
     row.className = 'agent-row' + (cur === name ? ' selected' : '');
     row.innerHTML = `${agentIco(name)}<div class="grow"><div class="nm">${cap(name)}</div><div class="sub">${AGENTS[name].sub}</div></div><div class="sdot ${st.status}"></div>`;
-    row.onclick = () => { selected = name; renderAll(); loadArtifacts(); };
+    row.onclick = () => { switchAgent(name); };
     list.appendChild(row);
     if (name === 'coder' && st.cycle > 0) {
       const mini = document.createElement('div');
@@ -632,6 +1117,7 @@ function renderSidebar() {
       }
     }
   }
+
   const stepper = document.getElementById('stepper');
   stepper.innerHTML = '';
   ORDER.forEach((name, i) => {
@@ -642,6 +1128,7 @@ function renderSidebar() {
     div.innerHTML = `<div class="circ">${st.status === 'passed' ? ICONS.check : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
     stepper.appendChild(div);
   });
+
   if (state?.status) {
     document.getElementById('task-text').textContent = state.status.task;
     document.getElementById('task-when').textContent = agoText(state.status.startedAt);
@@ -655,7 +1142,7 @@ function renderTop() {
   const s = state?.status;
   cancelBtn.style.display = state?.canCancel ? '' : 'none';
   if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; totals.textContent = ''; renderRuntimeStrip(); return; }
-  document.getElementById('ws-title').textContent = 'Agent workspace — ' + (s.task.length > 48 ? s.task.slice(0, 48) + '…' : s.task);
+
   const parts = [];
   const started = s.stages.filter((x) => x.startedAt).length;
   if (started) parts.push(`${started} agent${started === 1 ? '' : 's'}`);
@@ -663,18 +1150,15 @@ function renderTop() {
   const dur = fmtDur(s.startedAt, s.endedAt);
   if (dur) parts.push(dur);
   totals.textContent = parts.join(' · ');
-  if (state.stale) { pill.textContent = 'stale — resume to continue'; pill.className = 'pill stale'; }
-  else if (s.overall === 'awaiting_chat') { pill.textContent = `awaiting ${formatRunner(s.runner)} — complete stage in agent`; pill.className = 'pill awaiting'; }
-  else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? `${formatRunner(s.runner)} agent active` : '1 agent active'; pill.className = 'pill active'; }
+
+  if (state.stale) { pill.textContent = 'stale'; pill.className = 'pill stale'; }
+  else if (s.overall === 'awaiting_chat') { pill.textContent = `awaiting ${formatRunner(s.runner)}`; pill.className = 'pill awaiting'; }
+  else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? `${formatRunner(s.runner)} active` : 'running'; pill.className = 'pill active'; }
   else if (s.overall === 'halted') {
-    if (s.haltReason === 'INTERRUPTED') {
-      pill.textContent = 'stopped — resume to continue';
-    } else {
-      pill.textContent = 'halted — needs attention';
-    }
+    pill.textContent = s.haltReason === 'INTERRUPTED' ? 'stopped' : 'halted';
     pill.className = 'pill halted';
   }
-  else { pill.textContent = s.verdict ? `completed — ${s.verdict}` : 'completed'; pill.className = 'pill active'; }
+  else { pill.textContent = s.verdict ? `done · ${s.verdict}` : 'done'; pill.className = 'pill active'; }
   renderRuntimeStrip();
 }
 
@@ -694,16 +1178,11 @@ function getNextAgent(s) {
   return firstNonPassed ? firstNonPassed.name : null;
 }
 
-// Where would a queued follow-up land for this agent, given current pipeline state?
 function followupHint(name) {
   const s = state?.status;
   const st = stageOf(name);
-  if (st?.status === 'passed') {
-    return 'this stage is done — queue on Coder or resume won\'t use this';
-  }
-  if (state?.canResume) {
-    return 'note queued — applies when you resume';
-  }
+  if (st?.status === 'passed') return 'this stage is done — queue on Coder or resume won\'t use this';
+  if (state?.canResume) return 'note queued — applies when you resume';
   if (s && s.overall === 'running' && !state.stale) {
     if (st?.status === 'running' && name === 'coder') return 'note queued — next fix cycle';
     if (st?.status === 'running') return 'note queued — applies if stage re-runs, else next run';
@@ -728,6 +1207,7 @@ function renderHeader() {
     <div class="spacer"></div>
     ${modelBadge}
     <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? `Awaiting ${formatRunner(state?.status?.runner)}` : cap(st.status)}</span>`;
+
   const banner = document.getElementById('halt-banner');
   const s = state?.status;
   if (state?.canResume) {
@@ -745,55 +1225,50 @@ function renderHeader() {
     const msg = `${s.haltReason} — ${failing?.detail || 'human intervention required.'}`;
     if (state?.canExtend) {
       const phase = s.haltedPhase;
-      const dflt = (phase === 'postTester' ? state?.defaults?.maxPostTesterCycles : phase === 'review' ? state?.defaults?.maxReviewCycles : state?.defaults?.maxCoderCycles) || 3;
+      const dflt = (phase === 'postTester' ? state?.defaults?.maxPostTesterCycles : phase === 'review' ? state?.defaults?.maxReviewCycles : state?.defaults?.maxCoderCycles) ?? 2;
       banner.innerHTML = `<span class="msg">${esc(msg)}</span>
-        <span class="extend">Extend by <input type="number" min="1" id="extend-n" value="${dflt}"> cycles
-        <button id="extend-btn">Extend & continue</button></span>`;
+        <div class="extend">
+          <span>Extend by</span>
+          <input type="number" id="extend-n" value="${dflt}" min="1" max="20">
+          <span>cycles</span>
+          <button id="extend-btn">Extend & continue</button>
+        </div>`;
+      const extHistory = state?.status?.extensions;
+      if (extHistory?.length) {
+        const line = document.createElement('div');
+        line.className = 'ext-history-banner';
+        line.textContent = `Extended ${extHistory.length}× (+${extHistory.reduce((a, e) => a + e.addedCycles, 0)} cycles total)`;
+        banner.appendChild(line);
+      }
       document.getElementById('extend-btn').onclick = sendExtend;
     } else {
-      banner.textContent = msg;
+      banner.innerHTML = `<span class="msg">${esc(msg)}</span>
+        <button id="resume-btn">Resume run</button>`;
+      const resumeBtn = document.getElementById('resume-btn');
+      if (resumeBtn) resumeBtn.onclick = sendResume;
     }
-  } else banner.style.display = 'none';
-  const awaiting = document.getElementById('awaiting-banner');
-  if (s?.overall === 'awaiting_chat') {
-    const dash = s.dashboardUrl || (state?.live !== false ? `http://localhost:${window.location.port || '4600'}` : '');
-    awaiting.style.display = 'block';
-    awaiting.innerHTML = `Waiting for <strong>${esc(formatRunner(s.runner))}</strong> — complete the <strong>${esc(s.awaitingStage || 'current')}</strong> stage in your agent CLI, then run <code>bash .pipeline/orchestrate.sh --continue</code>. Brief: <code>.pipeline/stage-handoff.json</code>${dash ? ` · Dashboard: <a href="${esc(dash)}" target="_blank" rel="noopener">${esc(dash)}</a>` : ''}`;
-  } else awaiting.style.display = 'none';
-  const archived = document.getElementById('archive-banner');
-  archived.style.display = state?.live === false ? 'block' : 'none';
-  archived.textContent = `Viewing archived run ${state?.runId || ''} — read-only.`;
-  const input = document.getElementById('followup-input');
-  const send = document.getElementById('followup-send');
-  const orchestrateSend = document.getElementById('orchestrate-send');
-  const done = s?.overall === 'done';
-  const canResume = state?.canResume;
-  input.disabled = send.disabled = orchestrateSend.disabled = state?.live === false || done;
-  if (state?.live === false) {
-    input.placeholder = 'Archived run — follow-ups disabled';
-  } else if (done) {
-    input.placeholder = 'Completed run — follow-ups disabled';
-  } else if (canResume) {
-    input.placeholder = `Add guidance for the ${cap(name)} agent, then resume…`;
   } else {
-    input.placeholder = `Add a follow-up for the ${cap(name)} agent…`;
+    banner.style.display = 'none';
   }
-  const q = document.getElementById('queued-pill');
-  if (state?.live !== false && state?.followups?.[name]) {
-    q.style.display = '';
-    const text = followupHint(name);
-    q.textContent = text;
-    if (text.includes('stage is done')) {
-      q.style.background = 'var(--amber-bg)';
-      q.style.color = 'var(--amber-text)';
-      q.style.borderColor = 'transparent';
-    } else {
-      q.style.background = '';
-      q.style.color = '';
-      q.style.borderColor = '';
-    }
+
+  const awaitBanner = document.getElementById('awaiting-banner');
+  if (s?.overall === 'awaiting_chat') {
+    awaitBanner.style.display = '';
+    const nextA = getNextAgent(s);
+    const artifact = nextA === 'planner' ? 'specs.md' : nextA === 'coder' ? 'changes.md' : nextA === 'tester' ? 'test_suite.md' : 'review_report.md';
+    awaitBanner.innerHTML = `Awaiting <strong>${esc(formatRunner(s.runner))}</strong> — write <code>${artifact}</code> in your agent window, then run <code>bash .pipeline/orchestrate.sh --continue</code>`;
+  } else {
+    awaitBanner.style.display = 'none';
   }
-  else q.style.display = 'none';
+
+  const archiveBanner = document.getElementById('archive-banner');
+  if (currentRun) {
+    archiveBanner.style.display = '';
+    archiveBanner.textContent = `Viewing archived run — ${currentRun}`;
+  } else {
+    archiveBanner.style.display = 'none';
+  }
+
   updateFollowupButtons();
 }
 
@@ -805,59 +1280,105 @@ function chipFor(ev) {
   return null;
 }
 
+// ---- Feed virtualization ----
+// Builds all event segments into an array, then slices to a visible window.
+// Older items get an expand button. CSS content-visibility:auto handles
+// off-screen paint-skipping for what IS in the DOM.
+const FEED_WINDOW = 100; // max event-segments in DOM at once
+let feedShowAll = false; // toggled by expand button
+
+function buildEventSegments(events) {
+  const segments = []; // each element is an html string for one logical block
+  let chipRow = [];
+  const flushChips = () => {
+    if (chipRow.length) {
+      segments.push('<div class="feed-block chips">' + chipRow.map((c) => `<span class="chip ${c.cls}">${c.icon} ${esc(c.label)}</span>`).join('') + '</div>');
+      chipRow = [];
+    }
+  };
+  for (const ev of events) {
+    if (ev.type === 'agent_start') {
+      flushChips();
+      if (ev.cycle > 1) segments.push(`<div class="feed-block cycle-divider">Fix cycle ${ev.cycle}</div>`);
+      continue;
+    }
+    if (ev.type === 'checks_start') { flushChips(); segments.push(`<div class="feed-block cycle-divider">Checker · verification</div>`); continue; }
+    if (ev.type === 'check_end') { flushChips(); segments.push(`<div class="feed-block sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`); continue; }
+    if (ev.type === 'followup_applied') { flushChips(); segments.push(`<div class="feed-block note-card">${ICONS.pin} Follow-up applied: ${esc(ev.text)}</div>`); continue; }
+    if (ev.type === 'chat_handoff') { flushChips(); segments.push(`<div class="feed-block note-card">${ICONS.pin} ${esc(formatRunner(state?.status?.runner))} handoff — write ${esc(ev.artifact || 'artifact')} in agent CLI, then run <code>bash .pipeline/orchestrate.sh --continue</code></div>`); continue; }
+    if (ev.type !== 'agent_output') continue;
+    if (ev.kind === 'tool') {
+      const chip = chipFor(ev);
+      if (chip) { chipRow.push(chip); continue; }
+      flushChips();
+      if (/^Bash$/i.test(ev.tool)) { segments.push(`<div class="feed-block cmdcard"><span class="dollar">$</span> ${esc(ev.cmd || '')}</div>`); continue; }
+      segments.push(`<div class="feed-block sysline">${esc(ev.tool)} ${esc(ev.file || ev.cmd || '')}</div>`);
+      continue;
+    }
+    flushChips();
+    if (ev.kind === 'sys') segments.push(`<div class="feed-block sysline">${esc(ev.text)}</div>`);
+    else if (ev.kind === 'err') segments.push(`<div class="feed-block errline">${esc(ev.text)}</div>`);
+    else segments.push(`<div class="feed-block txt">${renderMd(ev.text || '')}</div>`);
+  }
+  flushChips();
+  return segments;
+}
+
 function renderFeed() {
   const name = activeAgent();
   const feed = document.getElementById('feed');
   const events = state?.events?.[name] || [];
   const wrap = feed.parentElement;
   const atBottom = wrap.scrollTop + wrap.clientHeight >= wrap.scrollHeight - 40;
-  let html = '';
-  let chipRow = [];
-  const flushChips = () => {
-    if (chipRow.length) {
-      html += '<div class="chips">' + chipRow.map((c) => `<span class="chip ${c.cls}">${c.icon} ${esc(c.label)}</span>`).join('') + '</div>';
-      chipRow = [];
-    }
-  };
-  for (const ev of events) {
-    if (ev.type === 'agent_start') { flushChips(); if (ev.cycle > 1) html += `<div class="cycle-divider">Fix cycle ${ev.cycle}</div>`; continue; }
-    if (ev.type === 'checks_start') { flushChips(); html += `<div class="cycle-divider">Checker · verification</div>`; continue; }
-    if (ev.type === 'check_end') { flushChips(); html += `<div class="sysline">${ev.ok ? '✓' : '✗'} ${esc(ev.check)} ${ev.ok ? 'passed' : 'failed'}</div>`; continue; }
-    if (ev.type === 'followup_applied') { flushChips(); html += `<div class="note-card">${ICONS.pin} Follow-up applied: ${esc(ev.text)}</div>`; continue; }
-    if (ev.type === 'chat_handoff') { flushChips(); html += `<div class="note-card">${ICONS.pin} ${esc(formatRunner(state?.status?.runner))} handoff — write ${esc(ev.artifact || 'artifact')} in agent CLI, then run <code>bash .pipeline/orchestrate.sh --continue</code></div>`; continue; }
-    if (ev.type !== 'agent_output') continue;
-    if (ev.kind === 'tool') {
-      const chip = chipFor(ev);
-      if (chip) { chipRow.push(chip); continue; }
-      flushChips();
-      if (/^Bash$/i.test(ev.tool)) { html += `<div class="cmdcard"><span class="dollar">$</span> ${esc(ev.cmd || '')}</div>`; continue; }
-      html += `<div class="sysline">${esc(ev.tool)} ${esc(ev.file || ev.cmd || '')}</div>`;
-      continue;
-    }
-    flushChips();
-    if (ev.kind === 'sys') html += `<div class="sysline">${esc(ev.text)}</div>`;
-    else if (ev.kind === 'err') html += `<div class="errline">${esc(ev.text)}</div>`;
-    else html += `<div class="txt">${renderMd(ev.text || '')}</div>`;
-  }
-  flushChips();
 
+  // Build segments
+  const segments = buildEventSegments(events);
+
+  // Append artifact cards
+  const artifactHtml = [];
   for (const file of AGENTS[name].artifacts) {
     if (!(state?.artifacts || []).includes(file)) continue;
     const content = artifactCache[file];
     if (!content) continue;
     const isDiff = file.endsWith('.patch');
-    html += `<div class="sec-label">${isDiff ? ICONS.diff : ICONS.doc} Output — ${file}</div>`;
-    html += isDiff ? `<div class="diffcard">${renderDiff(content)}</div>` : `<div class="artifact-card">${renderMd(content)}</div>`;
+    artifactHtml.push(`<div class="feed-block sec-label">${isDiff ? ICONS.diff : ICONS.doc} Output — ${file}</div>`);
+    artifactHtml.push(isDiff
+      ? `<div class="feed-block diffcard">${renderDiff(content)}</div>`
+      : `<div class="feed-block artifact-card">${renderMd(content)}</div>`);
   }
 
-  const finalHtml = html || '<div class="empty-feed">No activity yet for this agent.</div>';
-  const key = name + '\u0000' + finalHtml;
+  // Build final html with optional windowing
+  let html = '';
+  if (segments.length === 0 && artifactHtml.length === 0) {
+    html = '<div class="empty-feed">No activity yet for this agent.</div>';
+  } else {
+    const overflow = feedShowAll ? 0 : Math.max(0, segments.length - FEED_WINDOW);
+    if (overflow > 0) {
+      html += `<div class="feed-overflow-bar"><button class="feed-show-all" id="feed-show-all-btn">${overflow} older item${overflow === 1 ? '' : 's'} — show all</button></div>`;
+      html += segments.slice(overflow).join('');
+    } else {
+      html += segments.join('');
+    }
+    html += artifactHtml.join('');
+  }
+
+  // Avoid thrashing the DOM if nothing changed
+  const key = name + (feedShowAll ? ':all' : ':win') + '\u0000' + html;
   if (feed._renderKey === key) return;
-  if (feed._renderKey !== undefined && feed._renderKey.split('\u0000')[0] === name && selectionInside(feed)) return;
+  if (feed._renderKey !== undefined && feed._renderKey.split('\u0000')[0].startsWith(name) && selectionInside(feed)) return;
   feed._renderKey = key;
-  feed.innerHTML = finalHtml;
+  feed.innerHTML = html;
+
+  // Wire up expand button
+  const expandBtn = document.getElementById('feed-show-all-btn');
+  if (expandBtn) {
+    expandBtn.onclick = () => { feedShowAll = true; feed._renderKey = null; renderFeed(); };
+  }
+
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
 }
+
+
 
 function selectionInside(el) {
   const sel = window.getSelection();
@@ -885,13 +1406,21 @@ function renderRunSelect() {
   const sel = document.getElementById('run-select');
   const prev = sel.value;
   sel.innerHTML = '<option value="">Current run</option>' + runs.map((r) => {
-    const label = `${(r.startedAt || r.id).replace('T', ' ').slice(0, 16)} — ${r.task.slice(0, 30)}${r.task.length > 30 ? '…' : ''} (${r.verdict || r.haltReason || r.overall || '?'})`;
+    const label = `${(r.startedAt || r.id).replace('T', ' ').slice(0, 16)} — ${r.task.slice(0, 28)}${r.task.length > 28 ? '…' : ''} (${r.verdict || r.haltReason || r.overall || '?'})`;
     return `<option value="${esc(r.id)}">${esc(label)}</option>`;
   }).join('');
   sel.value = prev;
 }
 
 function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(); }
+
+// Reset feed window when switching agents manually
+function switchAgent(name) {
+  if (selected !== name) { feedShowAll = false; }
+  selected = name;
+  renderAll();
+  loadArtifacts();
+}
 
 async function fetchState() {
   try {
@@ -928,7 +1457,7 @@ function updateFollowupButtons() {
   const canResume = !!state?.canResume;
   const resumeBtn = document.getElementById('followup-resume');
   if (canResume && hasText) {
-    resumeBtn.style.display = 'grid';
+    resumeBtn.style.display = 'inline-flex';
   } else {
     resumeBtn.style.display = 'none';
   }
@@ -1011,9 +1540,6 @@ async function sendToOrchestrator() {
       if (q) {
         q.style.display = '';
         q.textContent = `routed to ${cap(out.stage)} · ${out.via}`;
-        q.style.background = 'var(--purple-bg)';
-        q.style.color = 'var(--purple-text)';
-        q.style.borderColor = 'transparent';
       }
     } else {
       alert(out.error || 'Failed to route message');
@@ -1066,6 +1592,7 @@ function fillModelPlaceholders(runner) {
     toggleCustomModel(stage);
   });
 }
+
 document.getElementById('newrun-btn').onclick = () => {
   const sel = document.getElementById('nr-runner');
   sel.innerHTML = (state?.runners || ['auto', 'claude', 'cursor', 'codex', 'gemini']).map((r) => `<option value="${r}">${r}</option>`).join('');
@@ -1082,8 +1609,12 @@ document.getElementById('newrun-btn').onclick = () => {
   overlay.classList.add('open');
   document.getElementById('nr-task').focus();
 };
+
+// Both cancel buttons close the modal
 document.getElementById('nr-cancel').onclick = () => overlay.classList.remove('open');
+document.getElementById('nr-cancel-btn').onclick = () => overlay.classList.remove('open');
 overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.classList.remove('open'); });
+
 document.getElementById('nr-start').onclick = async () => {
   const modelProfile = document.querySelector('input[name="nr-model-profile"]:checked')?.value || 'auto';
   const body = {
@@ -1119,6 +1650,7 @@ document.getElementById('nr-start').onclick = async () => {
     setTimeout(() => { fetchState(); fetchRuns(); }, 600);
   } catch { document.getElementById('nr-err').textContent = 'failed to reach server'; }
 };
+
 document.getElementById('cancel-btn').onclick = async () => {
   if (!confirm('Stop the active pipeline run?')) return;
   try {
@@ -1145,9 +1677,7 @@ async function sendExtend() {
 
 function connectSSE() {
   const conn = document.getElementById('conn');
-  if (sseConnection) {
-    try { sseConnection.close(); } catch {}
-  }
+  if (sseConnection) { try { sseConnection.close(); } catch {} }
   const sseUrl = '/events' + (currentProject ? '?project=' + encodeURIComponent(currentProject) : '');
   const es = new EventSource(sseUrl);
   sseConnection = es;
@@ -1166,27 +1696,21 @@ async function fetchProjects() {
     const data = await r.json();
     const select = document.getElementById('project-select');
     const prevSelected = select.value || currentProject;
-    
     select.innerHTML = '';
     const list = data.projects || [];
     if (list.length === 0) {
       const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No projects registered';
+      opt.value = ''; opt.textContent = 'No projects registered';
       select.appendChild(opt);
       return;
     }
-    
     list.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.repoRoot;
       opt.textContent = `${p.name} (${p.overall})`;
-      if (p.repoRoot === prevSelected) {
-        opt.selected = true;
-      }
+      if (p.repoRoot === prevSelected) opt.selected = true;
       select.appendChild(opt);
     });
-    
     if (!currentProject && list.length > 0) {
       currentProject = list[0].repoRoot;
       const newUrl = new URL(window.location);
@@ -1203,7 +1727,6 @@ async function initProject() {
   selected = null;
   artifactCache = {};
   document.getElementById('run-select').value = '';
-  
   await fetchState();
   await fetchRuns();
   connectSSE();
@@ -1212,7 +1735,6 @@ async function initProject() {
 async function startApp() {
   await fetchProjects();
   await initProject();
-  
   document.getElementById('project-select').onchange = (e) => {
     currentProject = e.target.value;
     const newUrl = new URL(window.location);
@@ -1220,7 +1742,6 @@ async function startApp() {
     window.history.pushState({}, '', newUrl);
     initProject();
   };
-  
   setInterval(fetchProjects, 10000);
 }
 
