@@ -15,10 +15,10 @@ import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = process.cwd();
-const paths = pipelinePaths(repoRoot);
-const config = loadConfig(paths);
-const PORT = Number(process.env.PIPELINE_UI_PORT || config.uiPort || 4600);
+const defaultRepoRoot = path.resolve(process.cwd());
+const defaultPaths = pipelinePaths(defaultRepoRoot);
+const defaultConfig = loadConfig(defaultPaths);
+const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600);
 const HOST = '127.0.0.1';
 
 const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
@@ -26,12 +26,71 @@ const AGENT_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
 
-// A "run" is either the live .pipeline/ dir (runId null) or an archived
-// .pipeline/runs/<id>/ dir. IDs are timestamps — validate strictly.
-function runDir(runId) {
-  if (!runId) return paths.dir;
+// Project registry map: repoRoot -> project context object
+const projects = new Map();
+
+function getOrCreateProject(projectPath) {
+  let resolvedPath;
+  try {
+    resolvedPath = path.resolve(projectPath);
+    if (!fs.existsSync(resolvedPath) || !fs.statSync(resolvedPath).isDirectory()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  if (projects.has(resolvedPath)) {
+    return projects.get(resolvedPath);
+  }
+
+  const pPaths = pipelinePaths(resolvedPath);
+  const pConfig = loadConfig(pPaths);
+  const project = {
+    repoRoot: resolvedPath,
+    paths: pPaths,
+    config: pConfig,
+    sseClients: new Set(),
+    changedSet: new Set(),
+    debounceTimer: null,
+    watcher: null,
+  };
+
+  // Watcher setup
+  fs.mkdirSync(pPaths.dir, { recursive: true });
+  const onFsChange = (file) => {
+    project.changedSet.add(file || '*');
+    clearTimeout(project.debounceTimer);
+    project.debounceTimer = setTimeout(() => {
+      const msg = `data: ${JSON.stringify({ type: 'change', changed: [...project.changedSet] })}\n\n`;
+      for (const res of project.sseClients) {
+        try { res.write(msg); } catch { project.sseClients.delete(res); }
+      }
+      project.changedSet.clear();
+    }, 150);
+  };
+
+  try {
+    project.watcher = fs.watch(pPaths.dir, { recursive: true }, (_e, f) => onFsChange(f));
+  } catch {
+    try {
+      project.watcher = fs.watch(pPaths.dir, (_e, f) => onFsChange(f));
+    } catch (err) {
+      console.error(`[UI] Failed to watch ${pPaths.dir}: ${err.message}`);
+    }
+  }
+
+  projects.set(resolvedPath, project);
+  return project;
+}
+
+// Register the default project at startup
+getOrCreateProject(defaultRepoRoot);
+
+function runDir(project, runId) {
+  if (!runId) return project.paths.dir;
   if (!/^[\w.-]+$/.test(runId)) return null;
-  const dir = path.join(paths.runs, runId);
+  const dir = path.join(project.paths.runs, runId);
   return fs.existsSync(dir) ? dir : null;
 }
 
@@ -66,68 +125,65 @@ function readEventsByStage(dir) {
   return { byStage, totalCost };
 }
 
-function readFollowups() {
+function readFollowups(project) {
   const out = {};
   for (const s of AGENT_STAGES) {
     try {
-      const t = fs.readFileSync(path.join(paths.dir, 'followups', `${s}.txt`), 'utf8').trim();
+      const t = fs.readFileSync(path.join(project.paths.dir, 'followups', `${s}.txt`), 'utf8').trim();
       if (t) out[s] = t;
     } catch {}
   }
   return out;
 }
 
-// The lock's PID is the source of truth for liveness: status.json can claim
-// "running" forever after a kill -9 or sleep/crash.
-function orchestratorAlive() {
-  const lock = readLock(paths);
+function orchestratorAlive(project) {
+  const lock = readLock(project.paths);
   return !!(lock && pidAlive(lock.pid));
 }
 
-function readState(runId) {
-  const dir = runDir(runId);
+function readState(project, runId) {
+  const dir = runDir(project, runId);
   if (!dir) return { error: 'unknown run' };
   let status = null;
   try { status = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8')); } catch {}
-  const live = dir === paths.dir;
-  const stale = live && status?.overall === 'running' && !orchestratorAlive();
+  const live = dir === project.paths.dir;
+  const stale = live && status?.overall === 'running' && !orchestratorAlive(project);
   const artifacts = ARTIFACTS.filter((n) => {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
   const { byStage, totalCost } = readEventsByStage(dir);
-  const canExtend = live && !orchestratorAlive() && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
+  const canExtend = live && !orchestratorAlive(project) && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
   const canResume = live &&
-    !orchestratorAlive() &&
+    !orchestratorAlive(project) &&
     ((status?.overall === 'halted' && status?.haltReason === 'INTERRUPTED') ||
       (status?.overall === 'running' && stale));
   return {
     status, artifacts, events: byStage,
-    followups: live ? readFollowups() : {},
+    followups: live ? readFollowups(project) : {},
     live, stale, runId: runId || null,
     totals: { costUsd: totalCost },
-    canCancel: live && orchestratorAlive(),
+    canCancel: live && orchestratorAlive(project),
     canExtend,
     canResume,
-    runners: [...RUNNERS, ...Object.keys(config.customRunners || {})],
-    // Config-driven defaults — the UI should never hardcode a cycle count.
+    runners: [...RUNNERS, ...Object.keys(project.config.customRunners || {})],
     defaults: {
-      maxCoderCycles: config.maxCoderCycles,
-      maxPostTesterCycles: config.maxPostTesterCycles,
-      maxReviewCycles: config.maxReviewCycles,
-      extendCycles: config.maxCoderCycles,
-      modelProfiles: config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto,
+      maxCoderCycles: project.config.maxCoderCycles,
+      maxPostTesterCycles: project.config.maxPostTesterCycles,
+      maxReviewCycles: project.config.maxReviewCycles,
+      extendCycles: project.config.maxCoderCycles,
+      modelProfiles: project.config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto,
       modelCatalog: MODEL_CATALOG,
     },
     now: new Date().toISOString(),
   };
 }
 
-function listRuns() {
+function listRuns(project) {
   let ids = [];
-  try { ids = fs.readdirSync(paths.runs).filter((n) => /^[\w.-]+$/.test(n)).sort().reverse(); } catch {}
+  try { ids = fs.readdirSync(project.paths.runs).filter((n) => /^[\w.-]+$/.test(n)).sort().reverse(); } catch {}
   return ids.map((id) => {
     let s = null;
-    try { s = JSON.parse(fs.readFileSync(path.join(paths.runs, id, 'status.json'), 'utf8')); } catch {}
+    try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
     return { id, task: s?.task || '(unknown)', overall: s?.overall, verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt };
   });
 }
@@ -137,14 +193,14 @@ function positiveInt(v) {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-function spawnOrchestrator(nodeArgs, options = {}) {
-  const outPath = path.join(paths.dir, 'orchestrator.out');
+function spawnOrchestrator(project, nodeArgs, options = {}) {
+  const outPath = path.join(project.paths.dir, 'orchestrator.out');
   const flags = options.append ? 'a' : 'w';
   const outFd = fs.openSync(outPath, flags);
   fs.writeSync(outFd, `\n[UI] Spawning at ${new Date().toISOString()}: ${process.execPath} ${nodeArgs.join(' ')}\n`);
   
   const child = spawn(process.execPath, nodeArgs, {
-    cwd: repoRoot,
+    cwd: project.repoRoot,
     detached: true,
     stdio: ['ignore', outFd, outFd],
     env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
@@ -155,10 +211,10 @@ function spawnOrchestrator(nodeArgs, options = {}) {
   return child;
 }
 
-function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles, modelProfile, models }) {
+function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, modelProfile, models }) {
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
-  if (runner && !RUNNERS.includes(runner) && !config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
-  if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
+  if (runner && !RUNNERS.includes(runner) && !project.config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
+  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
   const profile = modelProfile === 'manual' ? 'manual' : 'auto';
   if (profile === 'manual') {
     if (!models || typeof models !== 'object') return { error: 'manual model profile requires models object', code: 400 };
@@ -179,19 +235,16 @@ function startRun({ task, runner, sandbox, maxCycles, maxPostTesterCycles, model
   if (mc) nodeArgs.push('--max-cycles', String(mc));
   const mptc = positiveInt(maxPostTesterCycles);
   if (mptc) nodeArgs.push('--max-post-tester-cycles', String(mptc));
-  const child = spawnOrchestrator(nodeArgs, { append: false });
+  const child = spawnOrchestrator(project, nodeArgs, { append: false });
   return { ok: true, pid: child.pid };
 }
 
-// Continue a run that halted with MAX_CYCLES for `extend` more cycles of
-// whichever loop (initial coder fix loop, or post-tester fix loop) ran out —
-// repeatable as many times as needed.
-function extendRun({ extend, runner }) {
+function extendRun(project, { extend, runner }) {
   const n = positiveInt(extend);
   if (!n) return { error: 'extend must be a positive integer', code: 400 };
-  if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
+  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
   let status;
-  try { status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8')); } catch {
+  try { status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {
     return { error: 'no run to extend', code: 409 };
   }
   if (status.overall !== 'halted' || status.haltReason !== 'MAX_CYCLES') {
@@ -202,17 +255,17 @@ function extendRun({ extend, runner }) {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
   }
-  const child = spawnOrchestrator(nodeArgs, { append: true });
+  const child = spawnOrchestrator(project, nodeArgs, { append: true });
   return { ok: true, pid: child.pid, extend: n };
 }
 
-function resumeInterruptedRunUi({ runner }) {
-  if (orchestratorAlive()) return { error: 'a pipeline run is already active', code: 409 };
+function resumeInterruptedRunUi(project, { runner }) {
+  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
   let status;
-  try { status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8')); } catch {
+  try { status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {
     return { error: 'no run to resume', code: 409 };
   }
-  const lock = readLock(paths);
+  const lock = readLock(project.paths);
   const stale = status.overall === 'running' && !(lock && pidAlive(lock.pid));
   const isInterrupted = status.overall === 'halted' && status.haltReason === 'INTERRUPTED';
   if (!isInterrupted && !stale) {
@@ -223,12 +276,12 @@ function resumeInterruptedRunUi({ runner }) {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
   }
-  const child = spawnOrchestrator(nodeArgs, { append: true });
+  const child = spawnOrchestrator(project, nodeArgs, { append: true });
   return { ok: true, pid: child.pid };
 }
 
-function cancelRun() {
-  const lock = readLock(paths);
+function cancelRun(project) {
+  const lock = readLock(project.paths);
   if (!lock || !pidAlive(lock.pid)) return { error: 'no active run', code: 409 };
   try { process.kill(lock.pid, 'SIGTERM'); return { ok: true, signalled: lock.pid }; }
   catch (err) { return { error: err.message, code: 500 }; }
@@ -247,38 +300,18 @@ function readBody(req, cb) {
   });
 }
 
-const sseClients = new Set();
-function broadcast(payload) {
-  const msg = `data: ${JSON.stringify(payload)}\n\n`;
-  for (const res of sseClients) {
-    // A client can disconnect between its 'close' cleanup and this write; guard
-    // so one dead socket can't throw out of the broadcast / ping interval.
-    try { res.write(msg); } catch { sseClients.delete(res); }
+function getProjectForRequest(req, url) {
+  const projectPath = url.searchParams.get('project');
+  if (projectPath) {
+    const proj = getOrCreateProject(projectPath);
+    if (proj) return proj;
   }
-}
-
-let debounceTimer = null;
-const changedSet = new Set();
-function onFsChange(file) {
-  changedSet.add(file || '*');
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    broadcast({ type: 'change', changed: [...changedSet] });
-    changedSet.clear();
-  }, 150);
-}
-function attachWatchers() {
-  fs.mkdirSync(paths.dir, { recursive: true });
-  try {
-    fs.watch(paths.dir, { recursive: true }, (_e, f) => onFsChange(f));
-  } catch {
-    fs.watch(paths.dir, (_e, f) => onFsChange(f));
-  }
+  return getOrCreateProject(defaultRepoRoot);
 }
 
 // State-changing endpoints that must be protected from CSRF / DNS-rebinding.
 const GUARDED_POST_PATHS = new Set([
-  '/api/followup', '/api/orchestrate', '/api/run', '/api/cancel', '/api/extend', '/api/resume',
+  '/api/followup', '/api/orchestrate', '/api/run', '/api/cancel', '/api/extend', '/api/resume', '/api/register'
 ]);
 
 const server = http.createServer((req, res) => {
@@ -286,28 +319,43 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && GUARDED_POST_PATHS.has(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
   }
-  if (req.method === 'POST' && url.pathname === '/api/followup') {
+  if (req.method === 'POST' && url.pathname === '/api/register') {
+    readBody(req, (body) => {
+      if (!body || typeof body.repoRoot !== 'string') {
+        return json(res, { error: 'expected { repoRoot }' }, 400);
+      }
+      const project = getOrCreateProject(body.repoRoot);
+      if (!project) {
+        return json(res, { error: 'invalid repository path' }, 400);
+      }
+      json(res, { ok: true, repoRoot: project.repoRoot });
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/followup') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body || !AGENT_STAGES.includes(body.stage) || typeof body.text !== 'string' || !body.text.trim()) {
         return json(res, { error: 'expected { stage: planner|coder|tester|reviewer, text }' }, 400);
       }
-      const dir = path.join(paths.dir, 'followups');
+      const dir = path.join(project.paths.dir, 'followups');
       fs.mkdirSync(dir, { recursive: true });
       fs.appendFileSync(path.join(dir, `${body.stage}.txt`), body.text.trim() + '\n');
       json(res, { ok: true, queued: body.stage });
     });
   } else if (req.method === 'POST' && url.pathname === '/api/orchestrate') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, async (body) => {
       if (!body || typeof body.text !== 'string' || !body.text.trim()) {
         return json(res, { error: 'expected { text }' }, 400);
       }
       let status = null;
       try {
-        status = JSON.parse(fs.readFileSync(path.join(paths.dir, 'status.json'), 'utf8'));
+        status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8'));
       } catch (e) {}
       try {
-        const result = await routeMessage({ text: body.text, status, config });
-        const dir = path.join(paths.dir, 'followups');
+        const result = await routeMessage({ text: body.text, status, config: project.config });
+        const dir = path.join(project.paths.dir, 'followups');
         fs.mkdirSync(dir, { recursive: true });
         fs.appendFileSync(path.join(dir, `${result.stage}.txt`), body.text.trim() + '\n');
         json(res, { ok: true, stage: result.stage, via: result.via, reason: result.reason });
@@ -316,36 +364,65 @@ const server = http.createServer((req, res) => {
       }
     });
   } else if (req.method === 'POST' && url.pathname === '/api/run') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body) return json(res, { error: 'invalid JSON' }, 400);
-      const result = startRun(body);
+      const result = startRun(project, body);
       json(res, result, result.code || 200);
     });
   } else if (req.method === 'POST' && url.pathname === '/api/cancel') {
-    const result = cancelRun();
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    const result = cancelRun(project);
     json(res, result, result.code || 200);
   } else if (req.method === 'POST' && url.pathname === '/api/extend') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body) return json(res, { error: 'invalid JSON' }, 400);
-      const result = extendRun(body);
+      const result = extendRun(project, body);
       json(res, result, result.code || 200);
     });
   } else if (req.method === 'POST' && url.pathname === '/api/resume') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
-      const result = resumeInterruptedRunUi(body || {});
+      const result = resumeInterruptedRunUi(project, body || {});
       json(res, result, result.code || 200);
     });
   } else if (url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html')));
   } else if (url.pathname === '/api/state') {
-    const state = readState(url.searchParams.get('run'));
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    const state = readState(project, url.searchParams.get('run'));
     json(res, state, state.error ? 404 : 200);
   } else if (url.pathname === '/api/runs') {
-    json(res, { runs: listRuns() });
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    json(res, { runs: listRuns(project) });
+  } else if (url.pathname === '/api/projects') {
+    const list = [];
+    for (const [pRoot, p] of projects.entries()) {
+      let status = null;
+      try {
+        status = JSON.parse(fs.readFileSync(path.join(p.paths.dir, 'status.json'), 'utf8'));
+      } catch {}
+      list.push({
+        repoRoot: pRoot,
+        name: path.basename(pRoot),
+        overall: status?.overall || 'idle',
+        task: status?.task || '(no active task)'
+      });
+    }
+    json(res, { projects: list });
   } else if (url.pathname === '/api/artifact') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     const name = url.searchParams.get('name');
-    const dir = runDir(url.searchParams.get('run'));
+    const dir = runDir(project, url.searchParams.get('run'));
     if (!ARTIFACTS.includes(name) || !dir) return json(res, { error: 'unknown artifact' }, 400);
     try {
       json(res, { name, content: fs.readFileSync(path.join(dir, name), 'utf8') });
@@ -353,18 +430,27 @@ const server = http.createServer((req, res) => {
       json(res, { name, content: '' });
     }
   } else if (url.pathname === '/events') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
     res.write('retry: 2000\n\n');
-    sseClients.add(res);
-    req.on('close', () => sseClients.delete(res));
+    project.sseClients.add(res);
+    req.on('close', () => project.sseClients.delete(res));
   } else if (url.pathname === '/healthz') {
-    json(res, { ok: true, service: 'pipeline-ui', repoRoot });
+    json(res, { ok: true, service: 'pipeline-ui', repoRoot: defaultRepoRoot });
   } else {
     res.writeHead(404); res.end('not found');
   }
 });
 
-setInterval(() => broadcast({ type: 'ping' }), 25000);
+setInterval(() => {
+  for (const project of projects.values()) {
+    const msg = `data: ${JSON.stringify({ type: 'ping' })}\n\n`;
+    for (const res of project.sseClients) {
+      try { res.write(msg); } catch { project.sseClients.delete(res); }
+    }
+  }
+}, 25000);
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
@@ -376,6 +462,5 @@ server.on('error', (err) => {
 });
 
 server.listen(PORT, HOST, () => {
-  attachWatchers();
-  console.log(`[UI] Pipeline dashboard running at http://${HOST}:${PORT} (repo: ${repoRoot})`);
+  console.log(`[UI] Pipeline dashboard running at http://${HOST}:${PORT} (repo: ${defaultRepoRoot})`);
 });

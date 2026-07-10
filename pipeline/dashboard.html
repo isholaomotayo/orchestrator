@@ -82,6 +82,8 @@
   .pill.stale { background: var(--amber-bg); color: var(--amber-text); border-color: transparent; }
   .pill.awaiting { background: var(--purple-bg); color: var(--purple-text); border-color: transparent; }
   #run-select { font: 11.5px inherit; color: var(--muted); border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); padding: 4px 6px; max-width: 210px; }
+  #project-select { font: 600 12.5px inherit; color: var(--text); border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); padding: 4px 10px; max-width: 250px; cursor: pointer; outline: none; }
+  #project-select:hover { background: var(--surface-hover); border-color: var(--muted); }
   .tb-btn { display: inline-flex; align-items: center; gap: 5px; font: 600 11.5px inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; white-space: nowrap; }
   .tb-btn:hover { background: var(--surface-muted); }
   .tb-btn.primary { background: var(--inverse); border-color: var(--inverse); color: var(--on-inverse); }
@@ -247,7 +249,8 @@
 <div class="app">
   <div class="topbar">
     <div class="appicon" id="app-ico"></div>
-    <div class="title" id="ws-title">Agent workspace</div>
+    <div class="title" id="ws-title" style="display:none">Agent workspace</div>
+    <select id="project-select" title="Active project"></select>
     <div class="runtime-strip" id="runtime-strip" aria-live="polite">
       <span class="runtime-chip runner"><span class="lbl">CLI</span> <strong id="runtime-runner">—</strong></span>
       <span class="runtime-chip model"><span class="lbl">Model</span> <strong id="runtime-model">—</strong></span>
@@ -374,6 +377,10 @@ let runs = [];
 let currentRun = '';     // '' = live run, otherwise archived run id
 let selected = null;     // manual agent selection; null = follow the running agent
 let artifactCache = {};
+
+const urlParams = new URLSearchParams(window.location.search);
+let currentProject = urlParams.get('project') || '';
+let sseConnection = null;
 
 const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const cap = (s) => s[0].toUpperCase() + s.slice(1);
@@ -863,7 +870,11 @@ async function loadArtifacts() {
   for (const file of AGENTS[name].artifacts) {
     if (!(state?.artifacts || []).includes(file)) continue;
     try {
-      const r = await fetch(`/api/artifact?name=${encodeURIComponent(file)}${currentRun ? '&run=' + encodeURIComponent(currentRun) : ''}`);
+      const params = new URLSearchParams();
+      if (currentRun) params.set('run', currentRun);
+      if (currentProject) params.set('project', currentProject);
+      params.set('name', file);
+      const r = await fetch('/api/artifact?' + params.toString());
       artifactCache[file] = (await r.json()).content;
     } catch {}
   }
@@ -884,7 +895,11 @@ function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(
 
 async function fetchState() {
   try {
-    const r = await fetch('/api/state' + (currentRun ? '?run=' + encodeURIComponent(currentRun) : ''));
+    const params = new URLSearchParams();
+    if (currentRun) params.set('run', currentRun);
+    if (currentProject) params.set('project', currentProject);
+    const qs = params.toString() ? '?' + params.toString() : '';
+    const r = await fetch('/api/state' + qs);
     if (!r.ok) { currentRun = ''; document.getElementById('run-select').value = ''; return fetchState(); }
     state = await r.json();
     renderAll();
@@ -892,7 +907,11 @@ async function fetchState() {
   } catch {}
 }
 async function fetchRuns() {
-  try { runs = (await (await fetch('/api/runs')).json()).runs || []; renderRunSelect(); } catch {}
+  try {
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    runs = (await (await fetch('/api/runs' + qs)).json()).runs || [];
+    renderRunSelect();
+  } catch {}
 }
 
 document.getElementById('run-select').onchange = (e) => {
@@ -920,7 +939,8 @@ async function sendFollowup() {
   const text = input.value.trim();
   if (!text || state?.live === false) return;
   try {
-    await fetch('/api/followup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: activeAgent(), text }) });
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    await fetch('/api/followup' + qs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: activeAgent(), text }) });
     input.value = '';
     updateFollowupButtons();
     fetchState();
@@ -931,7 +951,8 @@ async function sendResume() {
   const btn = document.getElementById('resume-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Resuming…'; }
   try {
-    const r = await fetch('/api/resume', { method: 'POST' });
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    const r = await fetch('/api/resume' + qs, { method: 'POST' });
     const out = await r.json();
     if (out.error) { alert(out.error); if (btn) { btn.disabled = false; btn.textContent = 'Resume run'; } return; }
     setTimeout(fetchState, 600);
@@ -949,14 +970,15 @@ async function sendFollowupAndResume() {
   if (resumeBtn) { resumeBtn.disabled = true; }
   if (sendBtn) { sendBtn.disabled = true; }
   try {
-    await fetch('/api/followup', {
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    await fetch('/api/followup' + qs, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ stage: activeAgent(), text })
     });
     input.value = '';
     updateFollowupButtons();
-    const r = await fetch('/api/resume', { method: 'POST' });
+    const r = await fetch('/api/resume' + qs, { method: 'POST' });
     const out = await r.json();
     if (out.error) { alert(out.error); }
     setTimeout(fetchState, 600);
@@ -973,7 +995,8 @@ async function sendToOrchestrator() {
   const text = input.value.trim();
   if (!text || state?.live === false) return;
   try {
-    const res = await fetch('/api/orchestrate', {
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    const res = await fetch('/api/orchestrate' + qs, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text })
@@ -1081,7 +1104,8 @@ document.getElementById('nr-start').onclick = async () => {
     }
   }
   try {
-    const r = await fetch('/api/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    const r = await fetch('/api/run' + qs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const out = await r.json();
     if (out.error) { document.getElementById('nr-err').textContent = out.error; return; }
     overlay.classList.remove('open');
@@ -1097,7 +1121,11 @@ document.getElementById('nr-start').onclick = async () => {
 };
 document.getElementById('cancel-btn').onclick = async () => {
   if (!confirm('Stop the active pipeline run?')) return;
-  try { await fetch('/api/cancel', { method: 'POST' }); setTimeout(fetchState, 400); } catch {}
+  try {
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    await fetch('/api/cancel' + qs, { method: 'POST' });
+    setTimeout(fetchState, 400);
+  } catch {}
 };
 
 async function sendExtend() {
@@ -1107,7 +1135,8 @@ async function sendExtend() {
   const btn = document.getElementById('extend-btn');
   btn.disabled = true; btn.textContent = 'Extending…';
   try {
-    const r = await fetch('/api/extend', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ extend: n }) });
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    const r = await fetch('/api/extend' + qs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ extend: n }) });
     const out = await r.json();
     if (out.error) { alert(out.error); btn.disabled = false; btn.textContent = 'Extend & continue'; return; }
     setTimeout(fetchState, 600);
@@ -1116,7 +1145,12 @@ async function sendExtend() {
 
 function connectSSE() {
   const conn = document.getElementById('conn');
-  const es = new EventSource('/events');
+  if (sseConnection) {
+    try { sseConnection.close(); } catch {}
+  }
+  const sseUrl = '/events' + (currentProject ? '?project=' + encodeURIComponent(currentProject) : '');
+  const es = new EventSource(sseUrl);
+  sseConnection = es;
   es.onopen = () => { conn.textContent = '● live'; conn.className = 'on'; };
   es.onerror = () => { conn.textContent = '● reconnecting…'; conn.className = ''; };
   es.onmessage = (m) => {
@@ -1126,9 +1160,71 @@ function connectSSE() {
   };
 }
 
-fetchState();
-fetchRuns();
-connectSSE();
+async function fetchProjects() {
+  try {
+    const r = await fetch('/api/projects');
+    const data = await r.json();
+    const select = document.getElementById('project-select');
+    const prevSelected = select.value || currentProject;
+    
+    select.innerHTML = '';
+    const list = data.projects || [];
+    if (list.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No projects registered';
+      select.appendChild(opt);
+      return;
+    }
+    
+    list.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.repoRoot;
+      opt.textContent = `${p.name} (${p.overall})`;
+      if (p.repoRoot === prevSelected) {
+        opt.selected = true;
+      }
+      select.appendChild(opt);
+    });
+    
+    if (!currentProject && list.length > 0) {
+      currentProject = list[0].repoRoot;
+      const newUrl = new URL(window.location);
+      newUrl.searchParams.set('project', currentProject);
+      window.history.replaceState({}, '', newUrl);
+    }
+  } catch (err) {
+    console.error('Failed to fetch projects', err);
+  }
+}
+
+async function initProject() {
+  currentRun = '';
+  selected = null;
+  artifactCache = {};
+  document.getElementById('run-select').value = '';
+  
+  await fetchState();
+  await fetchRuns();
+  connectSSE();
+}
+
+async function startApp() {
+  await fetchProjects();
+  await initProject();
+  
+  document.getElementById('project-select').onchange = (e) => {
+    currentProject = e.target.value;
+    const newUrl = new URL(window.location);
+    newUrl.searchParams.set('project', currentProject);
+    window.history.pushState({}, '', newUrl);
+    initProject();
+  };
+  
+  setInterval(fetchProjects, 10000);
+}
+
+startApp();
 setInterval(() => { if (!currentRun) fetchState(); }, 3000);
 </script>
 </body>

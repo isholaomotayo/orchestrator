@@ -67,8 +67,7 @@ if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
   rm -f "$PIPELINE_DIR/.lock"
 fi
 
-# Find a dashboard for THIS repo: reuse a healthy server whose /healthz
-# repoRoot matches, skip ports serving other repos, start on the first free one.
+# Find a dashboard for THIS repo: reuse any healthy pipeline-ui server on ports.
 UI_PORT="$BASE_PORT"
 if [ "$NO_UI" -eq 1 ]; then
   UI_PORT="disabled"
@@ -78,13 +77,17 @@ else
   for PORT in $(seq "$BASE_PORT" $((BASE_PORT + 20))); do
     HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
     if [ -n "$HEALTH" ]; then
-      SERVED_ROOT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$HEALTH")"
-      if [ "$SERVED_ROOT" = "$REPO_ROOT" ]; then
-        UI_PORT="$PORT"
-        FOUND=1
-        break
+      IS_PIPELINE_UI="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).service||'')}catch{console.log('')}" "$HEALTH")"
+      if [ "$IS_PIPELINE_UI" = "pipeline-ui" ]; then
+        # Register this repoRoot with the running server
+        REG_RESPONSE="$(curl -sf -H "Content-Type: application/json" -d "{\"repoRoot\":\"$REPO_ROOT\"}" "http://127.0.0.1:$PORT/api/register" 2>/dev/null || true)"
+        IS_OK="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).ok?1:0)}catch{console.log(0)}" "$REG_RESPONSE")"
+        if [ "$IS_OK" -eq 1 ]; then
+          UI_PORT="$PORT"
+          FOUND=1
+          break
+        fi
       fi
-      # Healthy server for a different repo — try the next port.
       continue
     fi
 
@@ -118,8 +121,10 @@ else
 
         NEW_HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$UI_PORT/healthz" 2>/dev/null || true)"
         if [ -n "$NEW_HEALTH" ]; then
-          NEW_SERVED_ROOT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).repoRoot||'')}catch{console.log('')}" "$NEW_HEALTH")"
-          if [ "$NEW_SERVED_ROOT" = "$REPO_ROOT" ]; then
+          NEW_SERVICE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).service||'')}catch{console.log('')}" "$NEW_HEALTH")"
+          if [ "$NEW_SERVICE" = "pipeline-ui" ]; then
+            # Register this repoRoot with the newly started server
+            curl -sf -H "Content-Type: application/json" -d "{\"repoRoot\":\"$REPO_ROOT\"}" "http://127.0.0.1:$UI_PORT/api/register" >/dev/null 2>&1 || true
             START_OK=1
             break
           fi
@@ -150,8 +155,9 @@ else
     rm -f "$PIPELINE_DIR/ui.url"
     UI_PORT="disabled"
   else
-    echo "[orchestrate] Live dashboard: http://localhost:$UI_PORT"
-    echo "http://localhost:$UI_PORT" > "$PIPELINE_DIR/ui.url"
+    ENCODED_ROOT="$("$JS_RUNNER" -e "console.log(encodeURIComponent(process.argv[1]))" "$REPO_ROOT")"
+    echo "[orchestrate] Live dashboard: http://localhost:$UI_PORT/?project=$ENCODED_ROOT"
+    echo "http://localhost:$UI_PORT/?project=$ENCODED_ROOT" > "$PIPELINE_DIR/ui.url"
   fi
 fi
 
