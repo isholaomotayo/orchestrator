@@ -45,7 +45,7 @@ else
   " "$TMP"
 fi
 
-for agentFile in AGENTS.md CLAUDE.md; do
+for agentFile in AGENTS.md CLAUDE.md GEMINI.md; do
   if [ -f "$TMP/$agentFile" ] && [ ! -f "$REPO_ROOT/$agentFile" ]; then
     cp "$TMP/$agentFile" "$REPO_ROOT/"
   fi
@@ -55,6 +55,16 @@ if [ -f "$TMP/.cursor/commands/orchestrate.md" ]; then
   mkdir -p "$REPO_ROOT/.cursor/commands"
   if [ ! -f "$REPO_ROOT/.cursor/commands/orchestrate.md" ]; then
     cp "$TMP/.cursor/commands/orchestrate.md" "$REPO_ROOT/.cursor/commands/"
+  fi
+fi
+
+# Install skill into .gemini/skills/ for native Gemini CLI skill loading
+if [ -d "$TMP/skills/orchestrate" ]; then
+  mkdir -p "$REPO_ROOT/.gemini/skills/orchestrate"
+  if [ ! -f "$REPO_ROOT/.gemini/skills/orchestrate/SKILL.md" ]; then
+    cp "$TMP/skills/orchestrate/SKILL.md" "$REPO_ROOT/.gemini/skills/orchestrate/"
+    cp "$TMP/skills/orchestrate/REFERENCE.md" "$REPO_ROOT/.gemini/skills/orchestrate/" 2>/dev/null || true
+    echo "[orchestrate] Gemini skill installed → .gemini/skills/orchestrate/"
   fi
 fi
 

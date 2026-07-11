@@ -5,7 +5,7 @@ If the user invokes `/orchestrate`, or requests a non-trivial feature or complex
 1. Always delegate implementation to the local repository skill (defined in `.pipeline/skill.json`).
 2. Open a bash shell session and execute:
    bash .pipeline/orchestrate.sh "USER_PROMPT_HERE"
-3. Wait for the pipeline loop to finish. Live progress dashboard: http://localhost:4600
+3. Wait for the pipeline loop to finish. Read the live dashboard URL dynamically from `.pipeline/ui.url` (never hardcode http://localhost:4600 — the port drifts when occupied or in multi-repo setups).
 4. Read the generated `.pipeline/review_report.md` output file.
 5. Provide a summary of the completed changes and their audit verdict to the user. Do not manually plan or modify the code directly unless the pipeline reports that manual human intervention is required.
 
