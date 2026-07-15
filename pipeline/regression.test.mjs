@@ -64,7 +64,7 @@ test('[P1-1] atomicWrite result is always complete and parseable JSON', () => {
   atomicWrite(file, big);
   const readBack = JSON.parse(fs.readFileSync(file, 'utf8'));
   assert.equal(readBack.overall, 'running');
-  assert.equal(readBack.stages.length, 4);
+  assert.equal(readBack.stages.length, 6);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -98,10 +98,11 @@ test('[P2] mergeModelProfiles overlays config overrides onto defaults', () => {
 
 // ---- newStatus shape guard -------------------------------------------------
 
-test('newStatus initializes a 4-stage running pipeline with coder budget', () => {
+test('newStatus initializes a 6-stage running pipeline with coder budget and skipped optionals', () => {
   const s = newStatus('do a thing');
   assert.equal(s.task, 'do a thing');
   assert.equal(s.overall, 'running');
-  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'coder', 'tester', 'reviewer']);
+  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff']);
   assert.equal(s.stages.find((x) => x.name === 'coder').maxCycles, 5);
+  assert.equal(s.stages.find((x) => x.name === 'designer').status, 'skipped');
 });

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MODEL_PROFILES, mergeModelProfiles } from './models.mjs';
 
-export const STAGES = ['planner', 'coder', 'tester', 'reviewer'];
+export const STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
+// The four always-on stages; designer/handoff are opt-in and default to 'skipped'.
+export const CORE_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
+export const OPTIONAL_STAGES = ['designer', 'handoff'];
 
 export function pipelinePaths(repoRoot) {
   const dir = path.join(repoRoot, '.pipeline');
@@ -22,6 +25,8 @@ export function pipelinePaths(repoRoot) {
     checkerReport: path.join(dir, 'checker_report.md'),
     testSuite: path.join(dir, 'test_suite.md'),
     reviewReport: path.join(dir, 'review_report.md'),
+    design: path.join(dir, 'design.md'),
+    handoffDoc: path.join(dir, 'handoff.md'),
     testHistory: path.join(dir, 'test_history.json'),
     diff: path.join(dir, 'diff.patch'),
     stageHandoff: path.join(dir, 'stage-handoff.json'),
@@ -31,9 +36,11 @@ export function pipelinePaths(repoRoot) {
 
 export const STAGE_ARTIFACT_FILES = {
   planner: 'specs.md',
+  designer: 'design.md',
   coder: 'changes.md',
   tester: 'test_suite.md',
   reviewer: 'review_report.md',
+  handoff: 'handoff.md',
 };
 
 // True when the given PID belongs to a live process we can signal.
@@ -73,6 +80,9 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    approvePlan: false,
+    designStage: false,
+    handoffStage: false,
     modelProfiles: DEFAULT_MODEL_PROFILES,
   };
   let raw;
@@ -95,12 +105,12 @@ export function loadConfig(paths) {
   return merged;
 }
 
-export function newStatus(task) {
+export function newStatus(task, { design = false, handoff = false } = {}) {
   return {
     task,
     startedAt: new Date().toISOString(),
     endedAt: null,
-    overall: 'running', // running | awaiting_chat | done | halted
+    overall: 'running', // running | awaiting_chat | awaiting_plan_approval | done | halted
     invocationMode: 'cli', // chat | cli — how agent stages are executed
     runner: 'auto',
     models: null,
@@ -113,7 +123,8 @@ export function newStatus(task) {
     haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR
     stages: STAGES.map((name) => ({
       name,
-      status: 'pending', // pending | running | passed | failed | blocked
+      // pending | running | passed | failed | blocked | skipped
+      status: (name === 'designer' && !design) || (name === 'handoff' && !handoff) ? 'skipped' : 'pending',
       cycle: 0,
       maxCycles: name === 'coder' ? 5 : 1,
       startedAt: null,
@@ -124,6 +135,22 @@ export function newStatus(task) {
       checks: null, // { passedCount, failedCount } from last checker run
     })),
   };
+}
+
+// Backfill stage entries missing from a legacy (4-stage) status.json so stage
+// lookups and the dashboard keep working when resuming an old run. A missing
+// optional stage was never enabled, so it resumes as 'skipped'.
+export function ensureStageEntries(status) {
+  if (!status?.stages) return status;
+  const have = new Set(status.stages.map((s) => s.name));
+  STAGES.forEach((name, i) => {
+    if (have.has(name)) return;
+    status.stages.splice(i, 0, {
+      name, status: 'skipped', cycle: 0, maxCycles: 1,
+      startedAt: null, endedAt: null, artifact: null, detail: null, model: null, checks: null,
+    });
+  });
+  return status;
 }
 
 // Write to a temp file in the same directory then rename over the target.
