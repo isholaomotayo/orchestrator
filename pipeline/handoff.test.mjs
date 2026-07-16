@@ -45,6 +45,16 @@ test('compileHaltHandoff includes the stage table and git state', () => {
   assert.match(doc, /abc123/);
 });
 
+test('compileHaltHandoff renders an approved-run fallback without claiming a halt', () => {
+  const s = newStatus('add rate limiting');
+  s.verdict = 'APPROVED';
+  s.resumePoint = { step: 'after_handoff', context: {} };
+  const doc = compileHaltHandoff({ status: s });
+  assert.match(doc, /completed — verdict APPROVED/);
+  assert.doesNotMatch(doc, /halted — UNKNOWN/);
+  assert.match(doc, /no resume needed/i);
+});
+
 test('collectGitInfo returns branch/dirty inside a repo and null outside', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ho-git-'));
   assert.equal(collectGitInfo(dir), null);

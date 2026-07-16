@@ -24,6 +24,7 @@ export function collectGitInfo(cwd) {
 
 export function compileHaltHandoff({ status, history = null, git = null }) {
   const reason = status.haltReason || 'UNKNOWN';
+  const halted = Boolean(status.haltReason);
   const phase = status.haltedPhase || status.resumePoint?.step || '(unknown)';
   const failing = (status.stages || []).find((s) => s.status === 'failed' || s.status === 'blocked' || s.status === 'interrupted');
   const lines = [
@@ -33,7 +34,9 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
     '',
     '## 1. Summary of Blocked State',
     `- **Goal:** ${status.task || '(unknown)'}`,
-    `- **Outcome:** halted — ${reason}`,
+    halted
+      ? `- **Outcome:** halted — ${reason}`
+      : `- **Outcome:** completed — verdict ${status.verdict || 'UNKNOWN'} (handoff agent failed; deterministic summary written instead)`,
     `- **Phase at freeze:** ${phase}`,
   ];
   if (failing?.detail) lines.push(`- **Detail:** ${failing.detail}`);
@@ -68,8 +71,12 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
     lines.push('- Not a git repository (or git unavailable).');
   }
   lines.push('', '## 6. How to Resume');
-  lines.push(`- ${RESUME_HINTS[reason] || 'Inspect `.pipeline/status.json` and the stage logs, then `node pipeline/orchestrator.mjs --resume`.'}`);
-  lines.push('- Chat mode: `bash .pipeline/orchestrate.sh --continue` when a stage handoff is pending.', '');
+  if (halted) {
+    lines.push(`- ${RESUME_HINTS[reason] || 'Inspect `.pipeline/status.json` and the stage logs, then `node pipeline/orchestrator.mjs --resume`.'}`);
+    lines.push('- Chat mode: `bash .pipeline/orchestrate.sh --continue` when a stage handoff is pending.', '');
+  } else {
+    lines.push('- The run completed — no resume needed. Read `.pipeline/review_report.md` for the verdict and follow-ups, and `.pipeline/status.json` for final state.', '');
+  }
   return lines.join('\n');
 }
 
