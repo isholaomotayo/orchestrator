@@ -886,11 +886,11 @@ const ICONS = {
 
 const AGENTS = {
   planner:  { icon: 'planner',  sub: 'Spec writer',    desc: 'Turns vague requests into precise specs',           artifacts: ['specs.md'] },
-  designer: { icon: 'designer', sub: 'Architecture',     desc: 'Design-It-Twice: explores alternatives, locks contracts', artifacts: ['design.md'] },
+  designer: { icon: 'designer', sub: 'Architecture',   desc: 'Design-It-Twice: explores alternatives, locks contracts', artifacts: ['design.md'] },
   coder:    { icon: 'coder',    sub: 'Implementation', desc: 'Implements the spec, self-heals until checks pass', artifacts: ['changes.md', 'checker_report.md'] },
   tester:   { icon: 'tester',   sub: 'QA & coverage',  desc: 'Writes rigorous tests for the implementation',      artifacts: ['test_suite.md'] },
   reviewer: { icon: 'reviewer', sub: 'Code review',    desc: 'Read-only security & architecture audit',           artifacts: ['review_report.md', 'diff.patch'] },
-  handoff:  { icon: 'handoff',  sub: 'Continuation doc', desc: 'Compiles the handoff document for the next session',      artifacts: ['handoff.md'] },
+  handoff:  { icon: 'handoff',  sub: 'Continuation doc', desc: 'Compiles the handoff document for the next session', artifacts: ['handoff.md'] },
 };
 const STEP_LABELS = { planner: 'Plan', designer: 'Design', coder: 'Code', tester: 'Test', reviewer: 'Review', handoff: 'Handoff' };
 const ORDER = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];

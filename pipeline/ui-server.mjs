@@ -9,7 +9,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pipelinePaths, loadConfig, pidAlive, readLock } from './state.mjs';
+import { pipelinePaths, loadConfig, pidAlive, readLock, CORE_STAGES } from './state.mjs';
 import { DEFAULT_MODEL_PROFILES, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
@@ -21,7 +21,7 @@ const defaultConfig = loadConfig(defaultPaths);
 const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600);
 const HOST = '127.0.0.1';
 
-const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
+const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'handoff.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
@@ -218,7 +218,7 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   const profile = modelProfile === 'manual' ? 'manual' : 'auto';
   if (profile === 'manual') {
     if (!models || typeof models !== 'object') return { error: 'manual model profile requires models object', code: 400 };
-    for (const stage of AGENT_STAGES) {
+    for (const stage of CORE_STAGES) {
       if (typeof models[stage] !== 'string' || !models[stage].trim()) {
         return { error: `models.${stage} is required for manual profile`, code: 400 };
       }
