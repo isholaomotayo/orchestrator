@@ -1,6 +1,6 @@
 # /orchestrate
 
-A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → Coder (fix loop) → Tester → Reviewer** — with a live local dashboard at http://localhost:4600.
+A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → (optional Handoff)** — with a live local dashboard at http://localhost:4600.
 
 Install the skill with `npx skills add`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor (or run `bash .pipeline/orchestrate.sh` from any agent). The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
 
@@ -48,7 +48,7 @@ Point-in-time "AI writes code" tools stop at generation. This pipeline is built 
 Two production-grade patterns are fused into one pipeline instead of run as separate tools:
 
 - **Builder–Checker self-healing loop** — the Coder doesn't just write code once; it iterates against deterministic (non-LLM) verification until checks pass, with hard guardrails against infinite loops and silent regressions.
-- **Planner → Coder → Tester → Reviewer waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step.
+- **Planner → (optional Designer) → Coder → Tester → Reviewer → (optional Handoff) waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step.
 
 ## Architecture
 
@@ -365,6 +365,7 @@ node pipeline/orchestrator.mjs --task "description" \
   [--runner claude|cursor|codex|gemini|<customRunner>] \
   [--model-profile auto|manual] \
   [--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'] \
+  [--approve-plan] [--design] [--handoff] \
   [--sandbox] \
   [--max-cycles N] \
   [--max-post-tester-cycles N]
@@ -379,7 +380,7 @@ node pipeline/orchestrator.mjs --resume --extend N [--runner ...]
 `.pipeline/orchestrate.sh` wraps the same two forms and additionally boots the dashboard:
 
 ```
-bash .pipeline/orchestrate.sh "description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
+bash .pipeline/orchestrate.sh "description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
 bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 ```
 
@@ -388,6 +389,9 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 | `--runner <name>` | both | Force a specific agent CLI instead of auto-detecting. |
 | `--model-profile auto\|manual` | new run | Auto = cost-optimized per-stage defaults; manual requires `--models`. |
 | `--models <json>` | new run | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`. |
+| `--approve-plan` | new run | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`. |
+| `--design` | new run | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`. |
+| `--handoff` | new run | Run an optional Handoff stage after an `APPROVED` review, producing `.pipeline/handoff.md`. |
 | `--sandbox` | new run | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge. |
 | `--max-cycles N` | new run | Override `maxCoderCycles` for this run only. |
 | `--max-post-tester-cycles N` | new run | Override `maxPostTesterCycles` for this run only. |
@@ -412,15 +416,18 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
   },
   "checkTimeoutMs": 300000,      // kill a check command after this long
   "agentTimeoutMs": 1800000,     // kill an agent invocation after this long
-  "modelProfiles": {             // per-stage model defaults when --model-profile auto
+  "modelProfiles": {             // per-stage model defaults when --model-profile auto (designer/handoff optional)
     "auto": {
-      "host":   { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
-      "claude": { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
-      "cursor": { "planner": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5" },
-      "codex":  { "planner": "gpt-5.5",  "coder": "gpt-5.5",  "tester": "gpt-5.5",  "reviewer": "gpt-5.5" },
-      "gemini": { "planner": "gemini-3.1-pro", "coder": "gemini-3.5-flash", "tester": "gemini-3.5-flash", "reviewer": "gemini-3.5-flash" }
+      "host":   { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
+      "claude": { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
+      "cursor": { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
+      "codex":  { "planner": "gpt-5.5",  "designer": "gpt-5.5",  "coder": "gpt-5.5",  "tester": "gpt-5.5",  "reviewer": "gpt-5.5",  "handoff": "gpt-5.5" },
+      "gemini": { "planner": "gemini-3.1-pro", "designer": "gemini-3.1-pro", "coder": "gemini-3.5-flash", "tester": "gemini-3.5-flash", "reviewer": "gemini-3.5-flash", "handoff": "gemini-3.1-flash-lite" }
     }
   },
+  "approvePlan": false,           // halt after Planner for human approval of specs.md (see --approve-plan)
+  "designStage": false,           // run the optional Designer stage (see --design)
+  "handoffStage": false,          // run the optional Handoff stage (see --handoff)
   "customRunners": {             // optional: wire up any CLI-shaped agent
     "my-agent": {
       "command": "bash",
@@ -452,7 +459,7 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 | `status.json` | The live state machine snapshot the dashboard polls/streams |
 | `events.jsonl` | Append-only, newline-delimited event log (every stage transition and agent output line) |
 | `logs/<stage>.log` | Human-readable verbose transcript per stage |
-| `specs.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md` | The four stages' artifacts |
+| `specs.md`, `design.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md`, `handoff.md` | The stages' artifacts (`design.md` and `handoff.md` only when `--design` / `--handoff` are enabled; `handoff.md` is also written automatically on every halt) |
 | `diff.patch` | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs |
 | `test_history.json` | Pass/fail counts per cycle, used for regression detection |
 | `followups/<stage>.txt` | Queued human notes awaiting injection |

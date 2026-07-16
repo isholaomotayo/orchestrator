@@ -14,7 +14,7 @@ allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(bash skills/orchestrat
 
 # Orchestrate
 
-Self-healing multi-agent workflow: **Planner → Coder (builder-checker loop) → Tester → Reviewer**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
+Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (builder-checker loop) → Tester → Reviewer → (optional Handoff)**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
 
 ## Current environment
 
@@ -64,7 +64,8 @@ Assemble the command from what was gathered:
 bash .pipeline/orchestrate.sh "$task" \
   --model-profile auto \
   [--mode chat|cli] \
-  [--runner claude|cursor|codex|gemini|host]
+  [--runner claude|cursor|codex|gemini|host] \
+  [--approve-plan] [--design] [--handoff]
 ```
 
 The pipeline auto-detects **Chat** vs **CLI** mode from the environment. Override only if needed:
@@ -87,13 +88,15 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 
 1. Read the handoff file and its referenced prompt.
 2. If `handoff.model` specifies a model, switch your IDE model to match before proceeding.
-3. Work on the assigned pipeline stage in this session (specs, code, tests, or review).
+3. Work on the assigned pipeline stage in this session (specs, design, code, tests, or review).
 4. Set `"actualModel": "your model name"` in `stage-handoff.json`.
 5. Resume:
    ```bash
    bash .pipeline/orchestrate.sh --continue
    ```
 6. Repeat until the pipeline finishes or halts.
+
+When status is `awaiting_plan_approval` (only when `--approve-plan` is set): present `.pipeline/specs.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
 
 ### 7. Post-Run Audit
 

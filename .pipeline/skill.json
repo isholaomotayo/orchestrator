@@ -1,7 +1,7 @@
 {
   "name": "orchestrate",
   "slash_command": "/orchestrate",
-  "description": "Runs a self-healing multi-agent pipeline (Planner → Coder fix loop → Tester → Reviewer) with a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh.",
+  "description": "Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh.",
   "command": "bash .pipeline/orchestrate.sh",
   "repository": "https://github.com/isholaomotayo/orchestrator",
   "arguments": {
@@ -12,10 +12,12 @@
   },
   "outputs": {
     "specification": ".pipeline/specs.md",
+    "design": ".pipeline/design.md",
     "implementation": ".pipeline/changes.md",
     "checker_feedback": ".pipeline/checker_report.md",
     "validation": ".pipeline/test_suite.md",
     "final_review": ".pipeline/review_report.md",
+    "handoff": ".pipeline/handoff.md",
     "live_state": ".pipeline/status.json"
   }
 }
