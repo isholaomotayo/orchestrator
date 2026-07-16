@@ -55,6 +55,15 @@ test('[P0-2] custom runner substitutes {task}/{readOnly} placeholders', () => {
   assert.equal(inv.readOnlyEnforced, false);
 });
 
+test('[P0-2] read-only write allowlist targets the invoking stage artifact', () => {
+  const designer = buildInvocation({ ...base, runner: 'claude', stage: 'designer', readOnly: true });
+  assert.ok(designer.args.join(' ').includes('Write(.pipeline/design.md)'));
+  const handoff = buildInvocation({ ...base, runner: 'claude', stage: 'handoff', readOnly: true });
+  assert.ok(handoff.args.join(' ').includes('Write(.pipeline/handoff.md)'));
+  const legacy = buildInvocation({ ...base, runner: 'claude', readOnly: true }); // no stage → reviewer fallback
+  assert.ok(legacy.args.join(' ').includes('Write(.pipeline/review_report.md)'));
+});
+
 // ---- P1-1: atomic writes never leave partial content -----------------------
 
 test('[P1-1] atomicWrite result is always complete and parseable JSON', () => {
