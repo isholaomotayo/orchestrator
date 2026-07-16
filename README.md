@@ -56,9 +56,12 @@ Two production-grade patterns are fused into one pipeline instead of run as sepa
 flowchart LR
     T[Task] --> P[Planner]
     P -->|specs.md| C[Coder]
+    P -.->|specs.md, optional| D["Designer\n(--design, optional)"]
+    D -.->|design.md, optional| C
     C -->|changes.md| Te[Tester]
     Te -->|test_suite.md| R[Reviewer]
     R -->|review_report.md| V[Verdict]
+    V -.->|APPROVED, optional| Ho["Handoff\n(--handoff, optional)"]
 
     subgraph SH["Self-healing loop up to N cycles"]
         direction TB
@@ -80,6 +83,9 @@ sequenceDiagram
     U->>O: orchestrate.sh task
     O->>A: Planner prompt
     A-->>O: specs.md
+    Note over O,A: Designer runs only with --design (optional)
+    O->>A: Designer prompt
+    A-->>O: design.md
     loop Fix cycle until pass or max
         O->>A: Coder prompt
         A-->>O: changes.md
@@ -90,6 +96,9 @@ sequenceDiagram
     A-->>O: test_suite.md
     O->>A: Reviewer prompt read-only
     A-->>O: review_report.md
+    Note over O,A: Handoff runs only after an APPROVED verdict, with --handoff (optional)
+    O->>A: Handoff prompt
+    A-->>O: handoff.md
     O-->>U: status.json and verdict
 ```
 

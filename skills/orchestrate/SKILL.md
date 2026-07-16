@@ -1,8 +1,8 @@
 ---
 name: orchestrate
-description: Runs a self-healing multi-agent pipeline (Planner → Coder fix loop → Tester → Reviewer) with a live dashboard. Use when the user invokes /orchestrate, asks to orchestrate a feature, delegate implementation, or run the agent pipeline. Triggers on /orchestrate, orchestrate, or multi-file autonomous implementation requests.
+description: Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Use when the user invokes /orchestrate, asks to orchestrate a feature, delegate implementation, or run the agent pipeline. Triggers on /orchestrate, orchestrate, or multi-file autonomous implementation requests.
 when_to_use: Trigger on phrases like "orchestrate this", "run the pipeline", "delegate this to agents", "build this autonomously", "use the multi-agent pipeline", or when the user provides a task after /orchestrate.
-argument-hint: "[task] [--model-profile auto|manual] [--mode chat|cli] [--runner claude|cursor|codex|gemini]"
+argument-hint: "[task] [--model-profile auto|manual] [--mode chat|cli] [--runner claude|cursor|codex|gemini] [--approve-plan] [--design] [--handoff]"
 arguments:
   - task
   - model-profile
