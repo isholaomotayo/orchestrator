@@ -403,6 +403,7 @@ async function runCoderOnward() {
 // by any one path. (Task 7 inserts the Designer stage here.)
 async function continueAfterPlanner() {
   if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval(); // exits the process
+  await runDesignerStage();
   await runCoderOnward();
 }
 
@@ -606,6 +607,25 @@ async function runPostTesterLoop(startCycle) {
   return false;
 }
 
+// Design-It-Twice: one read-only Designer invocation explores three design
+// postures and locks the public contracts in design.md before any code is
+// written. No-op when the stage is skipped (flag off) or already passed.
+async function runDesignerStage() {
+  const st = stage('designer');
+  if (!st || st.status === 'skipped' || st.status === 'passed') return;
+  status.resumePoint = { step: 'designer', context: {} };
+  setStage('designer', { status: 'running', startedAt: st.startedAt || new Date().toISOString(), cycle: 1 });
+  console.log('[Stage] Designer (Design-It-Twice, read-only)...');
+  await runStageAgent('designer', `Explore design alternatives and synthesize the final public contracts for this feature:\n\n${status.task}\n\nRead .pipeline/specs.md first. Write your synthesis to .pipeline/design.md.`, {
+    readOnly: true,
+    chatResume: { step: 'after_designer', context: {} },
+  });
+  status.resumePoint = { step: 'after_designer', context: {} };
+  writeStatus(paths, status);
+  requireArtifact('designer', paths.design);
+  setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+}
+
 async function runPlannerStage() {
   status.resumePoint = { step: 'planner', context: {} };
   setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
@@ -799,6 +819,13 @@ async function chatContinueRun() {
     return;
   }
 
+  if (step === 'after_designer') {
+    requireArtifact('designer', paths.design);
+    setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+    await runCoderOnward();
+    return;
+  }
+
   if (step === 'after_coder') {
     // Review fix pass: the Coder just applied the reviewer's action items. Skip
     // the coder's own checker gate (the Tester stage's post-tester loop validates
@@ -883,6 +910,10 @@ function getResumePoint() {
   if (planner.status !== 'passed') {
     return { step: 'planner', context: {} };
   }
+  const designer = stage('designer');
+  if (designer && designer.status !== 'passed' && designer.status !== 'skipped') {
+    return { step: 'designer', context: {} };
+  }
   if (coder.status !== 'passed') {
     const isPostTester = coder.maxCycles > status.limits.coderMax;
     const cycle = coder.cycle || 1;
@@ -925,6 +956,19 @@ async function resumeInterruptedRun() {
     requireArtifact('planner', paths.specs);
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
     await continueAfterPlanner();
+    return;
+  }
+
+  if (step === 'designer') {
+    await runDesignerStage();
+    await runCoderOnward();
+    return;
+  }
+
+  if (step === 'after_designer') {
+    requireArtifact('designer', paths.design);
+    setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+    await runCoderOnward();
     return;
   }
 
