@@ -28,11 +28,11 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
   const phase = status.haltedPhase || status.resumePoint?.step || '(unknown)';
   const failing = (status.stages || []).find((s) => s.status === 'failed' || s.status === 'blocked' || s.status === 'interrupted');
   const lines = [
-    '# Pipeline Handoff (auto-generated on halt)',
+    halted ? '# Pipeline Handoff (auto-generated on halt)' : '# Pipeline Handoff (auto-generated)',
     '',
     '> **CRITICAL RESUME DIRECTION:** Do not start planning from scratch. Read `.pipeline/status.json` for the machine state, skim the artifacts below, then follow the resume command at the end.',
     '',
-    '## 1. Summary of Blocked State',
+    halted ? '## 1. Summary of Blocked State' : '## 1. Summary of Final State',
     `- **Goal:** ${status.task || '(unknown)'}`,
     halted
       ? `- **Outcome:** halted — ${reason}`

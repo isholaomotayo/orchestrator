@@ -713,8 +713,8 @@ function finishHandoffStage(agentOk) {
     setStage('handoff', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'handoff.md' });
     return;
   }
-  writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
-  setStage('handoff', { status: 'failed', endedAt: new Date().toISOString(), artifact: 'handoff.md', detail: 'Handoff agent failed — deterministic handoff document written instead' });
+  const ok = writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
+  setStage('handoff', { status: 'failed', endedAt: new Date().toISOString(), artifact: ok ? 'handoff.md' : null, detail: 'Handoff agent failed — deterministic handoff document written instead' });
 }
 
 async function runReviewerAudit() {
@@ -822,6 +822,7 @@ async function planApprovalContinueRun() {
   }
   console.log('[Orchestrator] Plan approved — continuing pipeline.');
   status.planApproved = true;
+  setStage('planner', { detail: null });
   writeStatus(paths, status);
   await continueAfterPlanner();
 }

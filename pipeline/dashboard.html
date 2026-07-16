@@ -1184,7 +1184,10 @@ function getNextAgent(s) {
   if (pt) {
     const step = pt.step;
     if (step === 'planner') return 'planner';
-    if (step === 'after_planner') return 'coder';
+    if (step === 'after_planner') {
+      const d = s.stages.find(x => x.name === 'designer');
+      return d && d.status !== 'skipped' && d.status !== 'passed' ? 'designer' : 'coder';
+    }
     if (step === 'designer' || step === 'after_designer' || step === 'plan_approval') return step === 'plan_approval' ? 'planner' : 'designer';
     if (step === 'coder' || step === 'after_coder') return 'coder';
     if (step === 'tester') return 'tester';

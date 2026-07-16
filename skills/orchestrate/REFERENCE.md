@@ -57,7 +57,7 @@ Each pipeline stage (Planner, Designer, Coder, Tester, Reviewer, Handoff) can us
 
 | Mode | Behavior |
 |------|----------|
-| `--model-profile auto` (default) | Uses `modelProfiles.auto` from `.pipeline/config.json` — high-tier for Planner/Designer, mid-tier for Coder/Tester/Reviewer, and Reviewer-tier for Handoff |
+| `--model-profile auto` (default) | Uses `modelProfiles.auto` from `.pipeline/config.json` — high-tier for Planner/Designer, mid-tier for Coder/Tester/Reviewer, and cheapest-tier for Handoff |
 | `--model-profile manual` | Requires `--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'` (add `"designer"` / `"handoff"` keys to override their defaults) |
 
 **Chat mode:** resolved models are written to `stage-handoff.json` (`model`, `modelNote`). Switch IDE model before each stage (or use your active model, updating `"actualModel"` in `stage-handoff.json` before running `--continue`).

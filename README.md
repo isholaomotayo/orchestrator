@@ -56,12 +56,12 @@ Two production-grade patterns are fused into one pipeline instead of run as sepa
 flowchart LR
     T[Task] --> P[Planner]
     P -->|specs.md| C[Coder]
-    P -.->|specs.md, optional| D["Designer\n(--design, optional)"]
+    P -.->|specs.md, optional| D["Designer<br/>(--design, optional)"]
     D -.->|design.md, optional| C
     C -->|changes.md| Te[Tester]
     Te -->|test_suite.md| R[Reviewer]
     R -->|review_report.md| V[Verdict]
-    V -.->|APPROVED, optional| Ho["Handoff\n(--handoff, optional)"]
+    V -.->|APPROVED, optional| Ho["Handoff<br/>(--handoff, optional)"]
 
     subgraph SH["Self-healing loop up to N cycles"]
         direction TB

@@ -18,7 +18,7 @@ test('compileHaltHandoff renders MAX_CYCLES with extend resume hint', () => {
   const s = haltedStatus('MAX_CYCLES', { haltedPhase: 'coder' });
   s.stages.find((x) => x.name === 'coder').status = 'failed';
   const doc = compileHaltHandoff({ status: s, history: { coder: [{ passedCount: 3, failedCount: 2, isPassed: false, at: 't' }], postTester: [] } });
-  assert.match(doc, /# Pipeline Handoff/);
+  assert.match(doc, /# Pipeline Handoff \(auto-generated on halt\)/);
   assert.match(doc, /halted — MAX_CYCLES/);
   assert.match(doc, /Phase at freeze:\*\* coder/);
   assert.match(doc, /--resume --extend/);
@@ -53,6 +53,8 @@ test('compileHaltHandoff renders an approved-run fallback without claiming a hal
   assert.match(doc, /completed — verdict APPROVED/);
   assert.doesNotMatch(doc, /halted — UNKNOWN/);
   assert.match(doc, /no resume needed/i);
+  assert.match(doc, /# Pipeline Handoff \(auto-generated\)/);
+  assert.match(doc, /## 1\. Summary of Final State/);
 });
 
 test('collectGitInfo returns branch/dirty inside a repo and null outside', () => {
