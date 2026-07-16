@@ -11,17 +11,19 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile } from './state.mjs';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mjs';
+import { writeHaltHandoff } from './handoff.mjs';
 
 function parseArgs(argv) {
   const args = {
     task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
+    approvePlan: false, design: false, handoff: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -37,12 +39,15 @@ function parseArgs(argv) {
     else if (a === '--mode') args.mode = argv[++i];
     else if (a === '--model-profile') args.modelProfile = argv[++i];
     else if (a === '--models') args.models = argv[++i];
+    else if (a === '--approve-plan') args.approvePlan = true;
+    else if (a === '--design') args.design = true;
+    else if (a === '--handoff') args.handoff = true;
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -95,6 +100,7 @@ function acquireLock() {
 acquireLock();
 
 let status, history, workCwd, runner, models;
+let planApprovalPending = false;
 
 function resolveModelsForRun(runnerName) {
   if (args.modelProfile !== 'auto' && args.modelProfile !== 'manual') {
@@ -143,6 +149,7 @@ function interrupted(code) {
         s.endedAt = new Date().toISOString();
       }
     }
+    writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
     finalize();
   }
   haltAndExit(code);
@@ -158,11 +165,16 @@ if (args.continue) {
     console.error('[Orchestrator] Nothing to continue: no status.json found.');
     haltAndExit(1);
   }
-  if (onDisk.overall !== 'awaiting_chat' || !onDisk.chatResume?.step) {
-    console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff.');
+  if (onDisk.overall === 'awaiting_plan_approval' && onDisk.resumePoint?.step === 'plan_approval') {
+    planApprovalPending = true;
+  } else if (onDisk.overall !== 'awaiting_chat' || !onDisk.chatResume?.step) {
+    console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff or plan approval.');
     haltAndExit(1);
   }
   status = onDisk;
+  ensureStageEntries(status);
+  status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+  if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
   status.overall = 'running';
   status.awaitingStage = null;
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
@@ -172,8 +184,10 @@ if (args.continue) {
   models = status.models || null;
   loadWorkCwdFromStatus();
   loadHistory();
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
-  console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner})${dashboardMsg}`);
+  if (!planApprovalPending) {
+    appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
+    console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner})${dashboardMsg}`);
+  }
 } else if (args.resume) {
   let onDisk;
   try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
@@ -187,6 +201,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     status = onDisk;
+    ensureStageEntries(status);
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles }; // back-compat
     if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
     if (status.reviewPass == null) status.reviewPass = 0;
@@ -212,6 +229,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     status = onDisk;
+    ensureStageEntries(status);
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     runner = args.runner || status.runner;
     models = status.models || null;
     loadWorkCwdFromStatus();
@@ -236,7 +256,7 @@ if (args.continue) {
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
-  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.diff, paths.stageHandoff];
+  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.testHistory, paths.diff, paths.stageHandoff];
   if (fs.existsSync(paths.status)) {
     let runId = 'run';
     try { runId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
@@ -257,7 +277,14 @@ if (args.continue) {
     console.error(`[Orchestrator] ${err.message}`);
     haltAndExit(2);
   }
-  status = newStatus(args.task);
+  const runFlags = {
+    design: args.design || config.designStage === true,
+    handoff: args.handoff || config.handoffStage === true,
+    approvePlan: args.approvePlan || config.approvePlan === true,
+  };
+  status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff });
+  status.flags = runFlags;
+  status.planApproved = false;
   status.invocationMode = invocationMode;
   status.runner = runner;
   status.models = models;
@@ -278,10 +305,10 @@ if (args.continue) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models });
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models, flags: runFlags });
   const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax})${dashboardMsg}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff})${dashboardMsg}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -300,6 +327,9 @@ function halt(stageName, reason, detail) {
   setStage(stageName, { status: reason === 'REGRESSION_BLOCKED' ? 'blocked' : 'failed', endedAt: new Date().toISOString(), detail });
   status.overall = 'halted';
   status.haltReason = reason;
+  if (writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot })) {
+    console.error(`[HALT] Handoff document written: ${path.relative(repoRoot, paths.handoffDoc)}`);
+  }
   finalize();
   haltAndExit(1);
 }
@@ -351,6 +381,37 @@ function requestChatHandoff(stageName, chatResume) {
   haltAndExit(0);
 }
 
+// Optional human gate: pause after the Planner so the developer can read
+// specs.md before any code is written. Approval = `orchestrate.sh --continue`;
+// queueing a planner follow-up note first triggers one re-plan instead.
+function requestPlanApproval() {
+  status.overall = 'awaiting_plan_approval';
+  status.awaitingStage = 'planner';
+  status.resumePoint = { step: 'plan_approval', context: {} };
+  setStage('planner', { detail: 'Awaiting human plan approval' });
+  finalize();
+  console.log('\n[Orchestrator] Plan approval gate — review .pipeline/specs.md.');
+  console.log('  Approve & continue:  bash .pipeline/orchestrate.sh --continue');
+  console.log('  Request changes:     queue a note in .pipeline/followups/planner.txt (or the dashboard follow-up box), then run --continue to re-plan.');
+  if (dashboardUrl) console.log(`  Dashboard: ${dashboardUrl}`);
+  haltAndExit(0);
+}
+
+async function runCoderOnward() {
+  if (!(await runCoderStage())) return;
+  if (!(await runTesterStage())) return;
+  await runReviewerStage();
+}
+
+// Everything after the Planner. Single funnel shared by fresh runs, chat
+// continues, and interrupted resumes so the approval gate cannot be bypassed
+// by any one path. (Task 7 inserts the Designer stage here.)
+async function continueAfterPlanner() {
+  if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval(); // exits the process
+  await runDesignerStage();
+  await runCoderOnward();
+}
+
 function agentAuthHint(runnerName) {
   const hints = {
     cursor: "Run `agent login` or set CURSOR_API_KEY.",
@@ -373,7 +434,7 @@ function consumeFollowups(name) {
   } catch { return ''; }
 }
 
-async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null } = {}) {
+async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false } = {}) {
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
@@ -389,6 +450,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     requestChatHandoff(name, chatResume);
   }
   if (!res.ok) {
+    if (soft) return res; // caller degrades gracefully (handoff stage)
     const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
     if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
       halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
@@ -551,6 +613,25 @@ async function runPostTesterLoop(startCycle) {
   return false;
 }
 
+// Design-It-Twice: one read-only Designer invocation explores three design
+// postures and locks the public contracts in design.md before any code is
+// written. No-op when the stage is skipped (flag off) or already passed.
+async function runDesignerStage() {
+  const st = stage('designer');
+  if (!st || st.status === 'skipped' || st.status === 'passed') return;
+  status.resumePoint = { step: 'designer', context: {} };
+  setStage('designer', { status: 'running', startedAt: st.startedAt || new Date().toISOString(), cycle: 1 });
+  console.log('[Stage] Designer (Design-It-Twice, read-only)...');
+  await runStageAgent('designer', `Explore design alternatives and synthesize the final public contracts for this feature:\n\n${status.task}\n\nRead .pipeline/specs.md first. Write your synthesis to .pipeline/design.md.`, {
+    readOnly: true,
+    chatResume: { step: 'after_designer', context: {} },
+  });
+  status.resumePoint = { step: 'after_designer', context: {} };
+  writeStatus(paths, status);
+  requireArtifact('designer', paths.design);
+  setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+}
+
 async function runPlannerStage() {
   status.resumePoint = { step: 'planner', context: {} };
   setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
@@ -608,6 +689,34 @@ async function runReviewerStage() {
   await afterReviewerAudit();
 }
 
+// Optional post-approval handoff: a read-only agent compiles handoff.md. A
+// failure here must NOT un-approve the run — fall back to the deterministic
+// document, mark the stage failed, and still finish as done.
+async function runHandoffStage() {
+  const st = stage('handoff');
+  if (!st || st.status === 'skipped' || st.status === 'passed') return;
+  status.resumePoint = { step: 'handoff', context: {} };
+  setStage('handoff', { status: 'running', startedAt: st.startedAt || new Date().toISOString(), cycle: 1 });
+  console.log('[Stage] Handoff (continuation document, read-only)...');
+  const res = await runStageAgent('handoff', `Compile the continuation handoff document for the completed task: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/design.md (if present), .pipeline/changes.md, .pipeline/test_suite.md and .pipeline/review_report.md. Reference artifacts by path — do not duplicate their content. Write the document to .pipeline/handoff.md.`, {
+    readOnly: true,
+    soft: true,
+    chatResume: { step: 'after_handoff', context: {} },
+  });
+  status.resumePoint = { step: 'after_handoff', context: {} };
+  writeStatus(paths, status);
+  finishHandoffStage(res.ok);
+}
+
+function finishHandoffStage(agentOk) {
+  if (agentOk && artifactOk(paths.handoffDoc)) {
+    setStage('handoff', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'handoff.md' });
+    return;
+  }
+  const ok = writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
+  setStage('handoff', { status: 'failed', endedAt: new Date().toISOString(), artifact: ok ? 'handoff.md' : null, detail: 'Handoff agent failed — deterministic handoff document written instead' });
+}
+
 async function runReviewerAudit() {
   // Snapshot the working-tree diff so the dashboard can render the audit
   // surface alongside the review, refreshed for every re-audit.
@@ -641,7 +750,10 @@ async function afterReviewerAudit() {
   const approved = status.verdict === 'APPROVED';
   setStage('reviewer', { status: approved ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
-  if (approved) return finishApproved();
+  if (approved) {
+    await runHandoffStage(); // no-op unless --handoff; hands off & exits in chat mode
+    return finishApproved();
+  }
 
   if ((status.reviewPass || 0) >= status.limits.reviewMax) {
     haltMaxCycles('review', 'reviewer', status.limits.reviewMax);
@@ -695,6 +807,26 @@ async function runReviewFixPass(pass) {
   await runReviewerStage();
 }
 
+async function planApprovalContinueRun() {
+  requireArtifact('planner', paths.specs); // spec deleted/emptied while gated → MISSING_ARTIFACT
+  const followupFile = path.join(paths.dir, 'followups', 'planner.txt');
+  let hasFollowup = false;
+  try { hasFollowup = fs.readFileSync(followupFile, 'utf8').trim().length > 0; } catch {}
+  appendEvent(paths, { stage: 'orchestrator', type: hasFollowup ? 'plan_revision_start' : 'plan_approved' });
+  if (hasFollowup) {
+    console.log('[Orchestrator] Plan revision requested — re-running Planner with the queued follow-up note.');
+    status.planApproved = false;
+    await runPlannerStage(); // consumeFollowups injects & clears the note; hands off in chat mode
+    await continueAfterPlanner(); // CLI mode: gate re-arms here
+    return;
+  }
+  console.log('[Orchestrator] Plan approved — continuing pipeline.');
+  status.planApproved = true;
+  setStage('planner', { detail: null });
+  writeStatus(paths, status);
+  await continueAfterPlanner();
+}
+
 async function chatContinueRun() {
   const resume = status.chatResume;
   status.chatResume = null;
@@ -711,9 +843,11 @@ async function chatContinueRun() {
   const context = resume.context || {};
 
   const completedStage = step === 'after_planner' ? 'planner' :
+                        step === 'after_designer' ? 'designer' :
                         step === 'after_coder' ? 'coder' :
                         step === 'after_tester' ? 'tester' :
-                        step === 'after_reviewer' ? 'reviewer' : null;
+                        step === 'after_reviewer' ? 'reviewer' :
+                        step === 'after_handoff' ? 'handoff' : null;
   if (completedStage && actualModel) {
     setStage(completedStage, { model: actualModel });
   }
@@ -721,9 +855,14 @@ async function chatContinueRun() {
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
+    return;
+  }
+
+  if (step === 'after_designer') {
+    requireArtifact('designer', paths.design);
+    setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+    await runCoderOnward();
     return;
   }
 
@@ -792,14 +931,18 @@ async function chatContinueRun() {
     return;
   }
 
+  if (step === 'after_handoff') {
+    finishHandoffStage(true);
+    finishApproved();
+    return;
+  }
+
   halt('orchestrator', 'AGENT_ERROR', `Unknown chat resume step "${step}".`);
 }
 
 async function freshRun() {
   await runPlannerStage();
-  if (!(await runCoderStage())) return;
-  if (!(await runTesterStage())) return;
-  await runReviewerStage();
+  await continueAfterPlanner();
 }
 
 function getResumePoint() {
@@ -813,6 +956,10 @@ function getResumePoint() {
   if (planner.status !== 'passed') {
     return { step: 'planner', context: {} };
   }
+  const designer = stage('designer');
+  if (designer && designer.status !== 'passed' && designer.status !== 'skipped') {
+    return { step: 'designer', context: {} };
+  }
   if (coder.status !== 'passed') {
     const isPostTester = coder.maxCycles > status.limits.coderMax;
     const cycle = coder.cycle || 1;
@@ -824,6 +971,10 @@ function getResumePoint() {
   }
   if (tester.status !== 'passed') {
     return { step: 'tester', context: {} };
+  }
+  const hoStage = stage('handoff');
+  if (status.verdict === 'APPROVED' && hoStage && !['skipped', 'passed', 'failed'].includes(hoStage.status)) {
+    return { step: 'handoff', context: {} };
   }
   return { step: 'reviewer', context: {} };
 }
@@ -847,20 +998,31 @@ async function resumeInterruptedRun() {
 
   if (step === 'planner') {
     await runPlannerStage();
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
     return;
   }
 
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
     return;
   }
+
+  if (step === 'designer') {
+    await runDesignerStage();
+    await runCoderOnward();
+    return;
+  }
+
+  if (step === 'after_designer') {
+    requireArtifact('designer', paths.design);
+    setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
+    await runCoderOnward();
+    return;
+  }
+
+  if (step === 'plan_approval') { requestPlanApproval(); return; }
 
   if (step === 'coder') {
     if (loop === 'review') {
@@ -979,6 +1141,9 @@ async function resumeInterruptedRun() {
     return;
   }
 
+  if (step === 'handoff') { await runHandoffStage(); finishApproved(); return; }
+  if (step === 'after_handoff') { finishHandoffStage(true); finishApproved(); return; }
+
   halt('orchestrator', 'AGENT_ERROR', `Unknown resume step "${step}".`);
 }
 
@@ -1021,7 +1186,7 @@ async function resumeRun() {
   }
 }
 
-(args.continue ? chatContinueRun() : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
+(args.continue ? (planApprovalPending ? planApprovalContinueRun() : chatContinueRun()) : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
   console.error('[Orchestrator] Uncaught error:', err);
   if (status) { status.overall = 'halted'; status.haltReason = 'AGENT_ERROR'; finalize(); }
   haltAndExit(1);

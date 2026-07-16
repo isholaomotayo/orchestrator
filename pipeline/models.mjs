@@ -1,5 +1,5 @@
 // Per-stage model profiles: cost-aware defaults per runner + manual overrides.
-import { STAGES } from './state.mjs';
+import { CORE_STAGES, OPTIONAL_STAGES } from './state.mjs';
 
 // Canonical, up-to-date model catalog surfaced in manual selection (dashboard
 // dropdowns + docs). Grouped by provider, ordered strongest -> cheapest.
@@ -29,33 +29,43 @@ export const DEFAULT_MODEL_PROFILES = {
   auto: {
     host: {
       planner: 'opus-4.8',
+      designer: 'opus-4.8',
       coder: 'sonnet-5',
       tester: 'sonnet-5',
       reviewer: 'sonnet-5',
+      handoff: 'sonnet-5',
     },
     claude: {
       planner: 'opus-4.8',
+      designer: 'opus-4.8',
       coder: 'sonnet-5',
       tester: 'sonnet-5',
       reviewer: 'sonnet-5',
+      handoff: 'sonnet-5',
     },
     cursor: {
       planner: 'opus-4.8',
+      designer: 'opus-4.8',
       coder: 'sonnet-5',
       tester: 'sonnet-5',
       reviewer: 'sonnet-5',
+      handoff: 'sonnet-5',
     },
     codex: {
       planner: 'gpt-5.5',
+      designer: 'gpt-5.5',
       coder: 'gpt-5.5',
       tester: 'gpt-5.5',
       reviewer: 'gpt-5.5',
+      handoff: 'gpt-5.5',
     },
     gemini: {
       planner: 'gemini-3.1-pro',
+      designer: 'gemini-3.1-pro',
       coder: 'gemini-3.5-flash',
       tester: 'gemini-3.5-flash',
       reviewer: 'gemini-3.5-flash',
+      handoff: 'gemini-3.1-flash-lite',
     },
   },
 };
@@ -76,16 +86,20 @@ function pickAutoStages(config, runner) {
 
 function validateStageMap(stages, label = 'models') {
   if (!stages || typeof stages !== 'object') {
-    throw new Error(`Invalid ${label}: expected an object with keys ${STAGES.join(', ')}.`);
+    throw new Error(`Invalid ${label}: expected an object with keys ${CORE_STAGES.join(', ')} (optional: ${OPTIONAL_STAGES.join(', ')}).`);
   }
   const out = {};
-  for (const name of STAGES) {
+  for (const name of CORE_STAGES) {
     const val = stages[name];
     if (typeof val !== 'string' || !val.trim()) {
       throw new Error(`Invalid ${label}: missing or empty model for stage "${name}".`);
     }
     out[name] = val.trim();
   }
+  // Optional stages default to a sensible sibling when omitted: the designer is
+  // architecture work (planner tier); the handoff doc is summarisation (reviewer tier).
+  out.designer = typeof stages.designer === 'string' && stages.designer.trim() ? stages.designer.trim() : out.planner;
+  out.handoff = typeof stages.handoff === 'string' && stages.handoff.trim() ? stages.handoff.trim() : out.reviewer;
   return out;
 }
 

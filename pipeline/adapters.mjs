@@ -50,7 +50,7 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 // hard-guarantee read-only at the process level. When it cannot, we drop the
 // auto-approve/write flags (--force / --full-auto / --yolo) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
-export function buildInvocation({ runner, systemPrompt, task, readOnly, config, model }) {
+export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model }) {
   const combined = `${systemPrompt}\n\n---\nTASK:\n${task}`;
   switch (runner) {
     case 'claude': {
@@ -62,9 +62,10 @@ export function buildInvocation({ runner, systemPrompt, task, readOnly, config, 
       ];
       if (model) args.push('--model', model);
       if (readOnly) {
-        // Headless mode denies anything not allowlisted: reviewer may read,
-        // run git diff/log, and write ONLY its report file.
-        args.push('--allowedTools', 'Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(.pipeline/review_report.md)');
+        // Headless mode denies anything not allowlisted: a read-only stage may
+        // read, run git diff/log, and write ONLY its own artifact file.
+        const artifact = `.pipeline/${STAGE_ARTIFACT_FILES[stage] || 'review_report.md'}`;
+        args.push('--allowedTools', `Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(${artifact})`);
         return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: true };
       }
       args.push('--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch');
@@ -193,7 +194,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, systemPrompt, task, readOnly, config, model });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);

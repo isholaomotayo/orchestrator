@@ -26,9 +26,11 @@
     --overlay: rgba(28, 25, 23, .35); --shadow: rgba(0, 0, 0, .2);
     --shadow-sm: rgba(0, 0, 0, .06);
     --agent-planner-bg: #ede9fe; --agent-planner-fg: #6d28d9;
+    --agent-designer-bg: #dbeafe; --agent-designer-fg: #1d4ed8;
     --agent-coder-bg: #dbeafe; --agent-coder-fg: #1d4ed8;
     --agent-tester-bg: #dcfce7; --agent-tester-fg: #166534;
     --agent-reviewer-bg: #fef3c7; --agent-reviewer-fg: #92400e;
+    --agent-handoff-bg: #d1fae5; --agent-handoff-fg: #047857;
     --topbar-h: 52px;
     --sidebar-w: 236px;
   }
@@ -53,9 +55,11 @@
     --overlay: rgba(0, 0, 0, .55); --shadow: rgba(0, 0, 0, .45);
     --shadow-sm: rgba(0, 0, 0, .2);
     --agent-planner-bg: #2e1065; --agent-planner-fg: #c4b5fd;
+    --agent-designer-bg: #172554; --agent-designer-fg: #93c5fd;
     --agent-coder-bg: #1e3a5f; --agent-coder-fg: #93c5fd;
     --agent-tester-bg: #14532d; --agent-tester-fg: #86efac;
     --agent-reviewer-bg: #451a03; --agent-reviewer-fg: #fcd34d;
+    --agent-handoff-bg: #064e3b; --agent-handoff-fg: #6ee7b7;
   }
   html { color-scheme: light dark; }
   html[data-theme="light"] { color-scheme: light; }
@@ -321,9 +325,11 @@
     display: grid; place-items: center; flex-shrink: 0;
   }
   .agent-ico.planner { background: var(--agent-planner-bg); color: var(--agent-planner-fg); }
+  .agent-ico.designer { background: var(--agent-designer-bg); color: var(--agent-designer-fg); }
   .agent-ico.coder   { background: var(--agent-coder-bg); color: var(--agent-coder-fg); }
   .agent-ico.tester  { background: var(--agent-tester-bg); color: var(--agent-tester-fg); }
   .agent-ico.reviewer{ background: var(--agent-reviewer-bg); color: var(--agent-reviewer-fg); }
+  .agent-ico.handoff  { background: var(--agent-handoff-bg); color: var(--agent-handoff-fg); }
   .agent-ico svg.ic { width: 13px; height: 13px; }
   .agent-row .grow { flex: 1; min-width: 0; }
   .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
@@ -399,6 +405,9 @@
   .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
   .badge.pending { background: var(--surface-hover); color: var(--muted); }
   .badge.awaiting_host { background: var(--purple-bg); color: var(--purple-text); }
+  .badge.skipped { opacity: .55; }
+  .sdot.skipped { background: #9ca3af; opacity: .4; }
+  .step.skipped { opacity: .45; }
 
   /* Banners */
   #halt-banner {
@@ -812,9 +821,11 @@
     <div id="nr-manual-models">
       <div class="model-grid">
         <div><label>Planner</label><select id="nr-model-planner"></select><input type="text" id="nr-model-planner-custom" class="nr-model-custom" placeholder="custom model id"></div>
+        <div><label>Designer</label><select id="nr-model-designer"></select><input type="text" id="nr-model-designer-custom" class="nr-model-custom" placeholder="custom model id"></div>
         <div><label>Coder</label><select id="nr-model-coder"></select><input type="text" id="nr-model-coder-custom" class="nr-model-custom" placeholder="custom model id"></div>
         <div><label>Tester</label><select id="nr-model-tester"></select><input type="text" id="nr-model-tester-custom" class="nr-model-custom" placeholder="custom model id"></div>
         <div><label>Reviewer</label><select id="nr-model-reviewer"></select><input type="text" id="nr-model-reviewer-custom" class="nr-model-custom" placeholder="custom model id"></div>
+        <div><label>Handoff</label><select id="nr-model-handoff"></select><input type="text" id="nr-model-handoff-custom" class="nr-model-custom" placeholder="custom model id"></div>
       </div>
     </div>
 
@@ -850,9 +861,11 @@ const I = (paths, vb = '0 0 24 24') => `<svg class="ic" viewBox="${vb}" xmlns="h
 const ICONS = {
   app:      I('<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>'),
   planner:  I('<circle cx="12" cy="12" r="9"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5" fill="currentColor" stroke="none"/>'),
+  designer: I('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="12"/>'),
   coder:    I('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
   tester:   I('<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><polyline points="9 12 11 14 15 10"/>'),
   reviewer: I('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16" y2="16"/>'),
+  handoff:  I('<path d="M4 12h11"/><polyline points="11,6 17,12 11,18"/><line x1="20" y1="5" x2="20" y2="19"/>'),
   plus:     I('<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>'),
   pencil:   I('<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z"/>'),
   eye:      I('<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/>'),
@@ -873,12 +886,14 @@ const ICONS = {
 
 const AGENTS = {
   planner:  { icon: 'planner',  sub: 'Spec writer',    desc: 'Turns vague requests into precise specs',           artifacts: ['specs.md'] },
+  designer: { icon: 'designer', sub: 'Architecture',   desc: 'Design-It-Twice: explores alternatives, locks contracts', artifacts: ['design.md'] },
   coder:    { icon: 'coder',    sub: 'Implementation', desc: 'Implements the spec, self-heals until checks pass', artifacts: ['changes.md', 'checker_report.md'] },
   tester:   { icon: 'tester',   sub: 'QA & coverage',  desc: 'Writes rigorous tests for the implementation',      artifacts: ['test_suite.md'] },
   reviewer: { icon: 'reviewer', sub: 'Code review',    desc: 'Read-only security & architecture audit',           artifacts: ['review_report.md', 'diff.patch'] },
+  handoff:  { icon: 'handoff',  sub: 'Continuation doc', desc: 'Compiles the handoff document for the next session', artifacts: ['handoff.md'] },
 };
-const STEP_LABELS = { planner: 'Plan', coder: 'Code', tester: 'Test', reviewer: 'Review' };
-const ORDER = ['planner', 'coder', 'tester', 'reviewer'];
+const STEP_LABELS = { planner: 'Plan', designer: 'Design', coder: 'Code', tester: 'Test', reviewer: 'Review', handoff: 'Handoff' };
+const ORDER = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 
 let state = null;
 let runs = [];
@@ -1122,7 +1137,7 @@ function renderSidebar() {
   stepper.innerHTML = '';
   ORDER.forEach((name, i) => {
     const st = stageOf(name) || { status: 'pending' };
-    const cls = st.status === 'passed' ? 'done' : st.status === 'running' ? 'active' : (st.status === 'failed' || st.status === 'blocked') ? 'failed' : '';
+    const cls = st.status === 'passed' ? 'done' : st.status === 'running' ? 'active' : (st.status === 'failed' || st.status === 'blocked') ? 'failed' : st.status === 'skipped' ? 'skipped' : '';
     const div = document.createElement('div');
     div.className = 'step ' + cls;
     div.innerHTML = `<div class="circ">${st.status === 'passed' ? ICONS.check : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
@@ -1153,6 +1168,7 @@ function renderTop() {
 
   if (state.stale) { pill.textContent = 'stale'; pill.className = 'pill stale'; }
   else if (s.overall === 'awaiting_chat') { pill.textContent = `awaiting ${formatRunner(s.runner)}`; pill.className = 'pill awaiting'; }
+  else if (s.overall === 'awaiting_plan_approval') { pill.textContent = 'awaiting plan approval'; pill.className = 'pill awaiting'; }
   else if (s.overall === 'running') { pill.textContent = s.invocationMode === 'chat' ? `${formatRunner(s.runner)} active` : 'running'; pill.className = 'pill active'; }
   else if (s.overall === 'halted') {
     pill.textContent = s.haltReason === 'INTERRUPTED' ? 'stopped' : 'halted';
@@ -1168,11 +1184,16 @@ function getNextAgent(s) {
   if (pt) {
     const step = pt.step;
     if (step === 'planner') return 'planner';
-    if (step === 'after_planner') return 'coder';
+    if (step === 'after_planner') {
+      const d = s.stages.find(x => x.name === 'designer');
+      return d && d.status !== 'skipped' && d.status !== 'passed' ? 'designer' : 'coder';
+    }
+    if (step === 'designer' || step === 'after_designer' || step === 'plan_approval') return step === 'plan_approval' ? 'planner' : 'designer';
     if (step === 'coder' || step === 'after_coder') return 'coder';
     if (step === 'tester') return 'tester';
     if (step === 'after_tester') return 'coder';
     if (step === 'reviewer' || step === 'after_reviewer') return 'reviewer';
+    if (step === 'handoff' || step === 'after_handoff') return 'handoff';
   }
   const firstNonPassed = s.stages.find(x => x.status !== 'passed');
   return firstNonPassed ? firstNonPassed.name : null;
@@ -1255,8 +1276,11 @@ function renderHeader() {
   if (s?.overall === 'awaiting_chat') {
     awaitBanner.style.display = '';
     const nextA = getNextAgent(s);
-    const artifact = nextA === 'planner' ? 'specs.md' : nextA === 'coder' ? 'changes.md' : nextA === 'tester' ? 'test_suite.md' : 'review_report.md';
+    const artifact = { planner: 'specs.md', designer: 'design.md', coder: 'changes.md', tester: 'test_suite.md', reviewer: 'review_report.md', handoff: 'handoff.md' }[nextA] || 'review_report.md';
     awaitBanner.innerHTML = `Awaiting <strong>${esc(formatRunner(s.runner))}</strong> — write <code>${artifact}</code> in your agent window, then run <code>bash .pipeline/orchestrate.sh --continue</code>`;
+  } else if (s?.overall === 'awaiting_plan_approval') {
+    awaitBanner.style.display = '';
+    awaitBanner.innerHTML = `Plan ready for review — read <code>specs.md</code>, then approve with <code>bash .pipeline/orchestrate.sh --continue</code> (queue a Planner follow-up note first to request changes)`;
   } else {
     awaitBanner.style.display = 'none';
   }
@@ -1564,7 +1588,7 @@ function toggleManualModels() {
 document.querySelectorAll('input[name="nr-model-profile"]').forEach((el) => {
   el.addEventListener('change', toggleManualModels);
 });
-const MODEL_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
+const MODEL_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 const CUSTOM_MODEL_VALUE = '__custom__';
 
 function catalogOptionsHtml(selectedId) {

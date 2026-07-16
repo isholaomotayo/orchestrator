@@ -3,7 +3,8 @@
 #
 # Start a new run:
 #   bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini] \
-#     [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+#     [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] \
+#     [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
 #
 # Resume an interrupted or stale run:
 #   bash .pipeline/orchestrate.sh --resume [--runner ...] [--no-ui]
@@ -26,7 +27,7 @@ fi
 
 BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]'
 

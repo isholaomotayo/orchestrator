@@ -50,7 +50,7 @@ test('resolveModelProfile manual requires all four stages', () => {
     manualStages: { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd' },
   });
   assert.equal(ok.selection, 'manual');
-  assert.deepEqual(ok.stages, { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd' });
+  assert.deepEqual(ok.stages, { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' });
 });
 
 test('parseModelsJson validates shape', () => {
@@ -59,7 +59,7 @@ test('parseModelsJson validates shape', () => {
   assert.throws(() => parseModelsJson('{"planner":"a"}'));
   assert.deepEqual(
     parseModelsJson('{"planner":"a","coder":"b","tester":"c","reviewer":"d"}'),
-    { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd' },
+    { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' },
   );
 });
 
@@ -68,4 +68,37 @@ test('modelForStage reads the resolved stage map', () => {
   assert.equal(modelForStage(models, 'planner'), 'opus');
   assert.equal(modelForStage(models, 'missing'), null);
   assert.equal(modelForStage(null, 'planner'), null);
+});
+
+test('auto profiles include designer and handoff for every runner', () => {
+  for (const runner of ['host', 'claude', 'cursor', 'codex', 'gemini']) {
+    const m = resolveModelProfile({ config: {}, runner, profile: 'auto' });
+    assert.ok(m.stages.designer, `${runner} missing designer`);
+    assert.ok(m.stages.handoff, `${runner} missing handoff`);
+  }
+});
+
+test('manual models accepts the 4 core stages and derives optional ones', () => {
+  const m = resolveModelProfile({
+    config: {}, runner: 'claude', profile: 'manual',
+    manualStages: { planner: 'p-model', coder: 'c-model', tester: 't-model', reviewer: 'r-model' },
+  });
+  assert.equal(m.stages.designer, 'p-model'); // planner tier: architecture work
+  assert.equal(m.stages.handoff, 'r-model');  // reviewer tier: summarisation
+});
+
+test('manual models honors explicit designer/handoff entries', () => {
+  const m = resolveModelProfile({
+    config: {}, runner: 'claude', profile: 'manual',
+    manualStages: { planner: 'p', coder: 'c', tester: 't', reviewer: 'r', designer: 'd', handoff: 'h' },
+  });
+  assert.equal(m.stages.designer, 'd');
+  assert.equal(m.stages.handoff, 'h');
+});
+
+test('manual models still rejects a missing core stage', () => {
+  assert.throws(() => resolveModelProfile({
+    config: {}, runner: 'claude', profile: 'manual',
+    manualStages: { planner: 'p', coder: 'c', tester: 't' },
+  }), /reviewer/);
 });
