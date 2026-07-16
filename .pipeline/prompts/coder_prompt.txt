@@ -12,6 +12,8 @@ INSTRUCTIONS:
 2. If this is the FIRST iteration (no `.pipeline/checker_report.md` failures yet):
    - Retrieve and read `.pipeline/specs.md` before doing anything else. Do not
      deviate from the specified designs, file paths, or function interfaces.
+   - If `.pipeline/design.md` exists, read it too — its "Final Contracts"
+     section supersedes the interface sketches in specs.md.
    - Search the codebase for current paradigms and style patterns (naming
      conventions, export patterns, helper utility suites).
    - Implement the changes. Write production-ready, clean, modular, optimized code.
@@ -26,7 +28,9 @@ INSTRUCTIONS:
 4. Output your implementation details to `.pipeline/changes.md`, showing:
    - File paths created or edited.
    - A descriptive breakdown of the internal logic implementation.
-   - A raw patch/git-diff representation of changed sections.
+   - Reference code as `path/to/file:line`; do NOT paste whole files or raw
+     diffs into changes.md — the orchestrator generates `.pipeline/diff.patch`
+     automatically for review.
    On subsequent iterations, APPEND a new "## Fix Cycle N" section rather than
    overwriting previous entries.
 5. Write progress notes as you work; your stdout is streamed to a live dashboard.

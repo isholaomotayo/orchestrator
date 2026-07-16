@@ -15,4 +15,6 @@ INSTRUCTIONS:
    bug, leave the failing test in place; the orchestrator will route it back to
    the Coder.
 6. Write a summary of test coverage outcomes to `.pipeline/test_suite.md`.
+   Reference the test files by `path/to/file:line`; do not paste test code into
+   the summary.
 7. Write progress notes as you work; your stdout is streamed to a live dashboard.
