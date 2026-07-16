@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile } from './state.mjs';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode } from './invocation.mjs';
@@ -22,6 +22,7 @@ function parseArgs(argv) {
     task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
+    approvePlan: false, design: false, handoff: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -37,12 +38,15 @@ function parseArgs(argv) {
     else if (a === '--mode') args.mode = argv[++i];
     else if (a === '--model-profile') args.modelProfile = argv[++i];
     else if (a === '--models') args.models = argv[++i];
+    else if (a === '--approve-plan') args.approvePlan = true;
+    else if (a === '--design') args.design = true;
+    else if (a === '--handoff') args.handoff = true;
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -163,6 +167,9 @@ if (args.continue) {
     haltAndExit(1);
   }
   status = onDisk;
+  ensureStageEntries(status);
+  status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+  if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
   status.overall = 'running';
   status.awaitingStage = null;
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
@@ -187,6 +194,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     status = onDisk;
+    ensureStageEntries(status);
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles }; // back-compat
     if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
     if (status.reviewPass == null) status.reviewPass = 0;
@@ -212,6 +222,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     status = onDisk;
+    ensureStageEntries(status);
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     runner = args.runner || status.runner;
     models = status.models || null;
     loadWorkCwdFromStatus();
@@ -236,7 +249,7 @@ if (args.continue) {
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
-  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.testHistory, paths.diff, paths.stageHandoff];
+  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.testHistory, paths.diff, paths.stageHandoff];
   if (fs.existsSync(paths.status)) {
     let runId = 'run';
     try { runId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
@@ -257,7 +270,14 @@ if (args.continue) {
     console.error(`[Orchestrator] ${err.message}`);
     haltAndExit(2);
   }
-  status = newStatus(args.task);
+  const runFlags = {
+    design: args.design || config.designStage === true,
+    handoff: args.handoff || config.handoffStage === true,
+    approvePlan: args.approvePlan || config.approvePlan === true,
+  };
+  status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff });
+  status.flags = runFlags;
+  status.planApproved = false;
   status.invocationMode = invocationMode;
   status.runner = runner;
   status.models = models;
@@ -278,10 +298,10 @@ if (args.continue) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models });
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models, flags: runFlags });
   const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax})${dashboardMsg}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff})${dashboardMsg}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
