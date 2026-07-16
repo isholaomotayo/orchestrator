@@ -16,6 +16,7 @@ import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mjs';
+import { writeHaltHandoff } from './handoff.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -148,6 +149,7 @@ function interrupted(code) {
         s.endedAt = new Date().toISOString();
       }
     }
+    writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
     finalize();
   }
   haltAndExit(code);
@@ -325,6 +327,9 @@ function halt(stageName, reason, detail) {
   setStage(stageName, { status: reason === 'REGRESSION_BLOCKED' ? 'blocked' : 'failed', endedAt: new Date().toISOString(), detail });
   status.overall = 'halted';
   status.haltReason = reason;
+  if (writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot })) {
+    console.error(`[HALT] Handoff document written: ${path.relative(repoRoot, paths.handoffDoc)}`);
+  }
   finalize();
   haltAndExit(1);
 }
@@ -429,7 +434,7 @@ function consumeFollowups(name) {
   } catch { return ''; }
 }
 
-async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null } = {}) {
+async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false } = {}) {
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
@@ -445,6 +450,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     requestChatHandoff(name, chatResume);
   }
   if (!res.ok) {
+    if (soft) return res; // caller degrades gracefully (handoff stage)
     const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
     if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
       halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
@@ -683,6 +689,34 @@ async function runReviewerStage() {
   await afterReviewerAudit();
 }
 
+// Optional post-approval handoff: a read-only agent compiles handoff.md. A
+// failure here must NOT un-approve the run — fall back to the deterministic
+// document, mark the stage failed, and still finish as done.
+async function runHandoffStage() {
+  const st = stage('handoff');
+  if (!st || st.status === 'skipped' || st.status === 'passed') return;
+  status.resumePoint = { step: 'handoff', context: {} };
+  setStage('handoff', { status: 'running', startedAt: st.startedAt || new Date().toISOString(), cycle: 1 });
+  console.log('[Stage] Handoff (continuation document, read-only)...');
+  const res = await runStageAgent('handoff', `Compile the continuation handoff document for the completed task: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/design.md (if present), .pipeline/changes.md, .pipeline/test_suite.md and .pipeline/review_report.md. Reference artifacts by path — do not duplicate their content. Write the document to .pipeline/handoff.md.`, {
+    readOnly: true,
+    soft: true,
+    chatResume: { step: 'after_handoff', context: {} },
+  });
+  status.resumePoint = { step: 'after_handoff', context: {} };
+  writeStatus(paths, status);
+  finishHandoffStage(res.ok);
+}
+
+function finishHandoffStage(agentOk) {
+  if (agentOk && artifactOk(paths.handoffDoc)) {
+    setStage('handoff', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'handoff.md' });
+    return;
+  }
+  writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
+  setStage('handoff', { status: 'failed', endedAt: new Date().toISOString(), artifact: 'handoff.md', detail: 'Handoff agent failed — deterministic handoff document written instead' });
+}
+
 async function runReviewerAudit() {
   // Snapshot the working-tree diff so the dashboard can render the audit
   // surface alongside the review, refreshed for every re-audit.
@@ -716,7 +750,10 @@ async function afterReviewerAudit() {
   const approved = status.verdict === 'APPROVED';
   setStage('reviewer', { status: approved ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
-  if (approved) return finishApproved();
+  if (approved) {
+    await runHandoffStage(); // no-op unless --handoff; hands off & exits in chat mode
+    return finishApproved();
+  }
 
   if ((status.reviewPass || 0) >= status.limits.reviewMax) {
     haltMaxCycles('review', 'reviewer', status.limits.reviewMax);
@@ -805,9 +842,11 @@ async function chatContinueRun() {
   const context = resume.context || {};
 
   const completedStage = step === 'after_planner' ? 'planner' :
+                        step === 'after_designer' ? 'designer' :
                         step === 'after_coder' ? 'coder' :
                         step === 'after_tester' ? 'tester' :
-                        step === 'after_reviewer' ? 'reviewer' : null;
+                        step === 'after_reviewer' ? 'reviewer' :
+                        step === 'after_handoff' ? 'handoff' : null;
   if (completedStage && actualModel) {
     setStage(completedStage, { model: actualModel });
   }
@@ -891,6 +930,12 @@ async function chatContinueRun() {
     return;
   }
 
+  if (step === 'after_handoff') {
+    finishHandoffStage(true);
+    finishApproved();
+    return;
+  }
+
   halt('orchestrator', 'AGENT_ERROR', `Unknown chat resume step "${step}".`);
 }
 
@@ -925,6 +970,10 @@ function getResumePoint() {
   }
   if (tester.status !== 'passed') {
     return { step: 'tester', context: {} };
+  }
+  const hoStage = stage('handoff');
+  if (status.verdict === 'APPROVED' && hoStage && !['skipped', 'passed', 'failed'].includes(hoStage.status)) {
+    return { step: 'handoff', context: {} };
   }
   return { step: 'reviewer', context: {} };
 }
@@ -1090,6 +1139,9 @@ async function resumeInterruptedRun() {
     await afterReviewerAudit();
     return;
   }
+
+  if (step === 'handoff') { await runHandoffStage(); finishApproved(); return; }
+  if (step === 'after_handoff') { finishHandoffStage(true); finishApproved(); return; }
 
   halt('orchestrator', 'AGENT_ERROR', `Unknown resume step "${step}".`);
 }
