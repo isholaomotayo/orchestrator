@@ -22,7 +22,7 @@ const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600
 const HOST = '127.0.0.1';
 
 const ARTIFACTS = ['specs.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
-const AGENT_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
+const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
 
@@ -335,7 +335,7 @@ const server = http.createServer((req, res) => {
     if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body || !AGENT_STAGES.includes(body.stage) || typeof body.text !== 'string' || !body.text.trim()) {
-        return json(res, { error: 'expected { stage: planner|coder|tester|reviewer, text }' }, 400);
+        return json(res, { error: 'expected { stage: planner|designer|coder|tester|reviewer|handoff, text }' }, 400);
       }
       const dir = path.join(project.paths.dir, 'followups');
       fs.mkdirSync(dir, { recursive: true });
