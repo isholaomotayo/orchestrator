@@ -99,6 +99,7 @@ function acquireLock() {
 acquireLock();
 
 let status, history, workCwd, runner, models;
+let planApprovalPending = false;
 
 function resolveModelsForRun(runnerName) {
   if (args.modelProfile !== 'auto' && args.modelProfile !== 'manual') {
@@ -162,8 +163,10 @@ if (args.continue) {
     console.error('[Orchestrator] Nothing to continue: no status.json found.');
     haltAndExit(1);
   }
-  if (onDisk.overall !== 'awaiting_chat' || !onDisk.chatResume?.step) {
-    console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff.');
+  if (onDisk.overall === 'awaiting_plan_approval' && onDisk.resumePoint?.step === 'plan_approval') {
+    planApprovalPending = true;
+  } else if (onDisk.overall !== 'awaiting_chat' || !onDisk.chatResume?.step) {
+    console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff or plan approval.');
     haltAndExit(1);
   }
   status = onDisk;
@@ -179,8 +182,10 @@ if (args.continue) {
   models = status.models || null;
   loadWorkCwdFromStatus();
   loadHistory();
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
-  console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner})${dashboardMsg}`);
+  if (!planApprovalPending) {
+    appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_continue_chat', step: onDisk.chatResume.step });
+    console.log(`[Orchestrator] Continuing chat handoff (step=${onDisk.chatResume.step}, runner=${runner})${dashboardMsg}`);
+  }
 } else if (args.resume) {
   let onDisk;
   try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
@@ -369,6 +374,36 @@ function requestChatHandoff(stageName, chatResume) {
     console.log(`[Orchestrator] Live dashboard: ${status.dashboardUrl}\n`);
   }
   haltAndExit(0);
+}
+
+// Optional human gate: pause after the Planner so the developer can read
+// specs.md before any code is written. Approval = `orchestrate.sh --continue`;
+// queueing a planner follow-up note first triggers one re-plan instead.
+function requestPlanApproval() {
+  status.overall = 'awaiting_plan_approval';
+  status.awaitingStage = 'planner';
+  status.resumePoint = { step: 'plan_approval', context: {} };
+  setStage('planner', { detail: 'Awaiting human plan approval' });
+  finalize();
+  console.log('\n[Orchestrator] Plan approval gate — review .pipeline/specs.md.');
+  console.log('  Approve & continue:  bash .pipeline/orchestrate.sh --continue');
+  console.log('  Request changes:     queue a note in .pipeline/followups/planner.txt (or the dashboard follow-up box), then run --continue to re-plan.');
+  if (dashboardUrl) console.log(`  Dashboard: ${dashboardUrl}`);
+  haltAndExit(0);
+}
+
+async function runCoderOnward() {
+  if (!(await runCoderStage())) return;
+  if (!(await runTesterStage())) return;
+  await runReviewerStage();
+}
+
+// Everything after the Planner. Single funnel shared by fresh runs, chat
+// continues, and interrupted resumes so the approval gate cannot be bypassed
+// by any one path. (Task 7 inserts the Designer stage here.)
+async function continueAfterPlanner() {
+  if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval(); // exits the process
+  await runCoderOnward();
 }
 
 function agentAuthHint(runnerName) {
@@ -715,6 +750,25 @@ async function runReviewFixPass(pass) {
   await runReviewerStage();
 }
 
+async function planApprovalContinueRun() {
+  requireArtifact('planner', paths.specs); // spec deleted/emptied while gated → MISSING_ARTIFACT
+  const followupFile = path.join(paths.dir, 'followups', 'planner.txt');
+  let hasFollowup = false;
+  try { hasFollowup = fs.readFileSync(followupFile, 'utf8').trim().length > 0; } catch {}
+  appendEvent(paths, { stage: 'orchestrator', type: hasFollowup ? 'plan_revision_start' : 'plan_approved' });
+  if (hasFollowup) {
+    console.log('[Orchestrator] Plan revision requested — re-running Planner with the queued follow-up note.');
+    status.planApproved = false;
+    await runPlannerStage(); // consumeFollowups injects & clears the note; hands off in chat mode
+    await continueAfterPlanner(); // CLI mode: gate re-arms here
+    return;
+  }
+  console.log('[Orchestrator] Plan approved — continuing pipeline.');
+  status.planApproved = true;
+  writeStatus(paths, status);
+  await continueAfterPlanner();
+}
+
 async function chatContinueRun() {
   const resume = status.chatResume;
   status.chatResume = null;
@@ -741,9 +795,7 @@ async function chatContinueRun() {
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
     return;
   }
 
@@ -817,9 +869,7 @@ async function chatContinueRun() {
 
 async function freshRun() {
   await runPlannerStage();
-  if (!(await runCoderStage())) return;
-  if (!(await runTesterStage())) return;
-  await runReviewerStage();
+  await continueAfterPlanner();
 }
 
 function getResumePoint() {
@@ -867,20 +917,18 @@ async function resumeInterruptedRun() {
 
   if (step === 'planner') {
     await runPlannerStage();
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
     return;
   }
 
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    if (!(await runCoderStage())) return;
-    if (!(await runTesterStage())) return;
-    await runReviewerStage();
+    await continueAfterPlanner();
     return;
   }
+
+  if (step === 'plan_approval') { requestPlanApproval(); return; }
 
   if (step === 'coder') {
     if (loop === 'review') {
@@ -1041,7 +1089,7 @@ async function resumeRun() {
   }
 }
 
-(args.continue ? chatContinueRun() : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
+(args.continue ? (planApprovalPending ? planApprovalContinueRun() : chatContinueRun()) : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
   console.error('[Orchestrator] Uncaught error:', err);
   if (status) { status.overall = 'halted'; status.haltReason = 'AGENT_ERROR'; finalize(); }
   haltAndExit(1);
