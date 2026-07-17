@@ -14,9 +14,10 @@ import { execSync, spawnSync } from 'node:child_process';
 import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
-import { detectInvocationMode } from './invocation.mjs';
+import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
+import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -24,6 +25,7 @@ function parseArgs(argv) {
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
     approvePlan: false, design: false, handoff: false,
+    allowSelf: false, hostClient: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -42,12 +44,14 @@ function parseArgs(argv) {
     else if (a === '--approve-plan') args.approvePlan = true;
     else if (a === '--design') args.design = true;
     else if (a === '--handoff') args.handoff = true;
+    else if (a === '--allow-self') args.allowSelf = true;
+    else if (a === '--host-client') args.hostClient = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\nExit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -67,8 +71,23 @@ if (args.resume) {
 }
 if (args.runner) config.runner = args.runner;
 
+// ---- Self-targeting guard ---------------------------------------------------
+// Refuse to run against the orchestrator source repo itself (fresh runs,
+// --resume, and --continue alike), BEFORE acquiring the lock or archiving a
+// prior run, so a refused invocation leaves no trace. Exit code 3 is distinct
+// from 1 (lock/error) and 2 (usage).
+if (isOrchestratorSourceRepo(repoRoot) && !selfTargetAllowed({ env: process.env, allowSelfFlag: args.allowSelf })) {
+  console.error(selfGuardMessage(repoRoot));
+  process.exit(3);
+}
+
 const invocation = detectInvocationMode({ env: process.env, argv: process.argv });
 const invocationMode = args.mode === 'chat' || args.mode === 'cli' ? args.mode : invocation.mode;
+// The IDE/chat client hosting this run (antigravity, cursor, claude, …) — only
+// meaningful in chat mode; used for attribution and environment-aware models.
+const hostClient = invocationMode === 'chat'
+  ? (normalizeHostClient(args.hostClient) || detectHostClient({ env: process.env, argv: process.argv }))
+  : null;
 
 // ---- Guardrail 3: mutex lock -----------------------------------------------
 // Acquire atomically with the 'wx' (exclusive create) flag so two orchestrators
@@ -113,6 +132,7 @@ function resolveModelsForRun(runnerName) {
     runner: runnerName,
     profile: args.modelProfile,
     manualStages,
+    hostClient,
   });
 }
 
@@ -182,6 +202,9 @@ if (args.continue) {
   if (status.reviewPass == null) status.reviewPass = 0;
   runner = status.runner || 'host';
   models = status.models || null;
+  // Backfill attribution: legacy runs (or runs started outside the IDE) learn
+  // their host client on the first --continue issued from the IDE chat.
+  if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
   loadWorkCwdFromStatus();
   loadHistory();
   if (!planApprovalPending) {
@@ -209,6 +232,7 @@ if (args.continue) {
     if (status.reviewPass == null) status.reviewPass = 0;
     runner = args.runner || status.runner;
     models = status.models || null;
+    if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles)${dashboardMsg}`);
@@ -234,6 +258,7 @@ if (args.continue) {
     if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     runner = args.runner || status.runner;
     models = status.models || null;
+    if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming interrupted/stale run${dashboardMsg}`);
@@ -287,6 +312,7 @@ if (args.continue) {
   status.planApproved = false;
   status.invocationMode = invocationMode;
   status.runner = runner;
+  status.hostClient = runner === 'host' ? hostClient : null;
   status.models = models;
   status.sandbox = args.sandbox;
   // Capture the commit the run starts from, before any agent runs, so the
@@ -305,8 +331,10 @@ if (args.continue) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, models, flags: runFlags });
-  const modeLabel = invocationMode === 'chat' ? 'chat (IDE host)' : 'cli (subprocess)';
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, hostClient: status.hostClient || undefined, models, flags: runFlags });
+  const modeLabel = invocationMode === 'chat'
+    ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
+    : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
   console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff})${dashboardMsg}`);
 }
@@ -444,6 +472,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
     model: stageModel,
     modelSelection: models?.selection,
+    hostClient: status.hostClient || null,
   });
   if (res.hostHandoff) {
     if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');

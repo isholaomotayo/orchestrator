@@ -7,6 +7,8 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 - **Chat mode** (default when invoked from Cursor/IDE): the orchestrator uses **host** runner — you complete each stage in this chat session. Read `.pipeline/stage-handoff.json`, do the work, then run `bash .pipeline/orchestrate.sh --continue`. No `cursor-agent` login needed.
 - **CLI mode** (terminal/CI): headless agent CLIs run subprocesses. Requires authenticated `claude`, `cursor-agent`, `codex`, or `gemini`.
 
+**You are a chat session**: always invoke with `--mode chat --host-client cursor`, never pass `--runner`, and never spawn or delegate to another agent CLI — YOU complete every stage. If the run exits with code 3, this is the orchestrator SOURCE repository — do not target it (maintainers only: `--allow-self` / `ORCH_ALLOW_SELF=1`).
+
 ## Instructions
 
 1. **Pre-flight**: If `.pipeline/.lock` exists and status is not `awaiting_chat`, a run is active — do not start overlapping work.
@@ -26,11 +28,11 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
    This is the **only** pre-run question. Do not ask anything else before starting.
 5. **Run the pipeline**:
    ```bash
-   bash .pipeline/orchestrate.sh "TASK_HERE" --model-profile auto
+   bash .pipeline/orchestrate.sh "TASK_HERE" --mode chat --host-client cursor --model-profile auto
    ```
    Or with manual models:
    ```bash
-   bash .pipeline/orchestrate.sh "TASK_HERE" --model-profile manual --models '{"planner":"opus-4.8","coder":"sonnet-5","tester":"sonnet-5","reviewer":"sonnet-5"}'
+   bash .pipeline/orchestrate.sh "TASK_HERE" --mode chat --host-client cursor --model-profile manual --models '{"planner":"opus-4.8","coder":"sonnet-5","tester":"sonnet-5","reviewer":"sonnet-5"}'
    ```
 6. **Tell the user to open the dashboard** immediately after start:
    - Always read the URL dynamically from the script output (`Live dashboard: http://localhost:…`) or `.pipeline/ui.url`. Do not hardcode 4600 as the port drifts if it is already taken or if running multiple repositories.

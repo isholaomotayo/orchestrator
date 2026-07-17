@@ -10,9 +10,9 @@ This repository ships `/orchestrate` — a portable multi-agent pipeline declare
    - **Automatic** → pass `--model-profile auto`
    - **Manual** → collect four model IDs, then pass `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
    This is the **only** pre-run question.
-3. **Invoke**:
+3. **Invoke** (you are a chat session — always pass `--mode chat --host-client gemini`; never pass `--runner` and never delegate stages to another agent CLI; exit code 3 means this is the orchestrator SOURCE repo, which must not be targeted):
    ```bash
-   bash .pipeline/orchestrate.sh "<user requirements>" --model-profile auto
+   bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client gemini --model-profile auto
    ```
 4. **Tell the user** to open the live dashboard URL from `.pipeline/ui.url` (do not hardcode 4600).
 5. When it exits, read `.pipeline/review_report.md` and report the verdict.

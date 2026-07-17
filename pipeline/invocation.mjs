@@ -16,6 +16,46 @@ const CHAT_ENV_SIGNALS = [
   ['GEMINI_CLI_IDE', '1'],
 ];
 
+// Canonical host-client names plus the aliases instruction files might pass.
+const HOST_CLIENT_ALIASES = {
+  agy: 'antigravity',
+  'claude-code': 'claude',
+  'cursor-agent': 'cursor',
+};
+
+/** Normalize a --host-client / PIPELINE_HOST_CLIENT value ('AGY' → 'antigravity'). */
+export function normalizeHostClient(name) {
+  if (typeof name !== 'string') return null;
+  const lower = name.trim().toLowerCase();
+  if (!lower) return null;
+  return HOST_CLIENT_ALIASES[lower] || lower;
+}
+
+function hostClientFlagValue(argv) {
+  const idx = argv.indexOf('--host-client');
+  if (idx < 0) return null;
+  return normalizeHostClient(argv[idx + 1]);
+}
+
+/**
+ * Which IDE/chat client hosts this invocation (chat mode attribution + model
+ * selection). Precedence: explicit flag → PIPELINE_HOST_CLIENT → env signals.
+ * @returns {string | null}
+ */
+export function detectHostClient({ env = process.env, argv = [] } = {}) {
+  const flagged = hostClientFlagValue(argv);
+  if (flagged) return flagged;
+  const fromEnv = normalizeHostClient(env.PIPELINE_HOST_CLIENT);
+  if (fromEnv) return fromEnv;
+  if (Object.keys(env).some((k) => k.startsWith('ANTIGRAVITY'))) return 'antigravity';
+  if (env.CURSOR_AGENT === '1' || env.CURSOR_TRACE_ID) return 'cursor';
+  if (env.CLAUDE_CODE === '1' || env.CLAUDECODE) return 'claude';
+  if (env.CODEX_IN_IDE === '1') return 'codex';
+  if (env.GEMINI_CLI_IDE === '1') return 'gemini';
+  if (env.VSCODE_PID) return 'vscode';
+  return null;
+}
+
 /**
  * @returns {{ mode: 'chat' | 'cli', source: string }}
  */
@@ -28,6 +68,11 @@ export function detectInvocationMode({ env = process.env, argv = [] } = {}) {
   if (env.PIPELINE_INVOCATION === 'chat') return { mode: 'chat', source: 'env' };
   if (env.PIPELINE_INVOCATION === 'cli') return { mode: 'cli', source: 'env' };
 
+  // An explicit host client means an IDE chat session is driving this run — it
+  // outranks CI/TTY heuristics (which misfire in IDE-integrated terminals).
+  if (hostClientFlagValue(argv)) return { mode: 'chat', source: 'host-client-flag' };
+  if (normalizeHostClient(env.PIPELINE_HOST_CLIENT)) return { mode: 'chat', source: 'host-client-env' };
+
   if (env.CI === 'true' || env.GITHUB_ACTIONS || env.GITLAB_CI || env.CIRCLECI) {
     return { mode: 'cli', source: 'ci' };
   }
@@ -36,6 +81,12 @@ export function detectInvocationMode({ env = process.env, argv = [] } = {}) {
     if (value === null ? env[key] : env[key] === value) {
       return { mode: 'chat', source: key.toLowerCase() };
     }
+  }
+
+  // Antigravity sets no single stable flag — any ANTIGRAVITY* env means its
+  // chat/agent surface is hosting this process.
+  if (Object.keys(env).some((k) => k.startsWith('ANTIGRAVITY'))) {
+    return { mode: 'chat', source: 'antigravity' };
   }
 
   // Interactive terminal invocation → CLI subprocess mode.

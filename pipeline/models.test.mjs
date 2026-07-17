@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveModelProfile, parseModelsJson, modelForStage, DEFAULT_MODEL_PROFILES, MODEL_CATALOG } from './models.mjs';
+import { resolveModelProfile, parseModelsJson, modelForStage, modelNote, mergeModelProfiles, DEFAULT_MODEL_PROFILES, MODEL_CATALOG, CURRENT_CHAT_MODEL } from './models.mjs';
 
 const config = { modelProfiles: DEFAULT_MODEL_PROFILES };
 
@@ -40,7 +40,56 @@ test('MODEL_CATALOG groups providers with valid entries', () => {
 test('resolveModelProfile normalizes auto/undefined runner to host', () => {
   const res = resolveModelProfile({ config, runner: 'auto', profile: 'auto' });
   assert.equal(res.runner, 'host');
-  assert.equal(res.stages.planner, 'opus-4.8');
+  // Unknown host environment: never assume a vendor's models exist there.
+  assert.equal(res.stages.planner, CURRENT_CHAT_MODEL);
+});
+
+test('host runner with a known hostClient uses that ecosystem profile', () => {
+  const antigravity = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'antigravity' });
+  assert.equal(antigravity.stages.planner, 'gemini-3.1-pro');
+  assert.equal(antigravity.stages.coder, 'gemini-3.5-flash');
+  assert.equal(antigravity.stages.handoff, 'gemini-3.1-flash-lite');
+
+  const claude = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'claude' });
+  assert.equal(claude.stages.planner, 'opus-4.8');
+  assert.equal(claude.stages.coder, 'sonnet-5');
+
+  const codex = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'codex' });
+  assert.equal(codex.stages.planner, 'gpt-5.5');
+});
+
+test('host runner with unknown/absent hostClient falls back to current-chat for all stages', () => {
+  for (const hostClient of [null, undefined, 'vscode', 'mystery-ide']) {
+    const res = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient });
+    for (const stage of ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff']) {
+      assert.equal(res.stages[stage], CURRENT_CHAT_MODEL, `stage ${stage} for hostClient ${hostClient}`);
+    }
+  }
+});
+
+test('non-host runners ignore hostClient', () => {
+  const res = resolveModelProfile({ config, runner: 'codex', profile: 'auto', hostClient: 'antigravity' });
+  assert.equal(res.stages.planner, 'gpt-5.5');
+});
+
+test('MODEL_CATALOG offers the current-chat sentinel in the host group', () => {
+  assert.ok(MODEL_CATALOG.host.some((m) => m.id === CURRENT_CHAT_MODEL));
+});
+
+test('modelNote handles the current-chat sentinel and real models', () => {
+  assert.match(modelNote(CURRENT_CHAT_MODEL), /active chat model/i);
+  const note = modelNote('opus-4.8');
+  assert.match(note, /opus-4\.8/);
+  assert.match(note, /if available in this environment/i);
+  assert.match(note, /actualModel/);
+});
+
+test('mergeModelProfiles honors a config antigravity override', () => {
+  const merged = mergeModelProfiles({ modelProfiles: { auto: { antigravity: { coder: 'custom-model' } } } });
+  assert.equal(merged.auto.antigravity.coder, 'custom-model');
+  assert.equal(merged.auto.antigravity.planner, 'gemini-3.1-pro'); // untouched defaults survive
+  const res = resolveModelProfile({ config: { modelProfiles: merged }, runner: 'host', profile: 'auto', hostClient: 'antigravity' });
+  assert.equal(res.stages.coder, 'custom-model');
 });
 
 test('resolveModelProfile manual requires all four stages', () => {

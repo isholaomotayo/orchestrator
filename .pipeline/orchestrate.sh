@@ -27,9 +27,11 @@ fi
 
 BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --continue
-   or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]'
+   or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]
+
+Exit code 3 = self-target guard: this repo is the orchestrator source; override with --allow-self or ORCH_ALLOW_SELF=1.'
 
 RESUME=0
 CONTINUE=0
@@ -48,14 +50,29 @@ else
 fi
 
 NO_UI=0
+ALLOW_SELF=0
 ORCH_ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-ui) NO_UI=1 ;;
+    # Keep --allow-self in ORCH_ARGS so the engine's own guard is satisfied too.
+    --allow-self) ALLOW_SELF=1; ORCH_ARGS+=("$1") ;;
     *) ORCH_ARGS+=("$1") ;;
   esac
   shift
 done
+
+# Self-targeting guard: refuse to run against the orchestrator SOURCE repository
+# (consumers never receive the root skills/ dir, so these two markers identify
+# the source repo). Runs before the mutex/UI startup so a refused run spawns no
+# dashboard and takes no lock.
+if [ -f "$REPO_ROOT/skills/orchestrate/SKILL.md" ] && [ -f "$REPO_ROOT/pipeline/orchestrator.mjs" ] \
+  && [ "$ALLOW_SELF" -eq 0 ] && [ "${ORCH_ALLOW_SELF:-}" != "1" ]; then
+  echo "[orchestrate] Refusing to run: this is the orchestrator SOURCE repository, not a consumer project." >&2
+  echo "[orchestrate] Install the pipeline into your project (bash skills/orchestrate/scripts/bootstrap.sh) and run it there." >&2
+  echo "[orchestrate] Maintainers: override with --allow-self or ORCH_ALLOW_SELF=1." >&2
+  exit 3
+fi
 
 # Guardrail 3: pre-flight mutex check. Allow --continue when awaiting chat handoff.
 if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
@@ -168,6 +185,8 @@ is_chat_invocation() {
     const e = process.env;
     if (e.PIPELINE_INVOCATION === 'chat') process.exit(0);
     if (e.PIPELINE_INVOCATION === 'cli') process.exit(1);
+    if (e.PIPELINE_HOST_CLIENT) process.exit(0);
+    if (Object.keys(e).some((k) => k.startsWith('ANTIGRAVITY'))) process.exit(0);
     if (e.CURSOR_AGENT === '1' || e.CLAUDE_CODE === '1' || e.CLAUDECODE) process.exit(0);
     if (e.CI === 'true' || e.GITHUB_ACTIONS) process.exit(1);
     if (process.stdout.isTTY && process.stdin.isTTY) process.exit(1);

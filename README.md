@@ -1,13 +1,13 @@
 # /orchestrate
 
-A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → (optional Handoff)** — with a live local dashboard at http://localhost:4600.
+A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → (optional Handoff)** — with a live local dashboard (URL written to `.pipeline/ui.url`, usually starting at http://localhost:4600).
 
-Install the skill with `npx skills add`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor (or run `bash .pipeline/orchestrate.sh` from any agent). The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
+Install the skill with `npx skills add orchestrator`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor, Claude Code, Codex, Gemini, or Antigravity (or run `bash .pipeline/orchestrate.sh` from any agent). From an IDE chat, the **current chat session is the driver** — stages are completed in that chat, not by spawning an external agent CLI. The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
 
 ```bash
 # In your existing project (after install + bootstrap — see Quickstart)
 bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
-# → http://localhost:4600
+# → dashboard URL in .pipeline/ui.url (port may drift from 4600)
 ```
 
 ![Completed pipeline run in the live dashboard](docs/screenshots/03-dashboard-completed.png)
@@ -21,7 +21,7 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 - [Quickstart](#quickstart)
 - [What gets added to your repo](#what-gets-added-to-your-repo)
 - [Dashboard walkthrough](#dashboard-walkthrough)
-- [Installing an agent CLI](#installing-an-agent-cli)
+- [Chat mode vs CLI mode](#chat-mode-vs-cli-mode)
 - [The pipeline stages](#the-pipeline-stages)
 - [The self-healing loop, in depth](#the-self-healing-loop-in-depth)
 - [Extending a halted run](#extending-a-halted-run)
@@ -30,6 +30,7 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 - [CLI reference](#cli-reference)
 - [Configuration reference](#configuration-reference)
 - [Guardrails and safety](#guardrails-and-safety)
+  - [Self-repo guard](#self-repo-guard)
 - [Run history and state files](#run-history-and-state-files)
 - [Multiple repos on one machine](#multiple-repos-on-one-machine)
 - [Editor / agent discovery](#editor--agent-discovery)
@@ -111,7 +112,7 @@ Use this in a project you already have — not as a standalone app you clone and
 ### Requirements
 
 - **Node.js ≥ 18** — the pipeline orchestrator uses only `node:` built-ins (no runtime `npm install` for `.pipeline/` or `pipeline/`)
-- **At least one agent CLI** on your `PATH` — see [Installing an agent CLI](#installing-an-agent-cli)
+- **An IDE chat session** (recommended) **or** at least one agent CLI on your `PATH` — see [Chat mode vs CLI mode](#chat-mode-vs-cli-mode) and [Installing an agent CLI](#installing-an-agent-cli)
 - **A git repository** — recommended; required for `--sandbox` worktree isolation
 
 ### 1. Install the skill (once per project or globally)
@@ -136,7 +137,9 @@ Use `--copy` on Cursor if symlinked skills are not discovered. Other agents: swa
 bash .agents/skills/orchestrate/scripts/bootstrap.sh
 ```
 
-This adds `.pipeline/` and `pipeline/` to your project and merges `orchestrate` scripts into `package.json` if present. It also drops in `AGENTS.md` / `CLAUDE.md` when your repo does not already have them.
+This adds `.pipeline/` and `pipeline/` to your project and merges `orchestrate` scripts into `package.json` if present. It also drops in agent discovery files when missing: `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`, `.cursorrules`, Cursor's `/orchestrate` command, and Antigravity's workflow/rules/skill under `.agents/` and `.agent/`.
+
+> **Note:** Bootstrap never copies the root `skills/` directory into consumers. That path (together with `pipeline/orchestrator.mjs`) is how the pipeline detects the orchestrator _source_ repo and refuses to target it — see [Self-repo guard](#self-repo-guard).
 
 ### 3. Run your first pipeline
 
@@ -153,12 +156,13 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 # optional: --runner claude --sandbox
 ```
 
-The dashboard starts automatically on first run → **http://localhost:4600**
+The dashboard starts automatically on first run. Read the URL from `.pipeline/ui.url` (do not hardcode port 4600 — it drifts when occupied or in multi-repo setups).
 
 Or open the UI without starting a run:
 
 ```bash
 node pipeline/ui-server.mjs
+# → http://localhost:<uiPort>
 ```
 
 ### 4. Read the verdict
@@ -171,13 +175,17 @@ When the run finishes, check `.pipeline/review_report.md` for the audit verdict 
 
 After install + bootstrap, your **existing** project gains:
 
-| Path | Purpose |
-|------|---------|
-| `.agents/skills/orchestrate/` | Skill instructions + bootstrap script (from `npx skills add`) |
-| `.pipeline/` | Config, prompts, entrypoint (`orchestrate.sh`), run artifacts (gitignored at runtime) |
-| `pipeline/` | Orchestrator, checker, dashboard server (committed scaffold) |
-| `AGENTS.md` / `CLAUDE.md` | Agent rules (bootstrapped if missing) |
-| `.cursor/commands/orchestrate.md` | Cursor `/orchestrate` command (bootstrapped if missing) |
+| Path                                    | Purpose                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `.agents/skills/orchestrate/`           | Skill instructions + bootstrap script (`npx skills add` and/or bootstrap)             |
+| `.agents/workflows/orchestrate.md`      | Antigravity workflow — registers `/orchestrate`                                       |
+| `.agent/rules/orchestrate.md`           | Antigravity always-on rule (chat-mode mandate)                                        |
+| `.pipeline/`                            | Config, prompts, entrypoint (`orchestrate.sh`), run artifacts (gitignored at runtime) |
+| `pipeline/`                             | Orchestrator, checker, dashboard server (committed scaffold)                          |
+| `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` | Agent rules (bootstrapped if missing)                                                 |
+| `.cursorrules`                          | Cursor always-on rulebook (bootstrapped if missing)                                   |
+| `.cursor/commands/orchestrate.md`       | Cursor `/orchestrate` command (bootstrapped if missing)                               |
+| `.gemini/skills/orchestrate/`           | Gemini CLI skill copy (bootstrapped if missing)                                       |
 
 Your application code, dependencies, and structure stay as they are. The pipeline runs **your** `test` / `lint` / `typecheck` commands from `.pipeline/config.json` against **your** codebase.
 
@@ -185,7 +193,7 @@ To update the skill later: `npx skills update orchestrate`. To refresh the scaff
 
 ## Dashboard walkthrough
 
-The dashboard at **http://localhost:4600** is the control surface for every run. You can start from the CLI, from `/orchestrate` in your agent, or from the UI itself.
+The dashboard (URL in `.pipeline/ui.url`, usually starting at **http://localhost:4600**) is the control surface for every run. You can start from the CLI, from `/orchestrate` in your agent, or from the UI itself.
 
 ### Step 1 — Open the workspace
 
@@ -241,43 +249,45 @@ If the Coder hits `MAX_CYCLES`, the dashboard halts with an **Extend & continue*
 
 ## Chat mode vs CLI mode
 
-Invoking `/orchestrate` from **Cursor or another IDE chat** is not the same as running a headless **agent CLI** subprocess.
+Invoking `/orchestrate` from **any IDE chat** (Cursor, Claude Code, Codex, Gemini, Antigravity, …) is not the same as running a headless **agent CLI** subprocess. Env heuristics alone are unreliable (TTY checks misfire in IDE-integrated terminals), so every chat session must signal explicitly.
 
-| Mode | When | How stages run |
-|------|------|----------------|
-| **Chat** | `/orchestrate` in Cursor (`CURSOR_AGENT=1`), Claude Code, IDE-integrated shells | **Host runner** — the IDE chat session completes each stage. Orchestrator writes `.pipeline/stage-handoff.json` and exits; you finish the stage in chat, then `bash .pipeline/orchestrate.sh --continue`. Checker/tests still run in Node (deterministic). **No `cursor-agent login` required.** |
-| **CLI** | Interactive terminal, CI, `bash .pipeline/orchestrate.sh` with TTY | Subprocess via first **authenticated** CLI on PATH (`claude`, `cursor-agent`, `codex`, `gemini`). |
+| Mode     | When                                                                                                                                  | How stages run                                                                                                                                                                                                                                                                                                                                                |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chat** | `/orchestrate` in an IDE chat — always pass `--mode chat --host-client <name>` (`claude`, `cursor`, `codex`, `gemini`, `antigravity`) | **Host runner** — _this_ chat session completes each stage. Orchestrator writes `.pipeline/stage-handoff.json` and exits; you finish the stage in chat, then `bash .pipeline/orchestrate.sh --continue`. Never pass `--runner` and never spawn `claude` / `cursor-agent` / `codex` / `gemini` from the chat. Checker/tests still run in Node (deterministic). |
+| **CLI**  | Interactive terminal, CI, or an explicit `--mode cli`                                                                                 | Subprocess via first **authenticated** CLI on PATH (`claude`, `cursor-agent`, `codex`, `gemini`).                                                                                                                                                                                                                                                             |
 
 ```bash
-# Chat mode handoff (typical from /orchestrate in Cursor)
-bash .pipeline/orchestrate.sh "your task"     # → stage-handoff.json, exits
-# … complete Planner (etc.) in IDE chat …
-bash .pipeline/orchestrate.sh --continue      # → checker / next stage
+# Chat mode (typical from /orchestrate in Cursor / Antigravity / …)
+bash .pipeline/orchestrate.sh "your task" --mode chat --host-client cursor
+# → stage-handoff.json, exits; complete the stage in this chat, then:
+bash .pipeline/orchestrate.sh --continue
 
 # Force CLI subprocesses even from IDE
 bash .pipeline/orchestrate.sh "task" --mode cli --runner claude
 ```
 
+`--host-client` alone implies chat mode. It also drives dashboard attribution ("awaiting Antigravity") and environment-aware auto models (Gemini-family suggestions in Antigravity, Claude-family in Cursor/Claude, `current-chat` when the host is unknown). Honor `handoff.model` when that model exists in your environment; otherwise use your active chat model and record it as `"actualModel"` in `stage-handoff.json`.
+
 The pipeline auto-detects whichever **CLI** runner is authenticated on your `PATH` in CLI mode (or force one with `--runner`):
 
-| Runner | CLI | Install | Notes |
-|---|---|---|---|
-| `host` | *(none — IDE chat)* | — | **Chat mode only.** Hands each stage to the IDE session via `stage-handoff.json`. |
-| `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code) | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
-| `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`) | see Cursor docs | Headless `-p` mode with `--output-format stream-json`. |
-| `codex` | [OpenAI Codex CLI](https://github.com/openai/codex) | `npm install -g @openai/codex` | Non-interactive `codex exec --full-auto`. |
-| `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (also used for Antigravity) | `npm install -g @google/gemini-cli` | Headless `-p --yolo` mode. |
+| Runner   | CLI                                                                                   | Install                                    | Notes                                                                                                                                                                                                                         |
+| -------- | ------------------------------------------------------------------------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`   | _(none — IDE chat)_                                                                   | —                                          | **Chat mode only.** Hands each stage to the IDE session via `stage-handoff.json`. Dashboard labels the run with `status.hostClient` when set.                                                                                 |
+| `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code)                            | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
+| `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`)                                 | see Cursor docs                            | Headless `-p` mode with `--output-format stream-json`.                                                                                                                                                                        |
+| `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --full-auto`.                                                                                                                                                                                     |
+| `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (also used for Antigravity) | `npm install -g @google/gemini-cli`        | Headless `-p --yolo` mode.                                                                                                                                                                                                    |
 
 You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, an internal tool, a stub for testing) via `customRunners` in `.pipeline/config.json` — see [Configuration reference](#configuration-reference).
 
 ## The pipeline stages
 
-| Stage | Prompt | Reads | Writes | Can loop? |
-|---|---|---|---|---|
-| **Planner** | [.pipeline/prompts/planner_prompt.txt](.pipeline/prompts/planner_prompt.txt) | the task, the codebase | `specs.md` | no |
-| **Coder** | [.pipeline/prompts/coder_prompt.txt](.pipeline/prompts/coder_prompt.txt) | `specs.md`, or `checker_report.md` on retry | `changes.md` + actual code | **yes** — self-healing loop |
-| **Tester** | [.pipeline/prompts/tester_prompt.txt](.pipeline/prompts/tester_prompt.txt) | `specs.md`, `changes.md` | `test_suite.md` + test files | no (but can trigger a second Coder loop, see below) |
-| **Reviewer** | [.pipeline/prompts/reviewer_prompt.txt](.pipeline/prompts/reviewer_prompt.txt) | `specs.md`, `changes.md`, `test_suite.md`, `diff.patch` | `review_report.md` **only** | no — read-only |
+| Stage        | Prompt                                                                         | Reads                                                   | Writes                       | Can loop?                                           |
+| ------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
+| **Planner**  | [.pipeline/prompts/planner_prompt.txt](.pipeline/prompts/planner_prompt.txt)   | the task, the codebase                                  | `specs.md`                   | no                                                  |
+| **Coder**    | [.pipeline/prompts/coder_prompt.txt](.pipeline/prompts/coder_prompt.txt)       | `specs.md`, or `checker_report.md` on retry             | `changes.md` + actual code   | **yes** — self-healing loop                         |
+| **Tester**   | [.pipeline/prompts/tester_prompt.txt](.pipeline/prompts/tester_prompt.txt)     | `specs.md`, `changes.md`                                | `test_suite.md` + test files | no (but can trigger a second Coder loop, see below) |
+| **Reviewer** | [.pipeline/prompts/reviewer_prompt.txt](.pipeline/prompts/reviewer_prompt.txt) | `specs.md`, `changes.md`, `test_suite.md`, `diff.patch` | `review_report.md` **only**  | no — read-only                                      |
 
 Every stage in `status.json` carries a lifecycle you can watch live:
 
@@ -291,7 +301,7 @@ The Reviewer's own verdict (parsed from `review_report.md`) is one of `APPROVED`
 
 ## The self-healing loop, in depth
 
-The Coder doesn't write code once and hope. After every attempt, [`checker.mjs`](pipeline/checker.mjs) runs your **actual** configured `test`/`lint`/`typecheck` commands (no LLM involved — this is deterministic) and parses pass/fail counts from common formats (`node --test`, Jest, Vitest, Mocha, PyTest). The result is written to `checker_report.md` in a fixed format ("Verification Status" + "Actionable Failure Insights") and fed back into the *next* Coder invocation verbatim.
+The Coder doesn't write code once and hope. After every attempt, [`checker.mjs`](pipeline/checker.mjs) runs your **actual** configured `test`/`lint`/`typecheck` commands (no LLM involved — this is deterministic) and parses pass/fail counts from common formats (`node --test`, Jest, Vitest, Mocha, PyTest). The result is written to `checker_report.md` in a fixed format ("Verification Status" + "Actionable Failure Insights") and fed back into the _next_ Coder invocation verbatim.
 
 ```
 cycle 1: Coder implements from specs.md         → checker: FAIL (2 passed, 1 failed)
@@ -302,7 +312,7 @@ cycle 3: Coder reads checker_report.md, fixes    → checker: PASS (3 passed, 0 
 Two safety rails stop this from ever running away:
 
 1. **Max cycles** — the loop stops after `maxCoderCycles` (config default: 5, but see [Extending](#extending-a-halted-run) — this is never a hard ceiling). Configurable **per run**, not just in `config.json`.
-2. **Regression halt** — if a cycle passes *fewer* tests than the previous cycle, the pipeline halts immediately as `REGRESSION_BLOCKED`, even if cycles remain. A dropping pass count means something broke, and no amount of further automated cycling is likely to fix a Coder that just regressed — a human needs to look. **This halt type cannot be auto-extended**, by design.
+2. **Regression halt** — if a cycle passes _fewer_ tests than the previous cycle, the pipeline halts immediately as `REGRESSION_BLOCKED`, even if cycles remain. A dropping pass count means something broke, and no amount of further automated cycling is likely to fix a Coder that just regressed — a human needs to look. **This halt type cannot be auto-extended**, by design.
 
 The Coder's own prompt has a standing instruction never to weaken, skip, or delete a test to make it pass — if it believes a test is wrong, it must say so in a comment and still satisfy the assertion.
 
@@ -343,7 +353,7 @@ Everything below is available with **zero configuration** once `pipeline/ui-serv
 - **Progress stepper** — Plan → Code → Test → Review, with the active/failed stage highlighted.
 - **Live activity feed** — per-agent, chronological: file-edit chips (created vs. modified vs. read), shell command cards, the agent's own narration, checker pass/fail lines, and applied follow-up notes.
 - **Rendered artifacts** — each stage's markdown output, plus a colorized `git diff` view for the Reviewer.
-- **Follow-up composer** — type a note for whichever agent's view you're on; it's queued and injected into that agent's *next* invocation (the pill tells you exactly when it'll apply: next fix cycle, when the agent starts, or on the next run).
+- **Follow-up composer** — type a note for whichever agent's view you're on; it's queued and injected into that agent's _next_ invocation (the pill tells you exactly when it'll apply: next fix cycle, when the agent starts, or on the next run).
 - **New run** — start a pipeline from the browser: task, runner, per-run cycle limits, sandbox toggle.
 - **Stop run** — SIGTERMs the active orchestrator process.
 - **Extend** — appears automatically on a `MAX_CYCLES` halt; see above.
@@ -371,13 +381,18 @@ Archived run views (selected from the run-history dropdown) intentionally **stop
 ```
 # Start a new run
 node pipeline/orchestrator.mjs --task "description" \
-  [--runner claude|cursor|codex|gemini|<customRunner>] \
+  [--runner claude|cursor|codex|gemini|host|<customRunner>] \
+  [--mode chat|cli] \
+  [--host-client claude|cursor|codex|gemini|antigravity] \
   [--model-profile auto|manual] \
   [--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'] \
   [--approve-plan] [--design] [--handoff] \
-  [--sandbox] \
+  [--sandbox] [--allow-self] \
   [--max-cycles N] \
   [--max-post-tester-cycles N]
+
+# Continue after an IDE chat handoff (or plan-approval gate)
+node pipeline/orchestrator.mjs --continue
 
 # Resume an interrupted or stale run
 node pipeline/orchestrator.mjs --resume [--runner ...]
@@ -386,27 +401,41 @@ node pipeline/orchestrator.mjs --resume [--runner ...]
 node pipeline/orchestrator.mjs --resume --extend N [--runner ...]
 ```
 
-`.pipeline/orchestrate.sh` wraps the same two forms and additionally boots the dashboard:
+`.pipeline/orchestrate.sh` wraps the same forms and additionally boots the dashboard:
 
 ```
-bash .pipeline/orchestrate.sh "description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
-bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
+bash .pipeline/orchestrate.sh "description" [--runner ...] [--mode chat|cli] [--host-client ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--allow-self] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
+bash .pipeline/orchestrate.sh --continue
+bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 ```
 
-| Flag | Applies to | Meaning |
-|---|---|---|
-| `--runner <name>` | both | Force a specific agent CLI instead of auto-detecting. |
-| `--model-profile auto\|manual` | new run | Auto = cost-optimized per-stage defaults; manual requires `--models`. |
-| `--models <json>` | new run | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`. |
-| `--approve-plan` | new run | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`. |
-| `--design` | new run | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`. |
-| `--handoff` | new run | Run an optional Handoff stage after an `APPROVED` review, producing `.pipeline/handoff.md`. |
-| `--sandbox` | new run | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge. |
-| `--max-cycles N` | new run | Override `maxCoderCycles` for this run only. |
-| `--max-post-tester-cycles N` | new run | Override `maxPostTesterCycles` for this run only. |
-| `--resume` | extend | Continue the most recently halted run instead of starting a new one. |
-| `--extend N` | extend | How many additional cycles to grant the loop that halted. Required with `--resume`. |
-| `--no-ui` | both (orchestrate.sh only) | Skip auto-starting the dashboard server. |
+| Flag                           | Applies to                 | Meaning                                                                                                                                                                                                                                                          |
+| ------------------------------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--runner <name>`              | both                       | Force a specific agent CLI instead of auto-detecting. From a chat session, omit this — the host runner is the default driver.                                                                                                                                    |
+| `--mode chat\|cli`             | both                       | Override invocation detection. Chat sessions should always pass `chat`.                                                                                                                                                                                          |
+| `--host-client <name>`         | both                       | Names the IDE hosting the run (`claude`, `cursor`, `codex`, `gemini`, `antigravity`; aliases `agy`, `claude-code`, `cursor-agent`). Implies chat mode; drives dashboard attribution and environment-aware auto models. Also settable via `PIPELINE_HOST_CLIENT`. |
+| `--model-profile auto\|manual` | new run                    | Auto = cost-optimized per-stage defaults (adapted to `--host-client` in chat mode); manual requires `--models`.                                                                                                                                                  |
+| `--models <json>`              | new run                    | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`.                                                                                                                                                                             |
+| `--approve-plan`               | new run                    | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`.                                                                                                         |
+| `--design`                     | new run                    | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`.                                                                                                                                                                       |
+| `--handoff`                    | new run                    | Run an optional Handoff stage after an `APPROVED` review, producing `.pipeline/handoff.md`.                                                                                                                                                                      |
+| `--sandbox`                    | new run                    | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge.                                                                                                          |
+| `--allow-self`                 | both                       | Override the [self-repo guard](#self-repo-guard) (maintainers only). Also settable via `ORCH_ALLOW_SELF=1`.                                                                                                                                                      |
+| `--max-cycles N`               | new run                    | Override `maxCoderCycles` for this run only.                                                                                                                                                                                                                     |
+| `--max-post-tester-cycles N`   | new run                    | Override `maxPostTesterCycles` for this run only.                                                                                                                                                                                                                |
+| `--continue`                   | handoff                    | Resume after an IDE chat stage (or plan-approval gate).                                                                                                                                                                                                          |
+| `--resume`                     | extend                     | Continue the most recently halted/interrupted run instead of starting a new one.                                                                                                                                                                                 |
+| `--extend N`                   | extend                     | How many additional cycles to grant the loop that halted. Used with `--resume`.                                                                                                                                                                                  |
+| `--no-ui`                      | both (orchestrate.sh only) | Skip auto-starting the dashboard server.                                                                                                                                                                                                                         |
+
+### Exit codes
+
+| Code | Meaning                                                                    |
+| ---- | -------------------------------------------------------------------------- |
+| `0`  | Completed, or a chat handoff / approval gate was written                   |
+| `1`  | Error or an active lock                                                    |
+| `2`  | Usage error                                                                |
+| `3`  | [Self-repo guard](#self-repo-guard) — this is the orchestrator source repo |
 
 ## Configuration reference
 
@@ -414,43 +443,83 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 
 ```jsonc
 {
-  "runner": "auto",              // "auto" | claude | cursor | codex | gemini | <customRunner key>
-  "maxCoderCycles": 5,           // default cycle budget for the initial Coder fix loop
-  "maxPostTesterCycles": 2,      // default cycle budget for the post-Tester fix loop
-  "uiPort": 4600,                // dashboard port (auto-increments if occupied by another repo)
-  "checks": {                    // set any value to "" to skip that check entirely
+  "runner": "auto", // "auto" | claude | cursor | codex | gemini | <customRunner key>
+  "maxCoderCycles": 5, // default cycle budget for the initial Coder fix loop
+  "maxPostTesterCycles": 2, // default cycle budget for the post-Tester fix loop
+  "uiPort": 4600, // dashboard port (auto-increments if occupied by another repo)
+  "checks": {
+    // set any value to "" to skip that check entirely
     "test": "npm test --silent",
     "lint": "npm run lint --if-present --silent",
-    "typecheck": "npm run typecheck --if-present --silent"
+    "typecheck": "npm run typecheck --if-present --silent",
   },
-  "checkTimeoutMs": 300000,      // kill a check command after this long
-  "agentTimeoutMs": 1800000,     // kill an agent invocation after this long
-  "modelProfiles": {             // per-stage model defaults when --model-profile auto (designer/handoff optional)
+  "checkTimeoutMs": 300000, // kill a check command after this long
+  "agentTimeoutMs": 1800000, // kill an agent invocation after this long
+  "modelProfiles": {
+    // per-stage model defaults when --model-profile auto
     "auto": {
-      "host":   { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
-      "claude": { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
-      "cursor": { "planner": "opus-4.8", "designer": "opus-4.8", "coder": "sonnet-5", "tester": "sonnet-5", "reviewer": "sonnet-5", "handoff": "sonnet-5" },
-      "codex":  { "planner": "gpt-5.5",  "designer": "gpt-5.5",  "coder": "gpt-5.5",  "tester": "gpt-5.5",  "reviewer": "gpt-5.5",  "handoff": "gpt-5.5" },
-      "gemini": { "planner": "gemini-3.1-pro", "designer": "gemini-3.1-pro", "coder": "gemini-3.5-flash", "tester": "gemini-3.5-flash", "reviewer": "gemini-3.5-flash", "handoff": "gemini-3.1-flash-lite" }
-    }
+      "claude": {
+        "planner": "opus-4.8",
+        "designer": "opus-4.8",
+        "coder": "sonnet-5",
+        "tester": "sonnet-5",
+        "reviewer": "sonnet-5",
+        "handoff": "sonnet-5",
+      },
+      "cursor": {
+        "planner": "opus-4.8",
+        "designer": "opus-4.8",
+        "coder": "sonnet-5",
+        "tester": "sonnet-5",
+        "reviewer": "sonnet-5",
+        "handoff": "sonnet-5",
+      },
+      "codex": {
+        "planner": "gpt-5.5",
+        "designer": "gpt-5.5",
+        "coder": "gpt-5.5",
+        "tester": "gpt-5.5",
+        "reviewer": "gpt-5.5",
+        "handoff": "gpt-5.5",
+      },
+      "gemini": {
+        "planner": "gemini-3.1-pro",
+        "designer": "gemini-3.1-pro",
+        "coder": "gemini-3.5-flash",
+        "tester": "gemini-3.5-flash",
+        "reviewer": "gemini-3.5-flash",
+        "handoff": "gemini-3.1-flash-lite",
+      },
+      "antigravity": {
+        "planner": "gemini-3.1-pro",
+        "designer": "gemini-3.1-pro",
+        "coder": "gemini-3.5-flash",
+        "tester": "gemini-3.5-flash",
+        "reviewer": "gemini-3.5-flash",
+        "handoff": "gemini-3.1-flash-lite",
+      },
+    },
   },
-  "approvePlan": false,           // halt after Planner for human approval of specs.md (see --approve-plan)
-  "designStage": false,           // run the optional Designer stage (see --design)
-  "handoffStage": false,          // run the optional Handoff stage (see --handoff)
-  "customRunners": {             // optional: wire up any CLI-shaped agent
+  "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
+  "designStage": false, // run the optional Designer stage (see --design)
+  "handoffStage": false, // run the optional Handoff stage (see --handoff)
+  "customRunners": {
+    // optional: wire up any CLI-shaped agent
     "my-agent": {
       "command": "bash",
-      "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{readOnly}"]
-    }
-  }
+      "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{readOnly}"],
+    },
+  },
 }
 ```
 
 `customRunners` placeholders: `{task}` (the stage's instructions), `{systemPrompt}` (the role prompt file's contents), `{readOnly}` (`"true"`/`"false"`, set for the Reviewer stage).
 
+In **chat/host mode**, auto profiles are selected from the `--host-client` ecosystem (e.g. Antigravity → Gemini-family). When the host client is unknown or absent, every stage suggests the `current-chat` sentinel — "use whatever model this chat session is running" — rather than assuming Claude models exist. Manual `--models` still wins when you set `--model-profile manual`.
+
 ## Guardrails and safety
 
-1. **Regression halt** — a fix cycle that passes *fewer* tests than the previous one halts immediately (`REGRESSION_BLOCKED`) for human review; not resumable via extend, on purpose.
+1. **Regression halt** — a fix cycle that passes _fewer_ tests than the previous one halts immediately (`REGRESSION_BLOCKED`) for human review; not resumable via extend, on purpose.
 2. **Configurable, never-infinite cycles** — every fix loop has a budget (config default or per-run override); exhausting it halts (`MAX_CYCLES`) rather than looping forever, and is resumable via `--resume --extend`.
 3. **Never-weaken-tests** — the Coder's prompt explicitly forbids deleting, skipping, or mocking a test to make it pass.
 4. **Read-only Reviewer** — enforced at the CLI-adapter level (e.g., Claude Code's `--allowedTools`), not just by prompt instruction; it can only write `review_report.md`.
@@ -458,26 +527,35 @@ bash .pipeline/orchestrate.sh --resume --extend N [--runner ...] [--no-ui]
 6. **Artifact validation** — every stage must produce its required non-empty file, or the pipeline halts (`MISSING_ARTIFACT`) rather than silently advancing on empty output.
 7. **Sandbox isolation** — `--sandbox` runs every agent inside a separate git worktree so half-finished edits are never visible to your editor, linters, or other tooling watching the main working tree.
 8. **Localhost-only dashboard** — binds to `127.0.0.1`; never exposed to your LAN.
+9. **Self-repo guard** — the pipeline refuses to run against the orchestrator _source_ repository (exit code 3). See below.
+
+### Self-repo guard
+
+The pipeline must only target **consumer** projects. If both marker files exist under the repo root — `skills/orchestrate/SKILL.md` and `pipeline/orchestrator.mjs` — the shell entrypoint and the engine refuse the run with exit code **3** (before taking a lock or starting a dashboard). Dashboard-initiated runs against the source repo return HTTP 403.
+
+Bootstrap never copies the root `skills/` directory into consumers (it installs under `.agents/skills/` and `.gemini/skills/` instead), so consumer projects never trip the guard.
+
+Maintainers who intentionally want to dogfood against this repo can override with `--allow-self` or `ORCH_ALLOW_SELF=1`.
 
 ## Run history and state files
 
 Every file below lives under `.pipeline/` and is gitignored (only the prompts, `skill.json`, `config.json`, and `orchestrate.sh` are committed):
 
-| File | Purpose |
-|---|---|
-| `status.json` | The live state machine snapshot the dashboard polls/streams |
-| `events.jsonl` | Append-only, newline-delimited event log (every stage transition and agent output line) |
-| `logs/<stage>.log` | Human-readable verbose transcript per stage |
+| File                                                                                                          | Purpose                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `status.json`                                                                                                 | The live state machine snapshot the dashboard polls/streams                                                                                                   |
+| `events.jsonl`                                                                                                | Append-only, newline-delimited event log (every stage transition and agent output line)                                                                       |
+| `logs/<stage>.log`                                                                                            | Human-readable verbose transcript per stage                                                                                                                   |
 | `specs.md`, `design.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md`, `handoff.md` | The stages' artifacts (`design.md` and `handoff.md` only when `--design` / `--handoff` are enabled; `handoff.md` is also written automatically on every halt) |
-| `diff.patch` | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs |
-| `test_history.json` | Pass/fail counts per cycle, used for regression detection |
-| `followups/<stage>.txt` | Queued human notes awaiting injection |
-| `.lock` | Mutex — contains the owning process's PID |
-| `runs/<timestamp>/` | Each new run archives the *previous* run's full state here before resetting — browsable from the dashboard's run-history dropdown |
+| `diff.patch`                                                                                                  | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs                                                                         |
+| `test_history.json`                                                                                           | Pass/fail counts per cycle, used for regression detection                                                                                                     |
+| `followups/<stage>.txt`                                                                                       | Queued human notes awaiting injection                                                                                                                         |
+| `.lock`                                                                                                       | Mutex — contains the owning process's PID                                                                                                                     |
+| `runs/<timestamp>/`                                                                                           | Each new run archives the _previous_ run's full state here before resetting — browsable from the dashboard's run-history dropdown                             |
 
 ## Multiple repos on one machine
 
-Each repository gets its own dashboard. `orchestrate.sh` probes `/healthz` (which reports which `repoRoot` it's serving): a server already serving *this* repo is reused, a server serving a *different* repo is skipped, and the next free port (`uiPort` up to `uiPort + 20`) is used instead. You'll never accidentally watch repo B's pipeline from repo A's terminal.
+Each repository gets its own dashboard. `orchestrate.sh` probes `/healthz` (which reports which `repoRoot` it's serving): a server already serving _this_ repo is reused, a server serving a _different_ repo is skipped, and the next free port (`uiPort` up to `uiPort + 20`) is used instead. You'll never accidentally watch repo B's pipeline from repo A's terminal.
 
 Concurrent runs **within** the same repo are intentionally blocked by the mutex lock — the dashboard always reflects exactly one active (or most-recently-halted) run at a time, with history for the rest.
 
@@ -485,15 +563,20 @@ Concurrent runs **within** the same repo are intentionally blocked by the mutex 
 
 After bootstrap, agents in your project are steered toward `/orchestrate` via:
 
-| File | Agent |
-|------|-------|
-| `.agents/skills/orchestrate/SKILL.md` | Installed skill (`npx skills add`) — slash command `/orchestrate` |
-| `.cursor/commands/orchestrate.md` | Cursor slash command (bootstrapped if missing) |
-| `CLAUDE.md` | Claude Code (copied if missing) |
-| `AGENTS.md` | Codex, Antigravity, other `AGENTS.md`-aware tools (copied if missing) |
-| `.pipeline/skill.json` | Workspace manifest — command is `bash .pipeline/orchestrate.sh` |
+| File                                  | Agent                                                                                |
+| ------------------------------------- | ------------------------------------------------------------------------------------ |
+| `.agents/skills/orchestrate/SKILL.md` | Installed skill (`npx skills add` / bootstrap) — slash command `/orchestrate`        |
+| `.agents/workflows/orchestrate.md`    | Antigravity workflow — registers `/orchestrate` in Antigravity chat                  |
+| `.agent/rules/orchestrate.md`         | Antigravity always-on rule (`--mode chat --host-client antigravity`, never delegate) |
+| `.cursor/commands/orchestrate.md`     | Cursor slash command (bootstrapped if missing)                                       |
+| `.cursorrules`                        | Cursor always-on rulebook (bootstrapped if missing)                                  |
+| `CLAUDE.md`                           | Claude Code (copied if missing)                                                      |
+| `GEMINI.md`                           | Gemini CLI (copied if missing)                                                       |
+| `AGENTS.md`                           | Codex, Antigravity, other `AGENTS.md`-aware tools (copied if missing)                |
+| `.gemini/skills/orchestrate/`         | Gemini CLI skill copy                                                                |
+| `.pipeline/skill.json`                | Workspace manifest — command is `bash .pipeline/orchestrate.sh`                      |
 
-All paths route to the same entrypoint and enforce isolation: treat `.pipeline/` and `.pipeline_sandbox/` as read-only unless you are the orchestrator; respect `.pipeline/.lock`.
+All paths route to the same entrypoint and enforce isolation: treat `.pipeline/` and `.pipeline_sandbox/` as read-only unless you are the orchestrator; respect `.pipeline/.lock`. Chat sessions must pass `--mode chat --host-client <your-client>` and must not spawn an external agent CLI.
 
 ---
 
@@ -501,7 +584,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 
 - **Well-scoped, verifiable tasks** with an existing test suite (or one the Tester can write meaningfully against) — bug fixes, small features, refactors with clear success criteria. The self-healing loop shines exactly where "run the tests and see" is a fast, cheap feedback signal.
 - **Overnight / unattended batches** — queue a task via `--sandbox`, walk away, come back to a reviewed diff and a verdict rather than a half-finished branch.
-- **Teams standardizing on a workflow** rather than a specific model vendor — the same pipeline, prompts, and guardrails run identically under Claude Code, Cursor, Codex, or Gemini.
+- **Teams standardizing on a workflow** rather than a specific model vendor — the same pipeline, prompts, and guardrails run identically under Claude Code, Cursor, Codex, Gemini, or Antigravity (environment-aware auto models adapt to the host).
 - **Auditability** — every run leaves a full paper trail (spec → diff → tests → review) that a human can read in minutes, not an opaque chat transcript.
 
 ## Limitations and known trade-offs
@@ -509,7 +592,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 - **One run per repo at a time.** By design — see [Multiple repos](#multiple-repos-on-one-machine). True cross-repo or cross-run parallelism would need a run registry and a hub server; deliberately out of scope to keep this a zero-infrastructure, drop-in skill.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.
-- **The diff is scoped to the commit the run started from** (committed + uncommitted changes since then). Any edits you had already made *before* the run started are part of that baseline and won't appear in the Reviewer's diff; conversely, if you had uncommitted edits at run start on a non-sandboxed run, they're included.
+- **The diff is scoped to the commit the run started from** (committed + uncommitted changes since then). Any edits you had already made _before_ the run started are part of that baseline and won't appear in the Reviewer's diff; conversely, if you had uncommitted edits at run start on a non-sandboxed run, they're included.
 - **No built-in cost/rate limiting** beyond cycle counts — a misbehaving prompt loop still costs real agent-CLI tokens per cycle before a guardrail trips.
 
 ## Future improvements
@@ -521,22 +604,28 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Planner fails with `MISSING_ARTIFACT`, log shows `Authentication required` | CLI mode picked an unauthenticated runner (often `cursor-agent` from IDE) | Re-run from IDE chat (auto **chat/host** mode) or `agent login` / `--runner claude` |
-| `cursor-agent is not authenticated` in CLI mode | `cursor-agent` on PATH but not logged in | `agent login`, set `CURSOR_API_KEY`, or use `--mode chat` from IDE |
-| Pipeline exits immediately with `stage-handoff.json` | **Expected in chat mode** — complete the stage in IDE, then `--continue` | Read handoff file, write artifact, `bash .pipeline/orchestrate.sh --continue` |
-| `.pipeline/orchestrate.sh` not found | Skill installed but scaffold not bootstrapped | `bash .agents/skills/orchestrate/scripts/bootstrap.sh` |
-| `Pipeline execution is locked by a running orchestrator (pid N)` | A run is genuinely active | Wait, watch the dashboard, or `Stop run` from the UI |
-| Dashboard shows **stale — process gone** | The orchestrator process died without exiting cleanly | Start a new run — the halted state is preserved in run history |
-| `No agent CLI found on PATH` | None of `claude`/`cursor-agent`/`codex`/`gemini` are installed | Install one (see [above](#installing-an-agent-cli)) or set `runner` in `config.json` to a `customRunners` entry |
-| Extend button doesn't appear | The halt reason wasn't `MAX_CYCLES` (e.g. it was `REGRESSION_BLOCKED` or `MISSING_ARTIFACT`) | These require a human fix, not more cycles — inspect `checker_report.md` / `review_report.md` directly |
-| `Cannot resume: sandbox worktree ... no longer exists` | You manually removed `.pipeline_sandbox/` between runs | Start a fresh run instead of extending |
-| Two repos fighting over port 4600 | Rare — should auto-resolve | `orchestrate.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once |
+| Symptom                                                                    | Cause                                                                                        | Fix                                                                                                                                                                                       |
+| -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Exit code 3 / "orchestrator SOURCE repository"                             | Pipeline was run against this skill's source repo, not a consumer project                    | Install into your project via bootstrap and run there. Maintainers only: `--allow-self` or `ORCH_ALLOW_SELF=1`                                                                            |
+| Dashboard `POST /api/run` returns 403                                      | Same self-repo guard, via the UI                                                             | Same as above                                                                                                                                                                             |
+| Planner fails with `MISSING_ARTIFACT`, log shows `Authentication required` | CLI mode picked an unauthenticated runner (often `cursor-agent` from IDE)                    | Re-run from IDE chat with `--mode chat --host-client <name>` (no `--runner`) or `agent login` / `--runner claude`                                                                         |
+| `cursor-agent is not authenticated` in CLI mode                            | `cursor-agent` on PATH but not logged in                                                     | `agent login`, set `CURSOR_API_KEY`, or use `--mode chat` from IDE                                                                                                                        |
+| Pipeline exits immediately with `stage-handoff.json`                       | **Expected in chat mode** — complete the stage in IDE, then `--continue`                     | Read handoff file, write artifact, `bash .pipeline/orchestrate.sh --continue`                                                                                                             |
+| Chat spawned an external `claude`/`cursor-agent`                           | Chat session omitted `--host-client` / passed `--runner`                                     | Always invoke with `--mode chat --host-client <your-client>`; never pass `--runner` from a chat                                                                                           |
+| Suggested model (e.g. Opus) unavailable in this IDE                        | Auto profile matched a different ecosystem                                                   | Use your active chat model and set `"actualModel"` in `stage-handoff.json`, or pass `--host-client` so auto picks the right family (`current-chat` when unknown)                          |
+| `.pipeline/orchestrate.sh` not found                                       | Skill installed but scaffold not bootstrapped                                                | `bash .agents/skills/orchestrate/scripts/bootstrap.sh`                                                                                                                                    |
+| `Pipeline execution is locked by a running orchestrator (pid N)`           | A run is genuinely active                                                                    | Wait, watch the dashboard, or `Stop run` from the UI                                                                                                                                      |
+| Dashboard shows **stale — process gone**                                   | The orchestrator process died without exiting cleanly                                        | Start a new run — the halted state is preserved in run history                                                                                                                            |
+| `No agent CLI found on PATH`                                               | None of `claude`/`cursor-agent`/`codex`/`gemini` are installed                               | Install one (see [Chat mode vs CLI mode](#chat-mode-vs-cli-mode)), use chat/host mode from an IDE, or set `runner` in `config.json` to a `customRunners` entry                            |
+| Extend button doesn't appear                                               | The halt reason wasn't `MAX_CYCLES` (e.g. it was `REGRESSION_BLOCKED` or `MISSING_ARTIFACT`) | These require a human fix, not more cycles — inspect `checker_report.md` / `review_report.md` directly                                                                                    |
+| `Cannot resume: sandbox worktree ... no longer exists`                     | You manually removed `.pipeline_sandbox/` between runs                                       | Start a fresh run instead of extending                                                                                                                                                    |
+| Two repos fighting over port 4600                                          | Rare — should auto-resolve                                                                   | `orchestrate.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once. Always read the live URL from `.pipeline/ui.url`. |
 
 ## Developing this skill (contributors)
 
 This GitHub repository is the **source** for the skill published at `isholaomotayo/orchestrator`. You only clone it if you are developing the skill itself — not to use it day to day.
+
+The [self-repo guard](#self-repo-guard) refuses ordinary pipeline runs against this repo (exit code 3). To dogfood here, pass `--allow-self` or set `ORCH_ALLOW_SELF=1`. Day-to-day usage should always be from a consumer project after bootstrap.
 
 ```bash
 git clone https://github.com/isholaomotayo/orchestrator.git
@@ -549,7 +638,7 @@ pnpm install   # dev deps only (playwright for screenshot regeneration)
 [demo/math.js](demo/math.js) has an intentional bug (`multiply` adds instead of multiplying):
 
 ```bash
-bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
+ORCH_ALLOW_SELF=1 bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --runner claude
 ```
 
 ### Preview the dashboard without a live agent
@@ -557,7 +646,7 @@ bash .pipeline/orchestrate.sh "Fix the failing multiply test in demo/math.js" --
 ```bash
 node scripts/seed-demo-ui.mjs completed
 node pipeline/ui-server.mjs
-# → http://localhost:4600
+# → http://localhost:<uiPort>  (or read .pipeline/ui.url after a run)
 ```
 
 ### Regenerate README screenshots

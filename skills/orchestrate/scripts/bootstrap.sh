@@ -68,6 +68,44 @@ if [ -d "$TMP/skills/orchestrate" ]; then
   fi
 fi
 
+# IMPORTANT: never copy the root skills/ dir into consumers — root
+# skills/orchestrate/SKILL.md (together with pipeline/orchestrator.mjs) is the
+# self-repo detection marker for the self-targeting guard. The installed paths
+# below (.agents/skills/…) do NOT match the marker path, so consumers are safe.
+
+# Install skill into .agents/skills/ (Antigravity IDE/CLI + agents-standard discovery)
+if [ -d "$TMP/skills/orchestrate" ]; then
+  mkdir -p "$REPO_ROOT/.agents/skills/orchestrate"
+  if [ ! -f "$REPO_ROOT/.agents/skills/orchestrate/SKILL.md" ]; then
+    cp -R "$TMP/skills/orchestrate/." "$REPO_ROOT/.agents/skills/orchestrate/"
+    echo "[orchestrate] Agents-standard skill installed → .agents/skills/orchestrate/"
+  fi
+fi
+
+# Antigravity workflow (registers /orchestrate in Antigravity chat)
+if [ -f "$TMP/.agents/workflows/orchestrate.md" ]; then
+  mkdir -p "$REPO_ROOT/.agents/workflows"
+  if [ ! -f "$REPO_ROOT/.agents/workflows/orchestrate.md" ]; then
+    cp "$TMP/.agents/workflows/orchestrate.md" "$REPO_ROOT/.agents/workflows/"
+    echo "[orchestrate] Antigravity workflow installed → .agents/workflows/orchestrate.md"
+  fi
+fi
+
+# Antigravity always-on rule (chat-mode mandate + isolation)
+if [ -f "$TMP/.agent/rules/orchestrate.md" ]; then
+  mkdir -p "$REPO_ROOT/.agent/rules"
+  if [ ! -f "$REPO_ROOT/.agent/rules/orchestrate.md" ]; then
+    cp "$TMP/.agent/rules/orchestrate.md" "$REPO_ROOT/.agent/rules/"
+    echo "[orchestrate] Antigravity rule installed → .agent/rules/orchestrate.md"
+  fi
+fi
+
+# Cursor rulebook (previously omitted)
+if [ -f "$TMP/.cursorrules" ] && [ ! -f "$REPO_ROOT/.cursorrules" ]; then
+  cp "$TMP/.cursorrules" "$REPO_ROOT/"
+  echo "[orchestrate] Cursor rules installed → .cursorrules"
+fi
+
 if [ -f "$REPO_ROOT/.pipeline/orchestrate.sh" ]; then
   chmod +x "$REPO_ROOT/.pipeline/orchestrate.sh"
 elif [ -f "$REPO_ROOT/.pipeline/spawn.sh" ]; then

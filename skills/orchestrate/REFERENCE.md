@@ -48,8 +48,29 @@ node pipeline/orchestrator.mjs --task "description" --model-profile auto
 | `--approve-plan` | `approvePlan` | `false` | After the Planner produces `specs.md`, halt with status `awaiting_plan_approval` until a human approves (or queues a revision note in `.pipeline/followups/planner.txt`) and resumes with `--continue`. |
 | `--design` | `designStage` | `false` | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`. |
 | `--handoff` | `handoffStage` | `false` | After an `APPROVED` review, run an optional Handoff stage producing `.pipeline/handoff.md`. |
+| `--host-client <name>` | env `PIPELINE_HOST_CLIENT` | auto-detected | Names the IDE chat client hosting the run (`claude`, `cursor`, `codex`, `gemini`, `antigravity`; aliases `agy`, `claude-code`, `cursor-agent`). Implies `--mode chat`, drives dashboard/log attribution (`status.hostClient`, `stage-handoff.json.hostClient`/`hostNote`), and selects environment-aware auto models. |
+| `--allow-self` | env `ORCH_ALLOW_SELF=1` | off | Override the self-repo guard: without it, targeting the orchestrator SOURCE repository exits with code **3** (markers: `skills/orchestrate/SKILL.md` + `pipeline/orchestrator.mjs`). Consumers installed via bootstrap never trip the guard. |
 
-All three also live in `.pipeline/config.json` as top-level booleans and can be enabled by default without passing the flag each run.
+The first three also live in `.pipeline/config.json` as top-level booleans and can be enabled by default without passing the flag each run.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Completed, or a chat handoff / approval gate was written |
+| `1` | Error or an active lock |
+| `2` | Usage error |
+| `3` | Self-target guard: this is the orchestrator source repo — override with `--allow-self` / `ORCH_ALLOW_SELF=1` |
+
+## Antigravity discovery paths
+
+Bootstrap installs these into consumers (Antigravity, verified July 2026):
+
+| Path | Purpose |
+|------|---------|
+| `.agents/skills/orchestrate/SKILL.md` | Workspace skill (also the agents-standard skill location) |
+| `.agents/workflows/orchestrate.md` | Workflow — registers `/orchestrate` in Antigravity chat |
+| `.agent/rules/orchestrate.md` | Always-on rule: `--mode chat --host-client antigravity`, never delegate to an external CLI |
 
 ## Per-stage model selection
 
@@ -70,10 +91,12 @@ Default auto profiles (override in `.pipeline/config.json`):
 
 | Runner | Planner / Designer | Coder / Tester / Reviewer | Handoff |
 |--------|---------------------|---------------------------|---------|
-| host / cursor | opus-4.8 | sonnet-5 | sonnet-5 |
+| cursor | opus-4.8 | sonnet-5 | sonnet-5 |
 | claude | opus-4.8 | sonnet-5 | sonnet-5 |
 | codex | gpt-5.5 | gpt-5.5 | gpt-5.5 |
-| gemini | gemini-3.1-pro | gemini-3.5-flash | gemini-3.1-flash-lite |
+| gemini / antigravity | gemini-3.1-pro | gemini-3.5-flash | gemini-3.1-flash-lite |
+
+Host (chat) mode is environment-aware: a known `--host-client` uses that client's ecosystem profile above; an unknown or absent host client suggests the `current-chat` sentinel for every stage — "use whatever model this chat session is running". Hosts record the model actually used as `"actualModel"` in `stage-handoff.json` so logs and the dashboard stay truthful.
 
 Available models for manual selection (dashboard dropdowns and `--models`):
 
@@ -102,8 +125,10 @@ On every halt (`MAX_CYCLES`, `REGRESSION_BLOCKED`, `MISSING_ARTIFACT`, `AGENT_ER
 
 | Mode | Flag / signal | Runner default |
 |------|---------------|----------------|
-| Chat | `CURSOR_AGENT=1`, IDE shell, `--mode chat` | `host` (IDE session) |
+| Chat | `--mode chat`, `--host-client <name>`, `PIPELINE_HOST_CLIENT`, `CURSOR_AGENT=1`, `ANTIGRAVITY*` env, IDE shell | `host` (IDE session) |
 | CLI | TTY terminal, CI, `--mode cli` | First authenticated CLI on PATH |
+
+Env heuristics are unreliable across IDEs (TTY checks misfire in IDE-integrated terminals), so chat sessions must signal explicitly: pass `--mode chat --host-client <your-client>` whenever the invoking agent is itself a chat session. `--host-client` alone implies chat mode. `status.json`/`stage-handoff.json` carry `hostClient` so the dashboard attributes the run ("awaiting Antigravity") correctly.
 
 ## Two manifests
 

@@ -1,6 +1,10 @@
 // Per-stage model profiles: cost-aware defaults per runner + manual overrides.
 import { CORE_STAGES, OPTIONAL_STAGES } from './state.mjs';
 
+// Sentinel model id meaning "use whatever model this chat session is running".
+// Never assume a specific vendor's models exist in the hosting IDE.
+export const CURRENT_CHAT_MODEL = 'current-chat';
+
 // Canonical, up-to-date model catalog surfaced in manual selection (dashboard
 // dropdowns + docs). Grouped by provider, ordered strongest -> cheapest.
 // Short-form IDs match the convention used by DEFAULT_MODEL_PROFILES and config.
@@ -22,6 +26,11 @@ export const MODEL_CATALOG = {
   xai: [
     { id: 'grok-4.5', label: 'Grok 4.5' },
     { id: 'grok-4.3', label: 'Grok 4.3' },
+  ],
+  host: [
+    // Sentinel: "use whatever model this chat session is running". Selected
+    // automatically in host mode when the hosting IDE's ecosystem is unknown.
+    { id: CURRENT_CHAT_MODEL, label: 'Current chat model' },
   ],
 };
 
@@ -67,18 +76,50 @@ export const DEFAULT_MODEL_PROFILES = {
       reviewer: 'gemini-3.5-flash',
       handoff: 'gemini-3.1-flash-lite',
     },
+    antigravity: {
+      planner: 'gemini-3.1-pro',
+      designer: 'gemini-3.1-pro',
+      coder: 'gemini-3.5-flash',
+      tester: 'gemini-3.5-flash',
+      reviewer: 'gemini-3.5-flash',
+      handoff: 'gemini-3.1-flash-lite',
+    },
   },
 };
 
-const RUNNER_KEYS = ['host', 'claude', 'cursor', 'codex', 'gemini'];
+const RUNNER_KEYS = ['host', 'claude', 'cursor', 'codex', 'gemini', 'antigravity'];
+
+// Host mode: map the IDE chat client hosting the run to its model ecosystem,
+// so we never suggest models that don't exist in that environment.
+const HOST_CLIENT_PROFILE_KEYS = {
+  claude: 'claude',
+  'claude-code': 'claude',
+  cursor: 'cursor',
+  codex: 'codex',
+  gemini: 'gemini',
+  antigravity: 'antigravity',
+};
 
 function normalizeRunner(runner) {
   if (!runner || runner === 'auto') return 'host';
   return runner;
 }
 
-function pickAutoStages(config, runner) {
-  const key = normalizeRunner(runner);
+function stagesOfCurrentChat() {
+  const stages = {};
+  for (const name of [...CORE_STAGES, ...OPTIONAL_STAGES]) stages[name] = CURRENT_CHAT_MODEL;
+  return stages;
+}
+
+function pickAutoStages(config, runner, { hostClient = null } = {}) {
+  let key = normalizeRunner(runner);
+  if (key === 'host') {
+    const clientKey = HOST_CLIENT_PROFILE_KEYS[hostClient];
+    // Unknown host environment ('vscode', null, …): use the active chat model
+    // for every stage rather than assuming Claude models exist there.
+    if (!clientKey) return stagesOfCurrentChat();
+    key = clientKey;
+  }
   const profiles = config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto;
   const byRunner = profiles[key] || DEFAULT_MODEL_PROFILES.auto[key] || DEFAULT_MODEL_PROFILES.auto.host;
   return { ...byRunner };
@@ -105,10 +146,10 @@ function validateStageMap(stages, label = 'models') {
 
 /**
  * Resolve the per-stage model profile for a pipeline run.
- * @param {{ config: object, runner: string, profile?: 'auto'|'manual', manualStages?: object }} opts
+ * @param {{ config: object, runner: string, profile?: 'auto'|'manual', manualStages?: object, hostClient?: string|null }} opts
  * @returns {{ selection: 'auto'|'manual', runner: string, stages: Record<string, string> }}
  */
-export function resolveModelProfile({ config, runner, profile = 'auto', manualStages = null }) {
+export function resolveModelProfile({ config, runner, profile = 'auto', manualStages = null, hostClient = null }) {
   const normalizedRunner = normalizeRunner(runner);
   const selection = profile === 'manual' ? 'manual' : 'auto';
 
@@ -123,7 +164,7 @@ export function resolveModelProfile({ config, runner, profile = 'auto', manualSt
   return {
     selection: 'auto',
     runner: normalizedRunner,
-    stages: pickAutoStages(config, runner),
+    stages: pickAutoStages(config, runner, { hostClient }),
   };
 }
 
@@ -143,7 +184,10 @@ export function modelForStage(models, stage) {
 }
 
 export function modelNote(model) {
-  return `Switch to ${model} (or use your active chat model) before completing this stage.`;
+  if (model === CURRENT_CHAT_MODEL) {
+    return 'Use your active chat model for this stage.';
+  }
+  return `Switch to ${model} if available in this environment; otherwise use your active chat model and record it as actualModel.`;
 }
 
 export function mergeModelProfiles(config) {

@@ -1,7 +1,7 @@
 {
   "name": "orchestrate",
   "slash_command": "/orchestrate",
-  "description": "Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh.",
+  "description": "Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh. Chat sessions must pass --mode chat --host-client <name> (claude|cursor|codex|gemini|antigravity) and never delegate stages to an external agent CLI. Refuses to target the orchestrator source repo (exit 3) unless --allow-self / ORCH_ALLOW_SELF=1.",
   "command": "bash .pipeline/orchestrate.sh",
   "repository": "https://github.com/isholaomotayo/orchestrator",
   "arguments": {

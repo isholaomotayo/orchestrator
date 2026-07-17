@@ -1045,11 +1045,14 @@ function fmtDur(a, b) {
 
 const RUNNER_LABELS = {
   claude: 'Claude', cursor: 'Cursor', codex: 'Codex',
-  gemini: 'Gemini', agy: 'Antigravity', host: 'Chat (host)',
+  gemini: 'Gemini', agy: 'Antigravity', antigravity: 'Antigravity',
+  vscode: 'VS Code', host: 'Chat (host)',
 };
 
-function formatRunner(runner) {
+function formatRunner(runner, hostClient = state?.status?.hostClient) {
   if (!runner) return '—';
+  // Attribute host-mode runs to the IDE chat client driving them.
+  if (runner === 'host' && hostClient) return RUNNER_LABELS[hostClient] || cap(hostClient);
   return RUNNER_LABELS[runner] || cap(runner);
 }
 function runningStageName() {

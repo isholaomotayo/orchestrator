@@ -13,6 +13,17 @@ import { pipelinePaths, loadConfig, pidAlive, readLock, CORE_STAGES } from './st
 import { DEFAULT_MODEL_PROFILES, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
+import { isOrchestratorSourceRepo } from './self-guard.mjs';
+
+// Dashboard-initiated runs must honor the same self-targeting guard as the CLI
+// entrypoints (the spawned engine would refuse anyway — this returns a friendly
+// 403 instead of a dead orchestrator.out).
+function selfGuardError(project) {
+  if (isOrchestratorSourceRepo(project.repoRoot) && process.env.ORCH_ALLOW_SELF !== '1') {
+    return { error: 'refusing to target the orchestrator source repository — install the pipeline into a consumer project and run it there (maintainers: set ORCH_ALLOW_SELF=1)', code: 403 };
+  }
+  return null;
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = path.resolve(process.cwd());
@@ -212,6 +223,8 @@ function spawnOrchestrator(project, nodeArgs, options = {}) {
 }
 
 function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, modelProfile, models }) {
+  const guarded = selfGuardError(project);
+  if (guarded) return guarded;
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
   if (runner && !RUNNERS.includes(runner) && !project.config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
   if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
@@ -240,6 +253,8 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
 }
 
 function extendRun(project, { extend, runner }) {
+  const guarded = selfGuardError(project);
+  if (guarded) return guarded;
   const n = positiveInt(extend);
   if (!n) return { error: 'extend must be a positive integer', code: 400 };
   if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
@@ -260,6 +275,8 @@ function extendRun(project, { extend, runner }) {
 }
 
 function resumeInterruptedRunUi(project, { runner }) {
+  const guarded = selfGuardError(project);
+  if (guarded) return guarded;
   if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
   let status;
   try { status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {

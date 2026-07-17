@@ -4,7 +4,8 @@ If the user invokes `/orchestrate`, or requests a non-trivial feature or complex
 
 1. Always delegate implementation to the local repository skill (defined in `.pipeline/skill.json`).
 2. Open a bash shell session and execute:
-   bash .pipeline/orchestrate.sh "USER_PROMPT_HERE"
+   bash .pipeline/orchestrate.sh "USER_PROMPT_HERE" --mode chat --host-client cursor
+   You are a chat session: never pass --runner and never spawn or delegate to another agent CLI — YOU complete each stage from .pipeline/stage-handoff.json, then run `bash .pipeline/orchestrate.sh --continue`. Exit code 3 means this is the orchestrator SOURCE repo — do not target it (maintainers only: --allow-self / ORCH_ALLOW_SELF=1).
 3. Wait for the pipeline loop to finish. Read the live dashboard URL dynamically from `.pipeline/ui.url` (never hardcode http://localhost:4600 — the port drifts when occupied or in multi-repo setups).
 4. Read the generated `.pipeline/review_report.md` output file.
 5. Provide a summary of the completed changes and their audit verdict to the user. Do not manually plan or modify the code directly unless the pipeline reports that manual human intervention is required.

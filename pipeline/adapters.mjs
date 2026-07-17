@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
+import { modelNote } from './models.mjs';
 
 const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
 
@@ -19,6 +20,11 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
     if (forced === 'host') return 'host';
     if (!RUNNER_BINS[forced] && !config.customRunners?.[forced]) {
       throw new Error(`Unknown runner "${forced}".`);
+    }
+    // Explicit flags win, but delegation from a chat session to an external
+    // agent CLI must never happen silently.
+    if (invocationMode === 'chat') {
+      console.log(`[Orchestrator] Notice: runner forced to "${forced}" while invoked from chat — stages will run in an external agent CLI, not this chat session. Drop --runner to keep this chat as the driver.`);
     }
     if (invocationMode === 'cli' && forced !== 'host' && !probeRunnerAuth(forced)) {
       throw new Error(`Runner "${forced}" is on PATH but not authenticated. Log in to that CLI or use --mode chat from your IDE.`);
@@ -109,7 +115,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection }) {
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection, hostClient = null }) {
   const handoff = {
     stage,
     cycle: cycle || 1,
@@ -122,10 +128,14 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   if (model) {
     handoff.model = model;
     handoff.modelSelection = modelSelection || 'auto';
-    handoff.modelNote = `Switch to ${model} (or use your active chat model) before completing this stage.`;
+    handoff.modelNote = modelNote(model);
+  }
+  if (hostClient) {
+    handoff.hostClient = hostClient;
+    handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
   }
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
-  appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact });
+  appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
 // Turn a claude stream-json event line into structured activity blocks the
@@ -181,14 +191,15 @@ function blockToLogLine(b) {
   return b.text;
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, modelSelection }) {
+export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, modelSelection, hostClient = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
     const modelLabel = model ? ` · suggested model ${model} (actual model determined by chat)` : '';
-    fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host (IDE chat)${modelLabel} — ${new Date().toISOString()} =====\n`);
-    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection });
+    const hostLabel = hostClient ? ` (IDE chat: ${hostClient})` : ' (IDE chat)';
+    fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
+    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, hostClient: hostClient || undefined });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection, hostClient });
     appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
