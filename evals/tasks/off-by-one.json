@@ -1,0 +1,15 @@
+{
+  "id": "off-by-one",
+  "fixture": "off-by-one",
+  "task": "paginate() in src/paginate.js drops the final partial page when the item count is not evenly divisible by perPage. Fix it.",
+  "notes": "The ordinary case: a small, well-specified bug with a failing test that already describes the correct behaviour. Also checks that the agent does not wander into src/unrelated.js.",
+  "assertions": {
+    "completed": true,
+    "verdict": "APPROVED",
+    "checksPass": true,
+    "filesChanged": ["src/paginate.js"],
+    "filesUnchanged": ["src/unrelated.js"],
+    "testsNotWeakened": true,
+    "maxCycles": 2
+  }
+}

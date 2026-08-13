@@ -1,7 +1,7 @@
 // Shared state helpers for the pipeline: paths, config, status.json, events.jsonl.
 import fs from 'node:fs';
 import path from 'node:path';
-import { DEFAULT_MODEL_PROFILES, mergeModelProfiles } from './models.mjs';
+import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, mergeModelProfiles } from './models.mjs';
 
 export const STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 // The four always-on stages; designer/handoff are opt-in and default to 'skipped'.
@@ -64,7 +64,17 @@ export function coercePositiveInt(value, fallback, label) {
   return fallback;
 }
 
+export function coerceNonNegativeInt(value, fallback, label) {
+  if (value === undefined) return fallback;
+  const n = Number(value);
+  if (Number.isInteger(n) && n >= 0) return n;
+  console.warn(`[config] Ignoring invalid ${label}=${JSON.stringify(value)}; using default ${fallback}.`);
+  return fallback;
+}
+
 const NUMERIC_CONFIG_FIELDS = ['maxCoderCycles', 'maxPostTesterCycles', 'maxReviewCycles', 'uiPort', 'checkTimeoutMs', 'agentTimeoutMs'];
+// agentRetries is the one numeric knob where 0 is meaningful (retries disabled),
+// so it cannot use coercePositiveInt.
 
 export function loadConfig(paths) {
   const defaults = {
@@ -80,10 +90,13 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    agentRetries: 2, // bounded retries for TRANSIENT agent failures only
     approvePlan: false,
     designStage: false,
     handoffStage: false,
+    reviewPanel: false, // CLI-only multi-lens review panel (see --review-panel)
     modelProfiles: DEFAULT_MODEL_PROFILES,
+    stageEffort: DEFAULT_STAGE_EFFORT,
   };
   let raw;
   try {
@@ -97,11 +110,16 @@ export function loadConfig(paths) {
     }
     return defaults;
   }
-  const merged = { ...defaults, ...raw, checks: { ...defaults.checks, ...(raw.checks || {}) } };
+  const merged = {
+    ...defaults, ...raw,
+    checks: { ...defaults.checks, ...(raw.checks || {}) },
+    stageEffort: { ...defaults.stageEffort, ...(raw.stageEffort || {}) },
+  };
   merged.modelProfiles = mergeModelProfiles({ modelProfiles: raw.modelProfiles });
   for (const field of NUMERIC_CONFIG_FIELDS) {
     merged[field] = coercePositiveInt(raw[field], defaults[field], field);
   }
+  merged.agentRetries = coerceNonNegativeInt(raw.agentRetries, defaults.agentRetries, 'agentRetries');
   return merged;
 }
 
@@ -120,7 +138,7 @@ export function newStatus(task, { design = false, handoff = false } = {}) {
     resumePoint: null,  // { step, context } — tracks last saved checkpoint for resuming
     verdict: null,      // APPROVED | REQUEST_CHANGES | BLOCK
     reviewPass: 0,      // auto review-fix passes completed after a non-APPROVED verdict
-    haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR
+    haltReason: null,   // REGRESSION_BLOCKED | MAX_CYCLES | MISSING_ARTIFACT | AGENT_ERROR | INTEGRITY_VIOLATION | INVALID_VERDICT
     stages: STAGES.map((name) => ({
       name,
       // pending | running | passed | failed | blocked | skipped
@@ -132,6 +150,7 @@ export function newStatus(task, { design = false, handoff = false } = {}) {
       artifact: null,
       detail: null,
       model: null,
+      effort: null,  // reasoning-effort level requested for this stage
       checks: null, // { passedCount, failedCount } from last checker run
     })),
   };
@@ -147,7 +166,7 @@ export function ensureStageEntries(status) {
     if (have.has(name)) return;
     status.stages.splice(i, 0, {
       name, status: 'skipped', cycle: 0, maxCycles: 1,
-      startedAt: null, endedAt: null, artifact: null, detail: null, model: null, checks: null,
+      startedAt: null, endedAt: null, artifact: null, detail: null, model: null, effort: null, checks: null,
     });
   });
   return status;

@@ -9,13 +9,14 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test pipeline/*.test.mjs",
-    "typecheck": "for f in pipeline/*.mjs; do node --check \"$f\" || exit 1; done",
+    "test": "node --test pipeline/*.test.mjs evals/*.test.mjs",
+    "typecheck": "for f in pipeline/*.mjs evals/*.mjs; do node --check \"$f\" || exit 1; done",
     "ui": "node pipeline/ui-server.mjs",
     "orchestrate": "bash .pipeline/orchestrate.sh",
     "pipeline": "bash .pipeline/orchestrate.sh",
     "demo:ui": "node scripts/seed-demo-ui.mjs completed && npm run ui",
-    "screenshots": "node scripts/capture-screenshots.mjs"
+    "screenshots": "node scripts/capture-screenshots.mjs",
+    "eval": "node evals/run.mjs"
   },
   "devDependencies": {
     "playwright": "1.52.0"

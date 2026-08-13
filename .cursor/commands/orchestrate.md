@@ -32,7 +32,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner â†
    ```
    Or with manual models:
    ```bash
-   bash .pipeline/orchestrate.sh "TASK_HERE" --mode chat --host-client cursor --model-profile manual --models '{"planner":"opus-4.8","coder":"sonnet-5","tester":"sonnet-5","reviewer":"sonnet-5"}'
+   bash .pipeline/orchestrate.sh "TASK_HERE" --mode chat --host-client cursor --model-profile manual --models '{"planner":"opus-5","coder":"sonnet-5","tester":"sonnet-5","reviewer":"opus-5"}'
    ```
 6. **Tell the user to open the dashboard** immediately after start:
    - Always read the URL dynamically from the script output (`Live dashboard: http://localhost:â€¦`) or `.pipeline/ui.url`. Do not hardcode 4600 as the port drifts if it is already taken or if running multiple repositories.

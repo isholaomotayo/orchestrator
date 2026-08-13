@@ -5,9 +5,35 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
-import { modelNote } from './models.mjs';
+import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
 
 const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
+
+// Control-plane files a writing stage must never author. The orchestrator trusts
+// these to decide verdicts, cycle budgets, and what the next stage is told to do,
+// so an agent that can write them can rewrite its own grading.
+export const CONTROL_PLANE_FILES = [
+  '.pipeline/review_report.md',
+  '.pipeline/checker_report.md',
+  '.pipeline/status.json',
+  '.pipeline/specs.md',
+  '.pipeline/design.md',
+  '.pipeline/test_history.json',
+  '.pipeline/stage-handoff.json',
+];
+
+// A stage always keeps write access to its OWN artifact (the Planner must be
+// able to write specs.md); everything else in the control plane is denied.
+export function pipelineWriteDeny(stage) {
+  const own = `.pipeline/${STAGE_ARTIFACT_FILES[stage] || ''}`;
+  return [
+    ...CONTROL_PLANE_FILES.filter((f) => f !== own).flatMap((f) => [`Write(${f})`, `Edit(${f})`]),
+    // Prompts define every agent's instructions — a stage rewriting them would
+    // persist into later stages and later runs.
+    'Write(.pipeline/prompts/**)',
+    'Edit(.pipeline/prompts/**)',
+  ];
+}
 
 export function binExists(bin) {
   const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { encoding: 'utf8' });
@@ -56,8 +82,12 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 // hard-guarantee read-only at the process level. When it cannot, we drop the
 // auto-approve/write flags (--force / --full-auto / --yolo) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
-export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model }) {
+export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null }) {
   const combined = `${systemPrompt}\n\n---\nTASK:\n${task}`;
+  // Model families are pipeline-internal; each CLI gets the identifier it
+  // actually accepts. cursor encodes effort in the id, so it is resolved here too.
+  const modelId = resolveModelId(model, runner, normalizeEffort(effort));
+  const level = normalizeEffort(effort);
   switch (runner) {
     case 'claude': {
       const args = [
@@ -66,15 +96,23 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         '--verbose',
         '--output-format', 'stream-json',
       ];
-      if (model) args.push('--model', model);
+      if (modelId) args.push('--model', modelId);
+      if (level) args.push('--effort', level);
+      // Capacity/entitlement failures degrade a tier instead of halting the run.
+      const fallback = fallbackModelId(model, 'claude');
+      if (fallback && fallback !== modelId) args.push('--fallback-model', fallback);
       if (readOnly) {
         // Headless mode denies anything not allowlisted: a read-only stage may
         // read, run git diff/log, and write ONLY its own artifact file.
-        const artifact = `.pipeline/${STAGE_ARTIFACT_FILES[stage] || 'review_report.md'}`;
+        const artifact = artifactOverride || `.pipeline/${STAGE_ARTIFACT_FILES[stage] || 'review_report.md'}`;
         args.push('--allowedTools', `Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(${artifact})`);
         return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: true };
       }
       args.push('--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch');
+      // A writing stage must not touch the control plane. Without this the Coder
+      // can write .pipeline/review_report.md containing "## Verdict: APPROVED"
+      // and approve its own work — the orchestrator only regex-parses that file.
+      args.push('--disallowedTools', pipelineWriteDeny(stage).join(','));
       return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: false };
     }
     case 'cursor': {
@@ -82,7 +120,8 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       // auto-approve writes during a read-only audit (best-effort).
       const args = ['-p', combined, '--output-format', 'stream-json'];
       if (!readOnly) args.push('--force');
-      if (model) args.push('--model', model);
+      // No --effort flag: resolveModelId already selected the effort-tiered id.
+      if (modelId) args.push('--model', modelId);
       return { bin: 'cursor-agent', args, parse: 'jsonl-or-text', readOnlyEnforced: false };
     }
     case 'codex': {
@@ -91,7 +130,9 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       if (readOnly) args.push('--sandbox', 'read-only');
       else args.push('--full-auto');
       args.push('--json');
-      if (model) args.push('--model', model);
+      if (modelId) args.push('--model', modelId);
+      // Effort is a config override rather than a flag on `codex exec`.
+      if (level) args.push('-c', `model_reasoning_effort="${level}"`);
       args.push(combined);
       return { bin: 'codex', args, parse: 'jsonl-or-text', readOnlyEnforced: !!readOnly };
     }
@@ -100,7 +141,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       // mutating actions during a read-only audit (best-effort).
       const args = ['-p', combined];
       if (!readOnly) args.push('--yolo');
-      if (model) args.push('--model', model);
+      if (modelId) args.push('--model', modelId);
       return { bin: 'gemini', args, parse: 'text', readOnlyEnforced: false };
     }
     default: {
@@ -109,13 +150,15 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       const sub = (s) => s
         .replaceAll('{task}', task)
         .replaceAll('{systemPrompt}', systemPrompt)
+        .replaceAll('{model}', modelId || '')
+        .replaceAll('{effort}', level || '')
         .replaceAll('{readOnly}', String(!!readOnly));
       return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text', readOnlyEnforced: false };
     }
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection, hostClient = null }) {
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null }) {
   const handoff = {
     stage,
     cycle: cycle || 1,
@@ -128,8 +171,9 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   if (model) {
     handoff.model = model;
     handoff.modelSelection = modelSelection || 'auto';
-    handoff.modelNote = modelNote(model);
+    handoff.modelNote = modelNote(model, normalizeEffort(effort));
   }
+  if (normalizeEffort(effort)) handoff.effort = normalizeEffort(effort);
   if (hostClient) {
     handoff.hostClient = hostClient;
     handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
@@ -191,39 +235,42 @@ function blockToLogLine(b) {
   return b.text;
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, modelSelection, hostClient = null }) {
+export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
     const modelLabel = model ? ` · suggested model ${model} (actual model determined by chat)` : '';
     const hostLabel = hostClient ? ` (IDE chat: ${hostClient})` : ' (IDE chat)';
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
-    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, hostClient: hostClient || undefined });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, modelSelection, hostClient });
+    appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, effort: normalizeEffort(effort) || undefined, hostClient: hostClient || undefined });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient });
     appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
   const log = fs.createWriteStream(logFile, { flags: cycle > 1 ? 'a' : 'w' });
-  const modelLabel = model ? ` · model ${model}` : '';
+  const level = normalizeEffort(effort);
+  const modelLabel = model ? ` · model ${model}${level ? ` · effort ${level}` : ''}` : '';
   log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
   if (readOnly && !readOnlyEnforced) {
     const warn = `[warn] runner "${runner}" cannot hard-enforce read-only; auto-approve flags withheld (best-effort). Use claude or codex for a guaranteed read-only audit.`;
     log.write(warn + '\n');
     appendEvent(paths, { stage, cycle, type: 'readonly_best_effort', runner });
   }
-  appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined });
+  appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined, effort: level || undefined });
 
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
 
+    let timedOut = false;
     const timer = setTimeout(() => {
-      appendEvent(paths, { stage, cycle, type: 'agent_timeout' });
+      timedOut = true;
+      appendEvent(paths, { stage, cycle, type: 'agent_timeout', timeoutMs: config.agentTimeoutMs });
       child.kill('SIGKILL');
     }, config.agentTimeoutMs);
 
@@ -255,9 +302,10 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     child.on('close', (code) => {
       clearTimeout(timer);
       if (buffer.trim()) parseLine(parse, buffer).forEach(emit);
-      appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code });
+      if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
+      appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code, timedOut: timedOut || undefined });
       log.end();
-      resolve({ ok: code === 0, exitCode: code });
+      resolve({ ok: code === 0, exitCode: code, timedOut });
     });
   });
 }

@@ -456,49 +456,61 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   "checkTimeoutMs": 300000, // kill a check command after this long
   "agentTimeoutMs": 1800000, // kill an agent invocation after this long
   "modelProfiles": {
-    // per-stage model defaults when --model-profile auto
+    // per-stage model FAMILIES when --model-profile auto. Families are
+    // vendor-neutral; each runner CLI receives the identifier it accepts
+    // (claude -> "opus", cursor-agent -> "claude-opus-5", ...).
     "auto": {
       "claude": {
-        "planner": "opus-4.8",
-        "designer": "opus-4.8",
+        "planner": "opus-5",
+        "designer": "opus-5",
         "coder": "sonnet-5",
         "tester": "sonnet-5",
-        "reviewer": "sonnet-5",
-        "handoff": "sonnet-5",
+        "reviewer": "opus-5",
+        "handoff": "haiku-4.5",
       },
       "cursor": {
-        "planner": "opus-4.8",
-        "designer": "opus-4.8",
+        "planner": "opus-5",
+        "designer": "opus-5",
         "coder": "sonnet-5",
         "tester": "sonnet-5",
-        "reviewer": "sonnet-5",
-        "handoff": "sonnet-5",
+        "reviewer": "opus-5",
+        "handoff": "haiku-4.5",
       },
       "codex": {
-        "planner": "gpt-5.5",
-        "designer": "gpt-5.5",
+        "planner": "gpt-5.6-sol",
+        "designer": "gpt-5.6-sol",
         "coder": "gpt-5.5",
         "tester": "gpt-5.5",
-        "reviewer": "gpt-5.5",
-        "handoff": "gpt-5.5",
+        "reviewer": "gpt-5.6-sol",
+        "handoff": "gpt-5.4-mini",
       },
       "gemini": {
         "planner": "gemini-3.1-pro",
         "designer": "gemini-3.1-pro",
-        "coder": "gemini-3.5-flash",
-        "tester": "gemini-3.5-flash",
-        "reviewer": "gemini-3.5-flash",
-        "handoff": "gemini-3.1-flash-lite",
+        "coder": "gemini-3.6-flash",
+        "tester": "gemini-3.6-flash",
+        "reviewer": "gemini-3.1-pro",
+        "handoff": "gemini-3.5-flash",
       },
       "antigravity": {
         "planner": "gemini-3.1-pro",
         "designer": "gemini-3.1-pro",
-        "coder": "gemini-3.5-flash",
-        "tester": "gemini-3.5-flash",
-        "reviewer": "gemini-3.5-flash",
-        "handoff": "gemini-3.1-flash-lite",
+        "coder": "gemini-3.6-flash",
+        "tester": "gemini-3.6-flash",
+        "reviewer": "gemini-3.1-pro",
+        "handoff": "gemini-3.5-flash",
       },
     },
+  },
+  "stageEffort": {
+    // reasoning effort per stage: low | medium | high | xhigh | max.
+    // Often a bigger quality/cost lever than the model tier itself.
+    "planner": "high",
+    "designer": "high",
+    "coder": "medium",
+    "tester": "medium",
+    "reviewer": "high",
+    "handoff": "low",
   },
   "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
   "designStage": false, // run the optional Designer stage (see --design)
@@ -507,7 +519,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
     // optional: wire up any CLI-shaped agent
     "my-agent": {
       "command": "bash",
-      "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{readOnly}"],
+      "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{model}", "{effort}", "{readOnly}"],
     },
   },
 }

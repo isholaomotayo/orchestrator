@@ -101,3 +101,46 @@ test('host runAgent without hostClient omits the keys (back-compat)', async () =
   const chatHandoffEv = readEvents(paths).find((e) => e.type === 'chat_handoff');
   assert.ok(!('hostClient' in chatHandoffEv));
 });
+
+// ---- Model + effort flag emission (Wave 1) ----
+
+test('claude gets a CLI-valid model alias and an --effort flag', () => {
+  const inv = buildInvocation({ ...base, runner: 'claude', readOnly: false, model: 'opus-5', effort: 'high' });
+  assert.equal(inv.args[inv.args.indexOf('--model') + 1], 'opus');
+  assert.equal(inv.args[inv.args.indexOf('--effort') + 1], 'high');
+});
+
+test('cursor encodes effort in the model id and emits no --effort flag', () => {
+  const inv = buildInvocation({ ...base, runner: 'cursor', readOnly: false, model: 'opus-5', effort: 'low' });
+  assert.equal(inv.args[inv.args.indexOf('--model') + 1], 'claude-opus-5-low');
+  assert.ok(!inv.args.includes('--effort'));
+});
+
+test('codex passes reasoning effort as a -c config override', () => {
+  const inv = buildInvocation({ ...base, runner: 'codex', readOnly: false, model: 'gpt-5.5', effort: 'xhigh' });
+  assert.equal(inv.args[inv.args.indexOf('--model') + 1], 'gpt-5.5');
+  assert.ok(inv.args.includes('-c'));
+  assert.ok(inv.args.includes('model_reasoning_effort="xhigh"'));
+});
+
+test('an invalid effort level is dropped rather than passed to the CLI', () => {
+  const inv = buildInvocation({ ...base, runner: 'claude', readOnly: false, model: 'opus-5', effort: 'turbo' });
+  assert.ok(!inv.args.includes('--effort'));
+});
+
+test('the current-chat sentinel emits no --model flag', () => {
+  const inv = buildInvocation({ ...base, runner: 'claude', readOnly: false, model: 'current-chat', effort: 'high' });
+  assert.ok(!inv.args.includes('--model'));
+});
+
+test('host handoff records the requested effort for the chat session', async () => {
+  const { paths, promptFile } = tmpPipeline();
+  await runAgent({
+    runner: 'host', stage: 'planner', cycle: 1, task: 'plan it',
+    systemPromptFile: promptFile, cwd: paths.root, paths, config: {},
+    model: 'opus-5', effort: 'high', modelSelection: 'auto',
+  });
+  const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+  assert.equal(handoff.effort, 'high');
+  assert.match(handoff.modelNote, /effort: high/i);
+});

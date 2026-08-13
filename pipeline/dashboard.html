@@ -444,6 +444,62 @@
     border-bottom: 1px solid var(--purple-border);
   }
   #awaiting-banner a { color: inherit; font-weight: 600; }
+  #awaiting-banner { align-items: center; gap: 10px; flex-wrap: wrap; }
+  #awaiting-banner.shown { display: flex; }
+  #awaiting-banner .await-msg { flex: 1; min-width: 220px; }
+  #awaiting-banner .await-note { font-size: 11px; opacity: .75; }
+  .banner-btn {
+    font: 600 11.5px inherit; border: none;
+    background: var(--inverse); color: var(--on-inverse);
+    border-radius: 6px; padding: 5px 11px; cursor: pointer; white-space: nowrap;
+  }
+  .banner-btn:disabled { opacity: .45; cursor: default; }
+
+  /* Stage meta: model / effort / duration / cost — the run economics */
+  .stage-meta { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .meta-chip {
+    font-size: 10px; padding: 1.5px 7px; border-radius: 999px;
+    background: var(--surface-hover); color: var(--muted);
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  }
+  .meta-chip b { font-weight: 700; color: var(--text); }
+  .meta-chip.effort-high b, .meta-chip.effort-xhigh b, .meta-chip.effort-max b { color: var(--orange); }
+  .totals .partial { color: var(--amber-text); }
+
+  /* Stage timeline — where the wall-clock actually went */
+  .timeline { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 3px; }
+  .tl-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
+  .tl-name { width: 54px; color: var(--muted); flex-shrink: 0; }
+  .tl-track { flex: 1; height: 8px; background: var(--surface-hover); border-radius: 999px; overflow: hidden; }
+  .tl-bar { height: 100%; border-radius: 999px; background: var(--neutral); }
+  .tl-bar.passed { background: var(--green); }
+  .tl-bar.running { background: var(--orange); animation: pulse 1.4s infinite; }
+  .tl-bar.failed, .tl-bar.blocked { background: var(--red); }
+  .tl-dur { width: 46px; text-align: right; color: var(--faint); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  /* Diff viewer — per-file, collapsible */
+  .diff-file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  .diff-file > summary {
+    cursor: pointer; padding: 7px 12px; background: var(--surface-muted);
+    font: 600 11.5px ui-monospace, Menlo, monospace;
+    display: flex; align-items: center; gap: 8px; list-style: none;
+  }
+  .diff-file > summary::-webkit-details-marker { display: none; }
+  .diff-file > summary::before { content: '\25B8'; color: var(--faint); font-size: 10px; }
+  .diff-file[open] > summary::before { content: '\25BE'; }
+  .diff-file > summary .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .diff-stat { font-size: 10.5px; font-weight: 700; }
+  .diff-stat .plus { color: var(--diff-add-text); }
+  .diff-stat .minus { color: var(--diff-del-text); }
+  .diff-body { font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto; background: var(--diff-bg); padding: 6px 0; }
+
+  /* Feed filter */
+  .feed-filter {
+    width: 100%; margin-bottom: 12px;
+    border: 1px solid var(--border); background: var(--surface-muted);
+    border-radius: 8px; padding: 6px 10px; font: inherit; color: var(--text); outline: none;
+  }
+  .feed-filter:focus { border-color: var(--neutral); background: var(--surface); }
 
   /* Feed */
   .feed { flex: 1; overflow-y: auto; padding: 18px 22px 24px; }
@@ -527,16 +583,12 @@
   .artifact-card th, .txt th { background: var(--pre-bg); font-weight: 700; }
   .artifact-card tbody tr:nth-child(even) td, .txt tbody tr:nth-child(even) td { background: var(--pre-bg); }
   .kw { color: var(--syntax-kw); } .str { color: var(--syntax-str); } .cmt { color: var(--syntax-cmt); } .typ { color: var(--syntax-typ); }
-  .diffcard {
-    background: var(--diff-bg); border: 1px solid var(--border);
-    border-radius: 10px; padding: 10px 0; margin-bottom: 10px;
-    font: 11.5px/1.6 ui-monospace, Menlo, monospace; overflow-x: auto;
-  }
-  .diffcard .dl { padding: 0 14px; white-space: pre; }
-  .diffcard .add { background: var(--diff-add-bg); color: var(--diff-add-text); }
-  .diffcard .del { background: var(--diff-del-bg); color: var(--diff-del-text); }
-  .diffcard .hunk { color: var(--diff-hunk-text); background: var(--diff-hunk-bg); }
-  .diffcard .meta { color: var(--faint); }
+  .diffcard { margin-bottom: 10px; font: 11.5px/1.6 ui-monospace, Menlo, monospace; }
+  .dl { padding: 0 14px; white-space: pre; }
+  .add { background: var(--diff-add-bg); color: var(--diff-add-text); }
+  .del { background: var(--diff-del-bg); color: var(--diff-del-text); }
+  .hunk { color: var(--diff-hunk-text); background: var(--diff-hunk-bg); }
+  .dl.meta { color: var(--faint); }
   .empty-feed { color: var(--faint); font-size: 12.5px; padding: 40px 0; text-align: center; }
 
   /* ===== COMPOSER ===== */
@@ -751,6 +803,12 @@
           <div class="stepper" id="stepper"></div>
         </div>
 
+        <!-- 5. Where the wall-clock went -->
+        <div class="side-section" id="timeline-section" style="display:none">
+          <div class="side-heading">Stage timings</div>
+          <div class="timeline" id="timeline"></div>
+        </div>
+
       </div>
 
       <!-- Pinned footer: run controls (aligned with composer below main) -->
@@ -770,7 +828,7 @@
       <div id="halt-banner"></div>
       <div id="awaiting-banner"></div>
       <div id="archive-banner"></div>
-      <div class="feed"><div class="feed-inner" id="feed"></div></div>
+      <div class="feed"><div class="feed-inner"><input class="feed-filter" id="feed-filter" placeholder="Filter this agent's activity… (file path, command, text)"><div id="feed"></div></div></div>
 
       <!-- Composer -->
       <div class="composer-wrap">
@@ -833,13 +891,31 @@
 
     <div class="cycles-row">
       <div>
-        <label>Coder fix cycles</label>
+        <label>Coder cycles</label>
         <input type="number" min="1" id="nr-max-cycles">
       </div>
       <div>
-        <label>Post-tester fix cycles</label>
+        <label>Post-tester cycles</label>
         <input type="number" min="1" id="nr-max-post-cycles">
       </div>
+      <div>
+        <label>Review passes</label>
+        <input type="number" min="1" id="nr-max-review-cycles">
+      </div>
+    </div>
+
+    <label>Optional stages</label>
+    <div class="check" style="margin-top:4px">
+      <input type="checkbox" id="nr-design">
+      <label for="nr-design" style="all:unset;cursor:pointer;font-size:12.5px;color:var(--muted)">Designer stage — explore alternatives, lock contracts before coding</label>
+    </div>
+    <div class="check" style="margin-top:8px">
+      <input type="checkbox" id="nr-approve-plan">
+      <label for="nr-approve-plan" style="all:unset;cursor:pointer;font-size:12.5px;color:var(--muted)">Pause for plan approval after the Planner</label>
+    </div>
+    <div class="check" style="margin-top:8px">
+      <input type="checkbox" id="nr-handoff">
+      <label for="nr-handoff" style="all:unset;cursor:pointer;font-size:12.5px;color:var(--muted)">Handoff document after an approved review</label>
     </div>
 
     <div class="check">
@@ -1013,14 +1089,59 @@ function renderMd(md) {
   return html;
 }
 
+function diffLineHtml(line) {
+  let cls = '';
+  if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) cls = 'meta';
+  else if (line.startsWith('@@')) cls = 'hunk';
+  else if (line.startsWith('+')) cls = 'add';
+  else if (line.startsWith('-')) cls = 'del';
+  return `<div class="dl ${cls}">${esc(line) || ' '}</div>`;
+}
+
+// Split a patch into per-file sections. A flat render of a large diff builds one
+// enormous DOM and gives no way to find the file you care about; collapsed
+// sections with +/- counts make a big review navigable.
+function splitDiffFiles(patch) {
+  const files = [];
+  let current = null;
+  for (const line of patch.split('\n')) {
+    const header = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (header) {
+      current = { name: header[2], lines: [line], add: 0, del: 0 };
+      files.push(current);
+      continue;
+    }
+    if (!current) {
+      // Preamble (e.g. the "# diff vs <ref>" banner the orchestrator writes).
+      current = { name: null, lines: [], add: 0, del: 0 };
+      files.push(current);
+    }
+    current.lines.push(line);
+    if (line.startsWith('+') && !line.startsWith('+++')) current.add++;
+    else if (line.startsWith('-') && !line.startsWith('---')) current.del++;
+  }
+  return files.filter((f) => f.lines.some((l) => l.trim()));
+}
+
+const DIFF_AUTO_OPEN_LINES = 400; // keep small diffs expanded, collapse big ones
+
 function renderDiff(patch) {
-  return patch.split('\n').map((line) => {
-    let cls = '';
-    if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ')) cls = 'meta';
-    else if (line.startsWith('@@')) cls = 'hunk';
-    else if (line.startsWith('+')) cls = 'add';
-    else if (line.startsWith('-')) cls = 'del';
-    return `<div class="dl ${cls}">${esc(line) || ' '}</div>`;
+  const files = splitDiffFiles(patch);
+  const named = files.filter((f) => f.name);
+  if (!named.length) {
+    // No git file headers (e.g. the "no changes detected" note) — render as-is.
+    return `<div class="diff-body">${patch.split('\n').map(diffLineHtml).join('')}</div>`;
+  }
+  const total = named.reduce((n, f) => n + f.lines.length, 0);
+  const openByDefault = total <= DIFF_AUTO_OPEN_LINES;
+  return files.map((f) => {
+    const body = `<div class="diff-body">${f.lines.map(diffLineHtml).join('')}</div>`;
+    if (!f.name) return body;
+    return `<details class="diff-file"${openByDefault ? ' open' : ''}>
+      <summary>
+        <span class="fname">${esc(f.name)}</span>
+        <span class="diff-stat"><span class="plus">+${f.add}</span> <span class="minus">-${f.del}</span></span>
+      </summary>${body}</details>`;
   }).join('');
 }
 
@@ -1163,11 +1284,14 @@ function renderTop() {
 
   const parts = [];
   const started = s.stages.filter((x) => x.startedAt).length;
-  if (started) parts.push(`${started} agent${started === 1 ? '' : 's'}`);
-  if (state.totals?.costUsd > 0) parts.push('$' + state.totals.costUsd.toFixed(2));
+  if (started) parts.push(`${started} agent${started === 1 ? '' : 's'}`); // numeric + literal only
+  if (state.totals?.costUsd > 0) {
+    const usd = '$' + state.totals.costUsd.toFixed(2);
+    parts.push(state.totals.costPartial ? `<span class="partial" title="Some event lines could not be parsed — this total is a lower bound">≥ ${usd}</span>` : usd);
+  }
   const dur = fmtDur(s.startedAt, s.endedAt);
   if (dur) parts.push(dur);
-  totals.textContent = parts.join(' · ');
+  totals.innerHTML = parts.join(' · ');
 
   if (state.stale) { pill.textContent = 'stale'; pill.className = 'pill stale'; }
   else if (s.overall === 'awaiting_chat') { pill.textContent = `awaiting ${formatRunner(s.runner)}`; pill.className = 'pill awaiting'; }
@@ -1215,6 +1339,52 @@ function followupHint(name) {
   return 'note queued — applies on next run';
 }
 
+function fmtUsd(n) {
+  if (typeof n !== 'number' || !n) return null;
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
+// Model / effort / duration for the selected stage. The effort chip matters:
+// it is the lever that most changes a stage's cost and quality, and it was
+// previously invisible everywhere in the UI.
+function stageMetaHtml(name) {
+  const st = stageOf(name);
+  if (!st) return '';
+  const chips = [];
+  const model = modelForAgent(name);
+  if (model) chips.push(`<span class="meta-chip">model <b>${esc(model)}</b></span>`);
+  const effort = st.effort || state?.status?.models?.effort?.[name];
+  if (effort) chips.push(`<span class="meta-chip effort-${esc(effort)}">effort <b>${esc(effort)}</b></span>`);
+  if (st.startedAt) {
+    const dur = fmtDur(st.startedAt, st.endedAt);
+    if (dur) chips.push(`<span class="meta-chip">took <b>${esc(dur)}</b></span>`);
+  }
+  if (st.checks && typeof st.checks.passedCount === 'number') {
+    chips.push(`<span class="meta-chip">checks <b>${st.checks.passedCount}\u2009/\u2009${st.checks.passedCount + st.checks.failedCount}</b></span>`);
+  }
+  return chips.length ? `<div class="stage-meta">${chips.join('')}</div>` : '';
+}
+
+// Relative wall-clock per stage. Answers "which stage is burning the run?",
+// which the per-stage header alone could never show.
+function renderTimeline() {
+  const section = document.getElementById('timeline-section');
+  const el = document.getElementById('timeline');
+  const stages = (state?.status?.stages || []).filter((st) => st.startedAt);
+  if (!stages.length) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  const secs = stages.map((st) => Math.max(1, Math.floor(((st.endedAt ? new Date(st.endedAt) : new Date()) - new Date(st.startedAt)) / 1000)));
+  const max = Math.max(...secs);
+  el.innerHTML = stages.map((st, i) => {
+    const pct = Math.max(3, Math.round((secs[i] / max) * 100));
+    return `<div class="tl-row" title="${esc(st.name)}: ${fmtDur(st.startedAt, st.endedAt)}">
+      <span class="tl-name">${esc(STEP_LABELS[st.name] || st.name)}</span>
+      <span class="tl-track"><span class="tl-bar ${esc(st.status)}" style="width:${pct}%"></span></span>
+      <span class="tl-dur">${esc(fmtDur(st.startedAt, st.endedAt))}</span>
+    </div>`;
+  }).join('');
+}
+
 function renderHeader() {
   const name = activeAgent();
   const st = stageOf(name) || { status: 'pending' };
@@ -1227,7 +1397,7 @@ function renderHeader() {
   const modelBadge = stageModel ? `<span class="model-badge">${isPendingOrRunningInHost ? 'chat window' : esc(stageModel)}</span>` : '';
   document.getElementById('agent-header').innerHTML = `
     ${agentIco(name)}
-    <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}</div>
+    <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}${stageMetaHtml(name)}</div>
     <div class="spacer"></div>
     ${modelBadge}
     <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? `Awaiting ${formatRunner(state?.status?.runner)}` : cap(st.status)}</span>`;
@@ -1277,20 +1447,33 @@ function renderHeader() {
 
   const awaitBanner = document.getElementById('awaiting-banner');
   if (s?.overall === 'awaiting_chat') {
-    awaitBanner.style.display = '';
+    awaitBanner.style.display = 'flex';
     const nextA = getNextAgent(s);
     const artifact = { planner: 'specs.md', designer: 'design.md', coder: 'changes.md', tester: 'test_suite.md', reviewer: 'review_report.md', handoff: 'handoff.md' }[nextA] || 'review_report.md';
-    awaitBanner.innerHTML = `Awaiting <strong>${esc(formatRunner(s.runner))}</strong> — write <code>${artifact}</code> in your agent window, then run <code>bash .pipeline/orchestrate.sh --continue</code>`;
+    // The artifact check comes from the server, so the button is only offered
+    // when continuing would actually advance the run rather than halt it.
+    const ready = state?.stageReady;
+    const gate = ready && !ready.ok
+      ? `<span class="await-note">waiting on <code>${artifact}</code> — ${esc(ready.reason || 'not written yet')}</span>`
+      : '';
+    awaitBanner.innerHTML = `<span class="await-msg">Awaiting <strong>${esc(formatRunner(s.runner))}</strong> — write <code>${artifact}</code> in your agent window.</span>
+      ${gate}
+      <button class="banner-btn" id="continue-btn" ${state?.canContinue && ready?.ok ? '' : 'disabled'}>Stage done — continue</button>`;
+    const contBtn = document.getElementById('continue-btn');
+    if (contBtn) contBtn.onclick = () => sendContinue({ approve: false, btn: contBtn });
   } else if (s?.overall === 'awaiting_plan_approval') {
-    awaitBanner.style.display = '';
-    awaitBanner.innerHTML = `Plan ready for review — read <code>specs.md</code>, then approve with <code>bash .pipeline/orchestrate.sh --continue</code> (queue a Planner follow-up note first to request changes)`;
+    awaitBanner.style.display = 'flex';
+    awaitBanner.innerHTML = `<span class="await-msg">Plan ready for review — read <code>specs.md</code>. To request changes, queue a Planner follow-up below first.</span>
+      <button class="banner-btn" id="approve-btn" ${state?.canApprovePlan ? '' : 'disabled'}>Approve plan &amp; continue</button>`;
+    const apprBtn = document.getElementById('approve-btn');
+    if (apprBtn) apprBtn.onclick = () => sendContinue({ approve: true, btn: apprBtn });
   } else {
     awaitBanner.style.display = 'none';
   }
 
   const archiveBanner = document.getElementById('archive-banner');
   if (currentRun) {
-    archiveBanner.style.display = '';
+    archiveBanner.style.display = 'block';
     archiveBanner.textContent = `Viewing archived run — ${currentRun}`;
   } else {
     archiveBanner.style.display = 'none';
@@ -1402,7 +1585,37 @@ function renderFeed() {
     expandBtn.onclick = () => { feedShowAll = true; feed._renderKey = null; renderFeed(); };
   }
 
+  applyFeedFilter();
   if (atBottom) wrap.scrollTop = wrap.scrollHeight;
+}
+
+let feedFilter = '';
+
+// A long coder loop produces hundreds of blocks; finding the one command or file
+// you care about meant scrolling. Filtering is done over rendered blocks so it
+// costs nothing until it is used.
+function applyFeedFilter() {
+  const feed = document.getElementById('feed');
+  const q = feedFilter.trim().toLowerCase();
+  const blocks = feed.querySelectorAll('.feed-block');
+  if (!q) {
+    blocks.forEach((b) => { b.style.display = ''; });
+    return;
+  }
+  let shown = 0;
+  blocks.forEach((b) => {
+    const hit = b.textContent.toLowerCase().includes(q);
+    b.style.display = hit ? '' : 'none';
+    if (hit) shown++;
+  });
+  let note = feed.querySelector('.filter-note');
+  if (!note) {
+    note = document.createElement('div');
+    note.className = 'empty-feed filter-note';
+    feed.appendChild(note);
+  }
+  note.style.display = shown ? 'none' : '';
+  note.textContent = `No activity matches "${feedFilter}".`;
 }
 
 
@@ -1439,7 +1652,7 @@ function renderRunSelect() {
   sel.value = prev;
 }
 
-function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(); }
+function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderTimeline(); renderFeed(); }
 
 // Reset feed window when switching agents manually
 function switchAgent(name) {
@@ -1517,6 +1730,27 @@ async function sendResume() {
   }
 }
 
+// Advance a run parked at a chat handoff or the plan-approval gate. Previously
+// the dashboard could only tell the user to go type a shell command.
+async function sendContinue({ approve, btn }) {
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = approve ? 'Approving…' : 'Continuing…';
+  try {
+    const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
+    const r = await fetch('/api/continue' + qs, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve: !!approve }),
+    });
+    const out = await r.json();
+    if (out.error) { alert(out.error); btn.disabled = false; btn.textContent = label; return; }
+    setTimeout(fetchState, 400);
+  } catch (err) {
+    alert(String(err));
+    btn.disabled = false; btn.textContent = label;
+  }
+}
+
 async function sendFollowupAndResume() {
   const input = document.getElementById('followup-input');
   const text = input.value.trim();
@@ -1580,6 +1814,7 @@ document.getElementById('followup-send').onclick = sendFollowup;
 document.getElementById('orchestrate-send').onclick = sendToOrchestrator;
 document.getElementById('followup-resume').onclick = sendFollowupAndResume;
 document.getElementById('followup-input').addEventListener('input', updateFollowupButtons);
+document.getElementById('feed-filter').addEventListener('input', (e) => { feedFilter = e.target.value; applyFeedFilter(); });
 document.getElementById('followup-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendFollowup(); });
 
 // ---- run controls ----
@@ -1633,6 +1868,7 @@ document.getElementById('newrun-btn').onclick = () => {
   document.getElementById('nr-err').textContent = '';
   document.getElementById('nr-max-cycles').placeholder = String(state?.defaults?.maxCoderCycles ?? 5);
   document.getElementById('nr-max-post-cycles').placeholder = String(state?.defaults?.maxPostTesterCycles ?? 2);
+  document.getElementById('nr-max-review-cycles').placeholder = String(state?.defaults?.maxReviewCycles ?? 3);
   overlay.classList.add('open');
   document.getElementById('nr-task').focus();
 };
@@ -1648,6 +1884,10 @@ document.getElementById('nr-start').onclick = async () => {
     task: document.getElementById('nr-task').value,
     runner: document.getElementById('nr-runner').value,
     sandbox: document.getElementById('nr-sandbox').checked,
+    design: document.getElementById('nr-design').checked,
+    handoff: document.getElementById('nr-handoff').checked,
+    approvePlan: document.getElementById('nr-approve-plan').checked,
+    maxReviewCycles: document.getElementById('nr-max-review-cycles').value || undefined,
     maxCycles: document.getElementById('nr-max-cycles').value || undefined,
     maxPostTesterCycles: document.getElementById('nr-max-post-cycles').value || undefined,
     modelProfile,
@@ -1670,6 +1910,7 @@ document.getElementById('nr-start').onclick = async () => {
     document.getElementById('nr-task').value = '';
     document.getElementById('nr-max-cycles').value = '';
     document.getElementById('nr-max-post-cycles').value = '';
+    document.getElementById('nr-max-review-cycles').value = '';
     currentRun = '';
     document.getElementById('run-select').value = '';
     selected = null;

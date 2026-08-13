@@ -22,6 +22,15 @@ function runCommand(cmd, cwd, timeoutMs) {
   };
 }
 
+// Last match wins: runners print a summary at the END, while the same words can
+// appear earlier in per-test lines or in a failing test's own output. Taking the
+// first match let unrelated text set the counts the regression guard compares
+// against — and a bogus drop halts the run as REGRESSION_BLOCKED.
+function lastMatch(output, re) {
+  const all = [...output.matchAll(new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`))];
+  return all.length ? all[all.length - 1] : null;
+}
+
 // Extract passed/failed test counts from common runner outputs.
 // Supports: node --test (TAP), jest, vitest, mocha, pytest.
 export function parseTestCounts(output) {
@@ -34,9 +43,9 @@ export function parseTestCounts(output) {
     { pass: /(\d+)\s+passing/, fail: /(\d+)\s+failing/ },
   ];
   for (const p of patterns) {
-    const passMatch = output.match(p.pass);
+    const passMatch = lastMatch(output, p.pass);
     if (passMatch) {
-      const failMatch = output.match(p.fail);
+      const failMatch = lastMatch(output, p.fail);
       return { passedCount: parseInt(passMatch[1], 10), failedCount: failMatch ? parseInt(failMatch[1], 10) : 0 };
     }
   }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveModelProfile, parseModelsJson, modelForStage, modelNote, mergeModelProfiles, DEFAULT_MODEL_PROFILES, MODEL_CATALOG, CURRENT_CHAT_MODEL } from './models.mjs';
+import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, modelNote, mergeModelProfiles, resolveModelId, isKnownFamily, normalizeEffort, unknownFamilies, DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, EFFORT_LEVELS, MODEL_CATALOG, CURRENT_CHAT_MODEL } from './models.mjs';
 
 const config = { modelProfiles: DEFAULT_MODEL_PROFILES };
 
@@ -8,16 +8,16 @@ test('resolveModelProfile auto picks per-runner defaults', () => {
   const res = resolveModelProfile({ config, runner: 'claude', profile: 'auto' });
   assert.equal(res.selection, 'auto');
   assert.equal(res.runner, 'claude');
-  assert.equal(res.stages.planner, 'opus-4.8');
+  assert.equal(res.stages.planner, 'opus-5');
   assert.equal(res.stages.coder, 'sonnet-5');
 });
 
-test('resolveModelProfile auto picks gpt-5.5 for codex', () => {
+test('resolveModelProfile auto picks the OpenAI ladder for codex', () => {
   const res = resolveModelProfile({ config, runner: 'codex', profile: 'auto' });
-  assert.equal(res.stages.planner, 'gpt-5.5');
+  assert.equal(res.stages.planner, 'gpt-5.6-sol');
   assert.equal(res.stages.coder, 'gpt-5.5');
   assert.equal(res.stages.tester, 'gpt-5.5');
-  assert.equal(res.stages.reviewer, 'gpt-5.5');
+  assert.equal(res.stages.reviewer, 'gpt-5.6-sol');
 });
 
 test('MODEL_CATALOG groups providers with valid entries', () => {
@@ -32,7 +32,7 @@ test('MODEL_CATALOG groups providers with valid entries', () => {
     }
   }
   const ids = Object.values(MODEL_CATALOG).flat().map((m) => m.id);
-  for (const expected of ['opus-4.8', 'sonnet-5', 'gpt-5.5', 'gemini-3.5-flash', 'gemini-3.1-pro', 'grok-4.5', 'grok-4.3']) {
+  for (const expected of ['opus-5', 'sonnet-5', 'haiku-4.5', 'fable-5', 'gpt-5.5', 'gemini-3.5-flash', 'gemini-3.1-pro', 'grok-4.5']) {
     assert.ok(ids.includes(expected), `catalog missing expected model: ${expected}`);
   }
 });
@@ -47,15 +47,15 @@ test('resolveModelProfile normalizes auto/undefined runner to host', () => {
 test('host runner with a known hostClient uses that ecosystem profile', () => {
   const antigravity = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'antigravity' });
   assert.equal(antigravity.stages.planner, 'gemini-3.1-pro');
-  assert.equal(antigravity.stages.coder, 'gemini-3.5-flash');
-  assert.equal(antigravity.stages.handoff, 'gemini-3.1-flash-lite');
+  assert.equal(antigravity.stages.coder, 'gemini-3.6-flash');
+  assert.equal(antigravity.stages.handoff, 'gemini-3.5-flash');
 
   const claude = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'claude' });
-  assert.equal(claude.stages.planner, 'opus-4.8');
+  assert.equal(claude.stages.planner, 'opus-5');
   assert.equal(claude.stages.coder, 'sonnet-5');
 
   const codex = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'codex' });
-  assert.equal(codex.stages.planner, 'gpt-5.5');
+  assert.equal(codex.stages.planner, 'gpt-5.6-sol');
 });
 
 test('host runner with unknown/absent hostClient falls back to current-chat for all stages', () => {
@@ -69,7 +69,7 @@ test('host runner with unknown/absent hostClient falls back to current-chat for 
 
 test('non-host runners ignore hostClient', () => {
   const res = resolveModelProfile({ config, runner: 'codex', profile: 'auto', hostClient: 'antigravity' });
-  assert.equal(res.stages.planner, 'gpt-5.5');
+  assert.equal(res.stages.planner, 'gpt-5.6-sol');
 });
 
 test('MODEL_CATALOG offers the current-chat sentinel in the host group', () => {
@@ -78,8 +78,8 @@ test('MODEL_CATALOG offers the current-chat sentinel in the host group', () => {
 
 test('modelNote handles the current-chat sentinel and real models', () => {
   assert.match(modelNote(CURRENT_CHAT_MODEL), /active chat model/i);
-  const note = modelNote('opus-4.8');
-  assert.match(note, /opus-4\.8/);
+  const note = modelNote('opus-5');
+  assert.match(note, /opus-5/);
   assert.match(note, /if available in this environment/i);
   assert.match(note, /actualModel/);
 });
@@ -150,4 +150,81 @@ test('manual models still rejects a missing core stage', () => {
     config: {}, runner: 'claude', profile: 'manual',
     manualStages: { planner: 'p', coder: 'c', tester: 't' },
   }), /reviewer/);
+});
+
+// ---- Runner-native model id resolution (Wave 1) ----
+
+test('resolveModelId maps families to claude CLI aliases', () => {
+  assert.equal(resolveModelId('opus-5', 'claude'), 'opus');
+  assert.equal(resolveModelId('sonnet-5', 'claude'), 'sonnet');
+  assert.equal(resolveModelId('haiku-4.5', 'claude'), 'haiku');
+  assert.equal(resolveModelId('fable-5', 'claude'), 'fable');
+});
+
+test('resolveModelId maps families to cursor-agent model ids', () => {
+  assert.equal(resolveModelId('opus-5', 'cursor'), 'claude-opus-5');
+  assert.equal(resolveModelId('sonnet-5', 'cursor'), 'claude-sonnet-5');
+  assert.equal(resolveModelId('gpt-5.5', 'cursor'), 'gpt-5.5-high');
+});
+
+test('resolveModelId encodes effort in the cursor model id', () => {
+  assert.equal(resolveModelId('opus-5', 'cursor', 'low'), 'claude-opus-5-low');
+  assert.equal(resolveModelId('opus-5', 'cursor', 'high'), 'claude-opus-5-thinking-high');
+  assert.equal(resolveModelId('opus-5', 'cursor', 'xhigh'), 'claude-opus-5-thinking-xhigh');
+  // A family with no per-effort variant falls back to its base id.
+  assert.equal(resolveModelId('gemini-3.1-pro', 'cursor', 'high'), 'gemini-3.1-pro');
+});
+
+test('resolveModelId passes unknown ids through verbatim', () => {
+  assert.equal(resolveModelId('my-org/custom-model', 'claude'), 'my-org/custom-model');
+  assert.equal(resolveModelId('gpt-5.5', 'codex'), 'gpt-5.5'); // identity runner
+});
+
+test('resolveModelId returns null for the current-chat sentinel', () => {
+  assert.equal(resolveModelId(CURRENT_CHAT_MODEL, 'claude'), null);
+  assert.equal(resolveModelId(null, 'claude'), null);
+});
+
+test('isKnownFamily flags ids absent from the catalog', () => {
+  assert.ok(isKnownFamily('opus-5'));
+  assert.ok(isKnownFamily(CURRENT_CHAT_MODEL));
+  assert.ok(!isKnownFamily('opus-4.8')); // the stale pre-Wave-1 id
+  assert.deepEqual(unknownFamilies({ planner: 'opus-5', coder: 'made-up' }), ['made-up']);
+});
+
+// ---- Reasoning effort (Wave 1) ----
+
+test('normalizeEffort accepts the ladder and rejects anything else', () => {
+  for (const level of EFFORT_LEVELS) assert.equal(normalizeEffort(level), level);
+  assert.equal(normalizeEffort('HIGH'), 'high');
+  assert.equal(normalizeEffort('turbo'), null);
+  assert.equal(normalizeEffort(undefined), null);
+});
+
+test('resolveModelProfile attaches a per-stage effort map', () => {
+  const res = resolveModelProfile({ config, runner: 'claude', profile: 'auto' });
+  assert.equal(res.effort.planner, 'high');
+  assert.equal(res.effort.coder, 'medium');
+  assert.equal(res.effort.handoff, 'low');
+  assert.deepEqual(Object.keys(res.effort).sort(), Object.keys(res.stages).sort());
+});
+
+test('config.stageEffort overrides the default ladder, invalid values ignored', () => {
+  const res = resolveModelProfile({
+    config: { ...config, stageEffort: { coder: 'xhigh', tester: 'nonsense' } },
+    runner: 'claude', profile: 'auto',
+  });
+  assert.equal(res.effort.coder, 'xhigh');
+  assert.equal(res.effort.tester, DEFAULT_STAGE_EFFORT.tester);
+});
+
+test('effortForStage falls back to the default ladder', () => {
+  assert.equal(effortForStage({ effort: { planner: 'max' } }, 'planner'), 'max');
+  assert.equal(effortForStage(null, 'reviewer'), DEFAULT_STAGE_EFFORT.reviewer);
+});
+
+test('modelNote mentions the effort target when one is set', () => {
+  assert.match(modelNote('opus-5', 'high'), /effort: high/i);
+  assert.match(modelNote(CURRENT_CHAT_MODEL, 'low'), /effort: low/i);
+  assert.doesNotMatch(modelNote('opus-5'), /effort/i);
 });

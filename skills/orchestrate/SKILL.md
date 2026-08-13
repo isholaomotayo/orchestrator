@@ -111,6 +111,8 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 | `REGRESSION_BLOCKED` | Surface `.pipeline/checker_report.md`, human review required |
 | `MISSING_ARTIFACT` | Inspect `.pipeline/logs/planner.log` — often a CLI auth failure in CLI mode |
 | `AGENT_ERROR` | CLI auth/spawn failure — suggest `--mode chat` from IDE or log in to the CLI tool |
+| `INTEGRITY_VIOLATION` | A stage wrote control-plane files it does not own, or a "read-only" stage edited the tree. Surface the listed files; the stage's output is untrusted — human review required |
+| `INVALID_VERDICT` | `.pipeline/review_report.md` has no parseable verdict. Show the report and ask whether to add the verdict line and `--resume` |
 
 ### 9. Workspace Isolation
 
@@ -138,12 +140,12 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 ### Example 3: Manual model selection
 
 *User chooses manual profile.*
-*Agent collects:* Planner = `opus-4.8`, Coder = `sonnet-5`, Tester = `sonnet-5`, Reviewer = `sonnet-5`.
+*Agent collects:* Planner = `opus-5`, Coder = `sonnet-5`, Tester = `sonnet-5`, Reviewer = `opus-5`.
 *Agent runs:*
 ```bash
 bash .pipeline/orchestrate.sh "task" \
   --model-profile manual \
-  --models '{"planner":"opus-4.8","coder":"sonnet-5","tester":"sonnet-5","reviewer":"sonnet-5"}'
+  --models '{"planner":"opus-5","coder":"sonnet-5","tester":"sonnet-5","reviewer":"opus-5"}'
 ```
 
 ### Example 4: Resuming a halted pipeline

@@ -11,6 +11,8 @@ const RESUME_HINTS = {
   REGRESSION_BLOCKED: 'A change broke previously passing tests. Inspect the diff and `.pipeline/checker_report.md` BEFORE any resume — regression halts are intentionally not extendable.',
   MISSING_ARTIFACT: 'A stage exited without producing its artifact. Inspect that stage\'s log under `.pipeline/logs/`, then start a fresh run (or `node pipeline/orchestrator.mjs --resume` if the run is stale/interrupted).',
   AGENT_ERROR: 'The agent CLI failed. Check authentication and the stage log under `.pipeline/logs/`, then `node pipeline/orchestrator.mjs --resume`.',
+  INTEGRITY_VIOLATION: 'A stage wrote pipeline control-plane files it does not own, or a read-only stage mutated the working tree. Its output is untrusted: review the listed files and `git status` BEFORE resuming, and prefer a runner that hard-enforces read-only (claude, codex) for audit stages.',
+  INVALID_VERDICT: 'The reviewer produced a report with no parseable verdict line. Read `.pipeline/review_report.md`; if the audit is sound, add "## Verdict: APPROVED|REQUEST_CHANGES|BLOCK" and `node pipeline/orchestrator.mjs --resume`.',
   INTERRUPTED: 'The run was interrupted. Resume it: `node pipeline/orchestrator.mjs --resume`.',
 };
 

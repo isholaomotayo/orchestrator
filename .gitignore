@@ -24,3 +24,6 @@
 
 node_modules/
 .DS_Store
+
+# Eval run outputs (real-agent runs, machine-specific)
+evals/results/

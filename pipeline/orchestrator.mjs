@@ -15,16 +15,20 @@ import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAliv
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
-import { resolveModelProfile, parseModelsJson, modelForStage } from './models.mjs';
+import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
+import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES } from './integrity.mjs';
+import { parseVerdict, validateArtifactFile, detectTestWeakening, compactChangelog } from './artifacts.mjs';
+import { classifyFailure, backoffMs, sleep } from './retry.mjs';
+import { LENSES, aggregatePanel } from './review-panel.mjs';
 
 function parseArgs(argv) {
   const args = {
     task: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
-    approvePlan: false, design: false, handoff: false,
+    approvePlan: false, design: false, handoff: false, reviewPanel: false,
     allowSelf: false, hostClient: null,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -44,6 +48,7 @@ function parseArgs(argv) {
     else if (a === '--approve-plan') args.approvePlan = true;
     else if (a === '--design') args.design = true;
     else if (a === '--handoff') args.handoff = true;
+    else if (a === '--review-panel') args.reviewPanel = true;
     else if (a === '--allow-self') args.allowSelf = true;
     else if (a === '--host-client') args.hostClient = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
@@ -51,7 +56,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\nExit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs --task "description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\nExit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const paths = pipelinePaths(repoRoot);
@@ -127,13 +132,20 @@ function resolveModelsForRun(runnerName) {
     haltAndExit(2);
   }
   const manualStages = args.modelProfile === 'manual' ? parseModelsJson(args.models) : null;
-  return resolveModelProfile({
+  const resolved = resolveModelProfile({
     config,
     runner: runnerName,
     profile: args.modelProfile,
     manualStages,
     hostClient,
   });
+  // Unknown ids still run (custom/enterprise/newly released), but surface them
+  // now rather than as an opaque CLI failure mid-stage.
+  const unknown = unknownFamilies(resolved.stages);
+  if (unknown.length) {
+    console.warn(`[Orchestrator] Model id(s) not in the catalog, passing through verbatim: ${unknown.join(', ')}. If a stage fails to start, check the id against your runner's model list.`);
+  }
+  return resolved;
 }
 
 function loadWorkCwdFromStatus() {
@@ -193,7 +205,7 @@ if (args.continue) {
   }
   status = onDisk;
   ensureStageEntries(status);
-  status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
   if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
   status.overall = 'running';
   status.awaitingStage = null;
@@ -225,7 +237,7 @@ if (args.continue) {
     }
     status = onDisk;
     ensureStageEntries(status);
-    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
     if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles }; // back-compat
     if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
@@ -254,7 +266,7 @@ if (args.continue) {
     }
     status = onDisk;
     ensureStageEntries(status);
-    status.flags = status.flags || { design: false, handoff: false, approvePlan: false };
+    status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
     if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
     runner = args.runner || status.runner;
     models = status.models || null;
@@ -295,7 +307,15 @@ if (args.continue) {
   fs.rmSync(paths.logs, { recursive: true, force: true });
   fs.writeFileSync(paths.vagueRequest, args.task);
 
-  runner = detectRunner(config, { invocationMode });
+  // Runner selection fails for exactly the reasons a user can act on (no CLI on
+  // PATH, not logged in, unknown runner name). A stack trace buries that, so
+  // report it as a plain message and exit on the usage code.
+  try {
+    runner = detectRunner(config, { invocationMode });
+  } catch (err) {
+    console.error(`[Orchestrator] ${err.message}`);
+    haltAndExit(2);
+  }
   try {
     models = resolveModelsForRun(runner);
   } catch (err) {
@@ -306,7 +326,11 @@ if (args.continue) {
     design: args.design || config.designStage === true,
     handoff: args.handoff || config.handoffStage === true,
     approvePlan: args.approvePlan || config.approvePlan === true,
+    reviewPanel: args.reviewPanel || config.reviewPanel === true,
   };
+  if (runFlags.reviewPanel && invocationMode === 'chat') {
+    console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
+  }
   status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff });
   status.flags = runFlags;
   status.planApproved = false;
@@ -335,7 +359,7 @@ if (args.continue) {
   const modeLabel = invocationMode === 'chat'
     ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
     : 'cli (subprocess)';
-  const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}`).join(', ') : '';
+  const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}@${models.effort?.[s] || '-'}`).join(', ') : '';
   console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff})${dashboardMsg}`);
 }
 
@@ -379,8 +403,15 @@ function haltMaxCycles(phase, stageName, limit) {
 function artifactOk(file) {
   try { return fs.statSync(file).size > 0; } catch { return false; }
 }
+// A stage's artifact is the only thing later stages see of its work, so an
+// unusable one must stop the run here rather than silently degrading every
+// downstream stage that reads it.
 function requireArtifact(stageName, file) {
   if (!artifactOk(file)) halt(stageName, 'MISSING_ARTIFACT', `${stageName} did not produce ${path.relative(repoRoot, file)}`);
+  const check = validateArtifactFile(stageName, file);
+  if (!check.ok) {
+    halt(stageName, 'MISSING_ARTIFACT', `${stageName} produced an unusable ${path.relative(repoRoot, file)}: ${check.reason}. Inspect .pipeline/logs/${stageName}.log.`);
+  }
 }
 
 function requestChatHandoff(stageName, chatResume) {
@@ -467,27 +498,97 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const stageModel = modelForStage(models, name);
-  setStage(name, { model: stageModel });
-  const res = await runAgent({
-    runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
-    model: stageModel,
-    modelSelection: models?.selection,
-    hostClient: status.hostClient || null,
-  });
-  if (res.hostHandoff) {
-    if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
-    requestChatHandoff(name, chatResume);
-  }
-  if (!res.ok) {
-    if (soft) return res; // caller degrades gracefully (handoff stage)
-    const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
-    if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
-      halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
+  const stageEffort = effortForStage(models, name);
+  setStage(name, { model: stageModel, effort: stageEffort });
+  // Integrity baseline: taken before the agent starts so the comparison covers
+  // everything it did, regardless of whether its runner can enforce anything.
+  const cpBefore = snapshotControlPlane(paths);
+  const treeBefore = readOnly ? workingTreeFingerprint(workCwd) : null;
+  // In chat mode the stage's work happens in ANOTHER process, between this
+  // handoff and the next --continue. Persist the baseline so the guard can span
+  // that gap; without this the integrity check only ever covered CLI runs.
+  status.integrity = { stage: name, readOnly: !!readOnly, cpBefore, treeBefore };
+  writeStatus(paths, status);
+
+  const maxAttempts = config.agentRetries + 1;
+  let res;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    res = await runAgent({
+      runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+      model: stageModel,
+      effort: stageEffort,
+      modelSelection: models?.selection,
+      hostClient: status.hostClient || null,
+    });
+    if (res.hostHandoff) {
+      if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
+      requestChatHandoff(name, chatResume);
     }
-    if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed: ${res.error}`);
-    halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}. Inspect .pipeline/logs/${name}.log`);
+    if (res.ok) break;
+
+    const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
+    const { transient, reason } = classifyFailure(res, logTail);
+    if (!transient || attempt === maxAttempts) {
+      if (soft) return res; // caller degrades gracefully (handoff stage)
+      failStage(name, res, logTail, { transient, reason, attempts: attempt });
+    }
+    const wait = backoffMs(attempt);
+    appendEvent(paths, { stage: name, cycle, type: 'agent_retry', attempt, of: maxAttempts, reason, waitMs: wait });
+    console.warn(`[Stage] ${name} — ${reason}; retrying in ${Math.round(wait / 1000)}s (attempt ${attempt + 1}/${maxAttempts}).`);
+    setStage(name, { detail: `Retrying after ${reason} (attempt ${attempt + 1}/${maxAttempts})` });
+    await sleep(wait);
   }
+  setStage(name, { detail: null });
+  status.integrity = null;
+  enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore });
   return res;
+}
+
+// Chat mode: verify what the host session did while this process was not running.
+function enforceHandoffIntegrity() {
+  const saved = status.integrity;
+  if (!saved?.stage) return;
+  status.integrity = null;
+  enforceStageIntegrity(saved.stage, {
+    readOnly: saved.readOnly,
+    cpBefore: saved.cpBefore,
+    treeBefore: saved.treeBefore,
+    exclude: HANDOFF_OWNED_FILES,
+  });
+}
+
+// Turn a failed invocation into the most actionable halt we can. Auth and
+// timeout get their own message because the generic "exited with code N" sends
+// people to a log that says nothing useful.
+function failStage(name, res, logTail, { reason, attempts }) {
+  const tried = attempts > 1 ? ` after ${attempts} attempts` : '';
+  if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
+    halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
+  }
+  if (res.timedOut) {
+    halt(name, 'AGENT_ERROR', `${runner} exceeded the ${Math.round(config.agentTimeoutMs / 60000)}-minute agent timeout${tried} and was killed. Raise "agentTimeoutMs" in .pipeline/config.json, or narrow the task — inspect .pipeline/logs/${name}.log for where it stalled.`);
+  }
+  if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed${tried}: ${res.error}`);
+  halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}${tried} (${reason}). Inspect .pipeline/logs/${name}.log`);
+}
+
+// Post-stage audit. A stage that rewrote the control plane, or a "read-only"
+// stage that edited the working tree, has invalidated its own output — its
+// verdict, spec, or report can no longer be trusted, so halt rather than
+// continuing on evidence the agent may have authored for itself.
+function enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore, exclude = [] }) {
+  if (!cpBefore) return;
+  const violations = controlPlaneViolations(cpBefore, snapshotControlPlane(paths), name, exclude);
+  if (violations.length) {
+    appendEvent(paths, { stage: name, type: 'integrity_violation', scope: 'control_plane', files: violations });
+    halt(name, 'INTEGRITY_VIOLATION',
+      `The ${name} stage modified pipeline control-plane files it does not own: ${violations.join(', ')}. Its output cannot be trusted (a stage that can write these can grade its own work). Inspect .pipeline/logs/${name}.log and the listed files.`);
+  }
+  if (readOnly && readOnlyViolated(treeBefore, workingTreeFingerprint(workCwd))) {
+    appendEvent(paths, { stage: name, type: 'integrity_violation', scope: 'read_only' });
+    halt(name, 'INTEGRITY_VIOLATION',
+      `The read-only ${name} stage modified the working tree. Runner "${runner}" cannot hard-enforce read-only, and the agent used that latitude — the audit is void. Inspect \`git status\` and .pipeline/logs/${name}.log.`);
+  }
 }
 
 // Git's canonical empty-tree object; diffing against it renders every tracked
@@ -546,6 +647,17 @@ function evaluateChecks(phase, stageName, check) {
   history[phase].push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: check.isPassed, at: new Date().toISOString() });
   saveHistory();
   setStage('coder', { checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: check.isPassed } });
+
+  // Every fix-loop prompt tells the agent not to weaken tests; nothing verified
+  // it. A shrinking suite is the observable signature of deleting or skipping
+  // the failing test instead of fixing the code — and it can reach GREEN, so
+  // this must be checked before the isPassed early return.
+  const weakening = detectTestWeakening(prev, check);
+  if (weakening.weakened) {
+    halt(stageName, 'REGRESSION_BLOCKED',
+      `Test count dropped from ${weakening.before} to ${weakening.after} — tests were deleted, skipped, or commented out rather than fixed. Inspect the diff for removed assertions; this halt is intentionally not extendable.`);
+  }
+
   if (check.isPassed) return 'pass';
   if (prev && check.passedCount < prev.passedCount) {
     halt(stageName, 'REGRESSION_BLOCKED',
@@ -584,8 +696,22 @@ async function invokeInitialCoderCycle(cycle) {
   });
 }
 
+// Fold superseded fix-cycle history so the next cycle's context stays about the
+// current failure rather than the four that preceded it.
+function compactChangesArtifact() {
+  let text;
+  try { text = fs.readFileSync(paths.changes, 'utf8'); } catch { return; }
+  const { text: out, compacted } = compactChangelog(text);
+  if (!compacted) return;
+  try {
+    fs.writeFileSync(paths.changes, out);
+    appendEvent(paths, { stage: 'coder', type: 'artifact_compacted', artifact: 'changes.md', fromBytes: text.length, toBytes: out.length });
+  } catch {}
+}
+
 async function runCoderChecksAfterInitialCycle(cycle) {
   requireArtifact('coder', paths.changes);
+  compactChangesArtifact();
   console.log('[Checker] Running verification (test / lint / typecheck)...');
   appendEvent(paths, { stage: 'coder', cycle, type: 'checks_start' });
   const check = runChecks({ cwd: workCwd, config, paths });
@@ -621,6 +747,7 @@ async function invokePostTesterCoderCycle(cycle) {
 
 async function runCoderChecksAfterPostTesterCycle(cycle) {
   requireArtifact('coder', paths.changes);
+  compactChangesArtifact();
   const check = runChecks({ cwd: workCwd, config, paths });
   console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
   if (evaluateChecks('postTester', 'tester', check) === 'pass') return 'pass';
@@ -746,6 +873,54 @@ function finishHandoffStage(agentOk) {
   setStage('handoff', { status: 'failed', endedAt: new Date().toISOString(), artifact: ok ? 'handoff.md' : null, detail: 'Handoff agent failed — deterministic handoff document written instead' });
 }
 
+function reviewerTask(extra = '') {
+  return `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, read .pipeline/diff.patch (or audit the source files directly if no diff is available), and write your verdict to .pipeline/review_report.md.${extra}`;
+}
+
+// Panel mode: one focused reviewer per lens, run CONCURRENTLY. They are
+// read-only and each writes a distinct artifact, so they cannot race each other;
+// wall-clock stays roughly that of a single review. Only available in CLI mode —
+// a chat host completes one stage at a time, so a panel there would mean three
+// sequential round-trips for the human.
+function panelEnabled() {
+  return (status.flags?.reviewPanel === true) && status.invocationMode !== 'chat';
+}
+
+async function runReviewPanel(pass) {
+  console.log(`[Stage] Reviewer panel — ${LENSES.length} concurrent lenses (${LENSES.map((l) => l.key).join(', ')})...`);
+  const cpBefore = snapshotControlPlane(paths);
+  const treeBefore = workingTreeFingerprint(workCwd);
+
+  const results = await Promise.all(LENSES.map(async (lens) => {
+    const task = `${reviewerTask()}\n\nREVIEW LENS — ${lens.label}:\n${lens.focus}\n\nWrite your report to .pipeline/${lens.artifact} instead of review_report.md.`;
+    const res = await runAgent({
+      runner, stage: 'reviewer', cycle: 1, task,
+      systemPromptFile: path.join(paths.prompts, 'reviewer_prompt.txt'),
+      cwd: workCwd, readOnly: true, paths, config,
+      model: modelForStage(models, 'reviewer'),
+      effort: effortForStage(models, 'reviewer'),
+      modelSelection: models?.selection,
+      hostClient: status.hostClient || null,
+      artifactOverride: `.pipeline/${lens.artifact}`,
+    });
+    let content = '';
+    try { content = fs.readFileSync(path.join(paths.dir, lens.artifact), 'utf8'); } catch {}
+    return { lens, content, ok: res.ok && !!content.trim() };
+  }));
+
+  enforceStageIntegrity('reviewer', { readOnly: true, cpBefore, treeBefore });
+
+  const { verdict, report, lensVerdicts, unusable } = aggregatePanel(results, { task: status.task });
+  fs.writeFileSync(paths.reviewReport, report);
+  appendEvent(paths, { stage: 'reviewer', type: 'panel_aggregated', lensVerdicts, unusable, verdict });
+  console.log(`[Stage] Panel verdicts: ${LENSES.map((l) => `${l.key}=${lensVerdicts[l.key] ?? '?'}`).join(', ')} -> ${verdict ?? 'UNKNOWN'}`);
+  if (unusable.length) {
+    halt('reviewer', 'INVALID_VERDICT', `Review panel incomplete: ${unusable.join(', ')} produced no usable report. An incomplete panel is not an approval. Inspect .pipeline/logs/reviewer.log and the per-lens reports.`);
+  }
+  status.resumePoint = { step: 'after_reviewer', context: { reviewPass: pass } };
+  writeStatus(paths, status);
+}
+
 async function runReviewerAudit() {
   // Snapshot the working-tree diff so the dashboard can render the audit
   // surface alongside the review, refreshed for every re-audit.
@@ -759,8 +934,12 @@ async function runReviewerAudit() {
     cycle: auditCycle,
     maxCycles: status.limits.reviewMax + 1,
   });
+  if (panelEnabled()) {
+    await runReviewPanel(pass);
+    return;
+  }
   console.log(`[Stage] Reviewer (read-only audit${pass > 0 ? `, after fix pass ${pass}` : ''})...`);
-  await runStageAgent('reviewer', `Audit the completed implementation of: ${status.task}\n\nRead .pipeline/specs.md, .pipeline/changes.md and .pipeline/test_suite.md, read .pipeline/diff.patch (or audit the source files directly if no diff is available), and write your verdict to .pipeline/review_report.md.`, {
+  await runStageAgent('reviewer', reviewerTask(), {
     readOnly: true,
     chatResume: { step: 'after_reviewer', context: { reviewPass: pass } },
   });
@@ -774,8 +953,16 @@ async function runReviewerAudit() {
 async function afterReviewerAudit() {
   requireArtifact('reviewer', paths.reviewReport);
   const report = fs.readFileSync(paths.reviewReport, 'utf8');
-  const verdictMatch = report.match(/##\s*Verdict:\s*\[?\s*(APPROVED|REQUEST_CHANGES|BLOCK)/i);
-  status.verdict = verdictMatch ? verdictMatch[1].toUpperCase() : 'UNKNOWN';
+  const parsed = parseVerdict(report);
+  // An unparseable verdict is a malformed report, NOT a rejection. Treating it
+  // as one (the previous behaviour) spent a whole Coder+Tester+Reviewer fix pass
+  // on a review that never actually asked for changes.
+  if (!parsed.ok) {
+    halt('reviewer', 'INVALID_VERDICT',
+      'The review report contains no parseable verdict (expected "## Verdict: APPROVED | REQUEST_CHANGES | BLOCK"). Read .pipeline/review_report.md — if the audit itself is sound, add the verdict line and re-run: node pipeline/orchestrator.mjs --resume.');
+    return;
+  }
+  status.verdict = parsed.verdict;
   const approved = status.verdict === 'APPROVED';
   setStage('reviewer', { status: approved ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
@@ -867,6 +1054,8 @@ async function chatContinueRun() {
   } catch {}
 
   try { fs.unlinkSync(paths.stageHandoff); } catch {}
+
+  enforceHandoffIntegrity(); // halts if the host session touched what it must not
 
   const step = resume.step;
   const context = resume.context || {};
