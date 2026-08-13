@@ -31,8 +31,18 @@
     --agent-tester-bg: #dcfce7; --agent-tester-fg: #166534;
     --agent-reviewer-bg: #fef3c7; --agent-reviewer-fg: #92400e;
     --agent-handoff-bg: #d1fae5; --agent-handoff-fg: #047857;
+    /* Stage-state palette — one source of truth for every state indicator
+       (rail rows, run bar, dots, badges, pills). */
+    --st-done: #16a34a; --st-done-soft: #dcfce7; --st-done-text: #15803d;
+    --st-run: #2563eb;  --st-run-soft: #dbeafe;  --st-run-text: #1d4ed8;
+    --st-pending: #d6d3d1; --st-pending-text: #a8a29e;
+    --st-skip: #a8a29e;
+    --st-fail: #dc2626; --st-fail-soft: #fee2e2; --st-fail-text: #b91c1c;
+    --track: #ebe9e6;
+    --focus: #2563eb;
     --topbar-h: 52px;
-    --sidebar-w: 236px;
+    --sidebar-w: 288px;
+    --content-w: 860px;
   }
   [data-theme="dark"] {
     --bg: #1c1917; --panel: #292524; --sidebar: #231f1e; --border: #44403c;
@@ -60,6 +70,13 @@
     --agent-tester-bg: #14532d; --agent-tester-fg: #86efac;
     --agent-reviewer-bg: #451a03; --agent-reviewer-fg: #fcd34d;
     --agent-handoff-bg: #064e3b; --agent-handoff-fg: #6ee7b7;
+    --st-done: #22c55e; --st-done-soft: #14532d; --st-done-text: #86efac;
+    --st-run: #3b82f6;  --st-run-soft: #1e3a5f;  --st-run-text: #93c5fd;
+    --st-pending: #57534e; --st-pending-text: #78716c;
+    --st-skip: #57534e;
+    --st-fail: #ef4444; --st-fail-soft: #450a0a; --st-fail-text: #fca5a5;
+    --track: #332e2b;
+    --focus: #60a5fa;
   }
   html { color-scheme: light dark; }
   html[data-theme="light"] { color-scheme: light; }
@@ -68,6 +85,10 @@
   html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif; }
   svg.ic { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+  /* Several controls clear the UA outline for looks; put a deliberate one back
+     for keyboard users. */
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+  body.resizing { user-select: none; cursor: col-resize; }
 
   /* ===== APP SHELL ===== */
   .app { display: flex; flex-direction: column; height: 100vh; max-width: 1440px; margin: 0 auto; background: var(--panel); border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
@@ -139,11 +160,27 @@
     display: inline-flex; align-items: center; gap: 4px;
   }
   .pill::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .5; }
-  .pill.active { background: var(--green-bg); color: var(--green-text); border-color: transparent; }
+  .pill.active { background: var(--st-done-soft); color: var(--st-done-text); border-color: transparent; }
   .pill.active::before { opacity: 1; animation: pulse 1.4s infinite; }
-  .pill.halted { background: var(--red-bg); color: var(--red-text); border-color: transparent; }
+  .pill.halted { background: var(--st-fail-soft); color: var(--st-fail-text); border-color: transparent; }
   .pill.stale { background: var(--amber-bg); color: var(--amber-text); border-color: transparent; }
   .pill.awaiting { background: var(--purple-bg); color: var(--purple-text); border-color: transparent; }
+  .pill.update { background: var(--st-run-soft); color: var(--st-run-text); border-color: transparent; cursor: help; }
+  .pill.update::before { opacity: 1; }
+  .pill[hidden] { display: none; }
+
+  /* Scaffold/engine notice under the project picker */
+  .side-note {
+    display: flex; align-items: flex-start; gap: 6px;
+    margin-top: 7px; padding: 0 2px;
+    font-size: 10.5px; line-height: 1.45; color: var(--muted);
+  }
+  .side-note::before {
+    content: ''; flex-shrink: 0;
+    width: 5px; height: 5px; margin-top: 5px; border-radius: 50%;
+    background: var(--st-run);
+  }
+  .side-note[hidden] { display: none; }
 
   /* Menubar right — theme toggle only */
   .topbar-end {
@@ -197,18 +234,34 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
   }
-  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 8px 10px 4px; }
+  .sidebar-scroll { flex: 1; overflow-y: auto; padding: 10px 14px 8px; }
+
+  /* Drag-to-resize handle — a comfortable 10px hit area straddling the
+     sidebar's right border, with a thin 2px visual affordance on hover. */
+  .resize-handle {
+    position: absolute; top: 0; right: -5px; bottom: 0;
+    width: 10px; cursor: col-resize; z-index: 5;
+    background: transparent;
+  }
+  .resize-handle::after {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 4px;
+    width: 2px; background: var(--st-run); opacity: 0;
+    transition: opacity .12s;
+  }
+  .resize-handle:hover::after, .resize-handle.dragging::after { opacity: .6; }
 
   /* Section headings — visible, structured labels */
-  .side-section { margin-bottom: 2px; }
+  .side-section { margin-bottom: 14px; }
+  .side-section:last-child { margin-bottom: 4px; }
   .side-heading {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     font-size: 10px; font-weight: 700; letter-spacing: .08em;
     color: var(--faint); text-transform: uppercase;
-    padding: 10px 8px 4px;
+    padding: 0 2px 8px;
   }
   .side-heading::after {
     content: '';
@@ -216,7 +269,6 @@
     height: 1px;
     background: var(--border);
   }
-  .side-heading:first-child { padding-top: 4px; }
 
   /* Project selector row — inside sidebar scroll */
   .project-row {
@@ -225,14 +277,14 @@
     gap: 0;
     background: var(--surface-muted);
     border: 1px solid var(--border);
-    border-radius: 8px;
-    height: 30px;
+    border-radius: 9px;
+    height: 34px;
     overflow: hidden;
-    margin: 0 0 2px;
   }
+  .project-row:focus-within { border-color: var(--neutral); }
   .project-row .proj-icon {
     display: grid; place-items: center;
-    width: 30px; height: 30px; flex-shrink: 0;
+    width: 32px; height: 32px; flex-shrink: 0;
     color: var(--faint);
   }
   .project-row .proj-icon svg.ic { width: 12px; height: 12px; }
@@ -254,15 +306,14 @@
     flex-shrink: 0;
     border-top: 1px solid var(--border);
     background: var(--sidebar);
-    padding: 10px 10px 12px;
+    padding: 12px 14px 14px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
   .sidebar-footer .sf-heading {
-    font-size: 9.5px; font-weight: 700; letter-spacing: .08em;
+    font-size: 10px; font-weight: 700; letter-spacing: .08em;
     color: var(--faint); text-transform: uppercase;
-    padding-bottom: 2px;
   }
   /* Run history dropdown — full width */
   #run-select {
@@ -312,16 +363,100 @@
     background: var(--red-bg); border-color: transparent; color: var(--red-text);
   }
 
-  /* Agent list */
-  .agent-row {
-    display: flex; align-items: center; gap: 9px;
-    padding: 7px 8px; border-radius: 8px;
-    cursor: pointer; transition: background .1s;
+  /* ===== PIPELINE RAIL =====
+     One row per stage: identity, state, and share of wall-clock in a single
+     place. Replaces the old agent list + stepper + timings trio, which showed
+     the same six stages three times over. */
+  .rail { display: flex; flex-direction: column; gap: 2px; }
+  .rail-row {
+    position: relative;
+    display: flex; align-items: flex-start; gap: 10px;
+    width: 100%; text-align: left;
+    padding: 8px 10px 9px;
+    border: 1px solid transparent; border-radius: 9px;
+    background: transparent; color: inherit; font: inherit;
+    cursor: pointer;
+    transition: background .14s, border-color .14s;
   }
-  .agent-row:hover { background: var(--surface-hover); }
-  .agent-row.selected { background: var(--accent-row); }
+  .rail-row:hover { background: var(--surface-hover); }
+  .rail-row.selected { background: var(--accent-row); border-color: var(--border); }
+  .rail-accent {
+    position: absolute; left: 0; top: 10px; bottom: 10px;
+    width: 3px; border-radius: 0 3px 3px 0;
+    background: transparent; transition: background .2s;
+  }
+  .rail-row .agent-ico { margin-top: 1px; }
+  .rail-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .rail-top { display: flex; align-items: center; gap: 7px; }
+  .rail-nm { font-weight: 600; font-size: 12.5px; line-height: 1.3; flex: 1; min-width: 0; }
+  .rail-dur {
+    font-size: 10.5px; color: var(--faint); flex-shrink: 0;
+    font-variant-numeric: tabular-nums; transition: color .2s;
+  }
+  .rail-sub {
+    font-size: 10.5px; color: var(--muted); line-height: 1.35;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* The bar is a block element on purpose: as an inline span (what this used
+     to be) width/height simply do not apply and the track renders empty. */
+  .rail-track {
+    display: block; height: 4px; margin-top: 3px;
+    background: var(--track); border-radius: 999px; overflow: hidden;
+  }
+  .rail-bar {
+    display: block; height: 100%; width: 0;
+    border-radius: 999px; background-color: var(--st-pending);
+    transition: width .45s cubic-bezier(.4, 0, .2, 1), background-color .2s;
+  }
+  .rail-row.is-passed  .rail-bar { background-color: var(--st-done); }
+  .rail-row.is-passed  .rail-dur { color: var(--st-done-text); }
+  .rail-row.is-running .rail-accent { background: var(--st-run); }
+  .rail-row.is-running .rail-bar {
+    background-color: var(--st-run);
+    background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, .5), transparent);
+    background-size: 50% 100%; background-repeat: no-repeat;
+    animation: shimmer 1.6s linear infinite;
+  }
+  .rail-row.is-running .rail-dur { color: var(--st-run-text); font-weight: 700; }
+  .rail-row.is-failed  .rail-bar { background-color: var(--st-fail); }
+  .rail-row.is-failed  .rail-dur { color: var(--st-fail-text); font-weight: 700; }
+  .rail-row.is-skipped { opacity: .55; }
+  /* Dimming must not swallow the selection cue when a skipped stage is opened. */
+  .rail-row.is-skipped.selected, .rail-row.is-skipped:hover { opacity: .85; }
+  .rail-row.is-skipped .rail-track {
+    height: 2px; margin-top: 4px; border-radius: 0; background: none;
+    background-image: repeating-linear-gradient(90deg, var(--st-skip) 0 4px, transparent 4px 8px);
+  }
+  @keyframes shimmer { 0% { background-position: -60% 0; } 100% { background-position: 160% 0; } }
+
+  /* Run total — closes the rail so the per-stage bars have a denominator */
+  .rail-total {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 8px; padding: 8px 10px 0;
+    border-top: 1px solid var(--border);
+    font-size: 10.5px; color: var(--faint);
+  }
+  .rail-total b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  /* Segmented run bar — at-a-glance progress, segment widths driven by real
+     stage durations rather than arbitrary equal columns. */
+  .runbar { display: flex; gap: 2px; margin-top: 10px; }
+  .runbar-seg {
+    height: 6px; min-width: 0; flex-basis: 0; flex-shrink: 1;
+    border-radius: 999px;
+    background: var(--track);
+    transition: flex-grow .45s cubic-bezier(.4, 0, .2, 1), background-color .25s;
+  }
+  .runbar-seg.is-passed  { background: var(--st-done); }
+  .runbar-seg.is-running { background: var(--st-run); animation: pulse 1.4s infinite; }
+  .runbar-seg.is-failed  { background: var(--st-fail); }
+  .runbar-seg.is-skipped {
+    background: none; opacity: .5;
+    background-image: repeating-linear-gradient(90deg, var(--st-skip) 0 3px, transparent 3px 6px);
+  }
+
   .agent-ico {
-    width: 26px; height: 26px; border-radius: 7px;
+    width: 28px; height: 28px; border-radius: 8px;
     display: grid; place-items: center; flex-shrink: 0;
   }
   .agent-ico.planner { background: var(--agent-planner-bg); color: var(--agent-planner-fg); }
@@ -330,55 +465,38 @@
   .agent-ico.tester  { background: var(--agent-tester-bg); color: var(--agent-tester-fg); }
   .agent-ico.reviewer{ background: var(--agent-reviewer-bg); color: var(--agent-reviewer-fg); }
   .agent-ico.handoff  { background: var(--agent-handoff-bg); color: var(--agent-handoff-fg); }
-  .agent-ico svg.ic { width: 13px; height: 13px; }
-  .agent-row .grow { flex: 1; min-width: 0; }
-  .agent-row .nm { font-weight: 600; font-size: 12.5px; line-height: 1.25; }
-  .agent-row .sub { font-size: 10.5px; color: var(--muted); line-height: 1.25; }
-  .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--neutral); flex-shrink: 0; }
-  .sdot.running { background: var(--green); animation: pulse 1.2s infinite; }
-  .sdot.passed  { background: var(--green); }
-  .sdot.failed, .sdot.blocked { background: var(--red); }
+  .agent-ico svg.ic { width: 14px; height: 14px; }
+  .sdot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-pending); flex-shrink: 0; transition: background .2s; }
+  .sdot.running { background: var(--st-run); animation: pulse 1.2s infinite; }
+  .sdot.passed  { background: var(--st-done); }
+  .sdot.failed, .sdot.blocked { background: var(--st-fail); }
+  .sdot.skipped { background: var(--st-skip); opacity: .45; }
   @keyframes pulse { 50% { opacity: .35; } }
 
-  .cycle-mini { font-size: 10.5px; color: var(--muted); padding: 0 8px 4px 43px; margin-top: -4px; }
-  .ext-history { font-size: 10.5px; color: var(--faint); margin: 2px 0 0 43px; }
-
-  /* ===== STEPPER ===== */
-  .stepper { display: flex; align-items: flex-start; padding: 6px 8px 4px; }
-  .step { display: flex; flex-direction: column; align-items: center; gap: 4px; position: relative; flex: 1; }
-  .step .circ {
-    width: 22px; height: 22px; border-radius: 50%;
-    border: 1.5px solid var(--neutral); color: var(--faint);
-    display: grid; place-items: center;
-    font-size: 10.5px; font-weight: 600;
-    background: var(--sidebar); z-index: 1;
-  }
-  .step .circ svg.ic { width: 11px; height: 11px; }
-  .step.done   .circ { background: var(--green); border-color: var(--green); color: var(--on-inverse); }
-  .step.active .circ { background: var(--inverse); border-color: var(--inverse); color: var(--on-inverse); }
-  .step.failed .circ { background: var(--red); border-color: var(--red); color: var(--on-inverse); }
-  .step .lbl { font-size: 9.5px; color: var(--faint); text-align: center; }
-  .step::before { content: ''; position: absolute; top: 11px; left: -50%; width: 100%; height: 1.5px; background: var(--neutral); }
-  .step:first-child::before { display: none; }
-  .step.done::before, .step.active::before { background: var(--green); }
-
   /* Task box */
-  .task-box { padding: 2px 8px 8px; }
-  .task-box .task-text { font-size: 12px; line-height: 1.5; }
-  .task-box .when { font-size: 10.5px; color: var(--faint); margin-top: 3px; }
+  .task-box { padding: 0 2px; }
+  .task-box .task-text {
+    font-size: 12.5px; line-height: 1.55;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .task-box .when { font-size: 10.5px; color: var(--faint); margin-top: 5px; }
 
   /* ===== MAIN ===== */
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
   /* Agent header */
   .agent-header {
-    display: flex; align-items: center; gap: 12px;
-    padding: 12px 20px;
+    padding: 12px 22px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
     background: var(--surface-muted);
   }
-  .agent-header .agent-ico { width: 30px; height: 30px; }
+  /* Inner wrapper keeps the header aligned with the centred reading column. */
+  .agent-header-inner {
+    display: flex; align-items: center; gap: 12px;
+    max-width: var(--content-w); margin: 0 auto; width: 100%;
+  }
+  .agent-header .agent-ico { width: 32px; height: 32px; }
   .agent-header .agent-ico svg.ic { width: 15px; height: 15px; }
   .agent-header .nm { font-weight: 700; font-size: 14px; line-height: 1.2; }
   .agent-header .sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
@@ -400,14 +518,17 @@
     display: inline-flex; align-items: center; gap: 5px;
   }
   .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-  .badge.running { background: var(--purple-bg); color: var(--purple-text); }
-  .badge.passed  { background: var(--green-bg); color: var(--green-text); }
-  .badge.failed, .badge.blocked { background: var(--red-bg); color: var(--red-text); }
+  .badge.running { background: var(--st-run-soft); color: var(--st-run-text); }
+  .badge.running::before { animation: pulse 1.2s infinite; }
+  .badge.passed  { background: var(--st-done-soft); color: var(--st-done-text); }
+  .badge.failed, .badge.blocked { background: var(--st-fail-soft); color: var(--st-fail-text); }
   .badge.pending { background: var(--surface-hover); color: var(--muted); }
   .badge.awaiting_host { background: var(--purple-bg); color: var(--purple-text); }
-  .badge.skipped { opacity: .55; }
-  .sdot.skipped { background: #9ca3af; opacity: .4; }
-  .step.skipped { opacity: .45; }
+  .badge.skipped {
+    background: none; color: var(--st-skip);
+    border: 1px dashed var(--st-skip); padding: 2px 9px;
+  }
+  .badge.skipped::before { background: none; border: 1px dashed currentColor; }
 
   /* Banners */
   #halt-banner {
@@ -466,17 +587,6 @@
   .meta-chip.effort-high b, .meta-chip.effort-xhigh b, .meta-chip.effort-max b { color: var(--orange); }
   .totals .partial { color: var(--amber-text); }
 
-  /* Stage timeline — where the wall-clock actually went */
-  .timeline { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 3px; }
-  .tl-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
-  .tl-name { width: 54px; color: var(--muted); flex-shrink: 0; }
-  .tl-track { flex: 1; height: 8px; background: var(--surface-hover); border-radius: 999px; overflow: hidden; }
-  .tl-bar { height: 100%; border-radius: 999px; background: var(--neutral); }
-  .tl-bar.passed { background: var(--green); }
-  .tl-bar.running { background: var(--orange); animation: pulse 1.4s infinite; }
-  .tl-bar.failed, .tl-bar.blocked { background: var(--red); }
-  .tl-dur { width: 46px; text-align: right; color: var(--faint); flex-shrink: 0; font-variant-numeric: tabular-nums; }
-
   /* Diff viewer — per-file, collapsible */
   .diff-file { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
   .diff-file > summary {
@@ -503,7 +613,7 @@
 
   /* Feed */
   .feed { flex: 1; overflow-y: auto; padding: 18px 22px 24px; }
-  .feed-inner { max-width: 760px; }
+  .feed-inner { max-width: var(--content-w); margin: 0 auto; }
 
   /* Feed virtualization helpers */
   /* content-visibility: auto lets browser skip paint/layout for off-screen blocks */
@@ -607,6 +717,7 @@
   }
   .composer {
     display: flex; gap: 6px; align-items: center;
+    max-width: var(--content-w); margin: 0 auto;
   }
   .composer-input-wrap {
     flex: 1; position: relative; min-width: 0;
@@ -725,6 +836,14 @@
 
   /* Divider in modal */
   .modal-divider { height: 1px; background: var(--border); margin: 16px 0 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+  }
 </style>
 <script>
 (function () {
@@ -732,6 +851,10 @@
   var pref = v === 'light' || v === 'dark' || v === 'system' ? v : 'system';
   var dark = pref === 'system' ? window.matchMedia('(prefers-color-scheme: dark)').matches : pref === 'dark';
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  // Restore the sidebar width before first paint so a resized sidebar does not
+  // flash at its default width on every load.
+  var w = Number(localStorage.getItem('orchestrator-sidebar-w'));
+  if (w >= 240 && w <= 420) document.documentElement.style.setProperty('--sidebar-w', w + 'px');
 })();
 </script>
 </head>
@@ -755,6 +878,7 @@
       </div>
       <div class="spacer"></div>
       <span class="totals" id="totals"></span>
+      <span class="pill update" id="update-pill" hidden></span>
       <span class="pill" id="active-pill">idle</span>
     </div>
 
@@ -780,36 +904,30 @@
             <div class="proj-icon" id="project-picker-icon"></div>
             <select id="project-select" title="Active project"></select>
           </div>
+          <div class="side-note" id="engine-note" hidden></div>
         </div>
 
-        <!-- 2. Current task: what the pipeline is working on -->
+        <!-- 2. Current task: what the pipeline is working on, plus a segmented
+             run bar whose segment widths come from real stage durations -->
         <div class="side-section">
           <div class="side-heading">Current task</div>
           <div class="task-box">
             <div class="task-text" id="task-text">No pipeline run yet. Use <strong>New run</strong> below or <code style="font-size:10.5px">/orchestrate</code></div>
             <div class="when" id="task-when"></div>
           </div>
+          <div class="runbar" id="runbar" role="img" aria-label="Pipeline progress"></div>
         </div>
 
-        <!-- 3. Agents: click to inspect each stage -->
+        <!-- 3. Pipeline rail: identity, state and wall-clock share per stage.
+             Click a row to inspect that agent. -->
         <div class="side-section">
-          <div class="side-heading">Agents</div>
-          <div id="agent-list"></div>
-        </div>
-
-        <!-- 4. Pipeline progress stepper -->
-        <div class="side-section">
-          <div class="side-heading">Progress</div>
-          <div class="stepper" id="stepper"></div>
-        </div>
-
-        <!-- 5. Where the wall-clock went -->
-        <div class="side-section" id="timeline-section" style="display:none">
-          <div class="side-heading">Stage timings</div>
-          <div class="timeline" id="timeline"></div>
+          <div class="side-heading">Pipeline</div>
+          <div class="rail" id="rail"></div>
+          <div class="rail-total" id="rail-total" style="display:none"></div>
         </div>
 
       </div>
+      <div class="resize-handle" id="resize-handle" title="Drag to resize · double-click to reset"></div>
 
       <!-- Pinned footer: run controls (aligned with composer below main) -->
       <div class="sidebar-footer">
@@ -1146,6 +1264,32 @@ function renderDiff(patch) {
 }
 
 function stageOf(name) { return state?.status?.stages?.find((s) => s.name === name); }
+
+// One vocabulary for stage state, shared by the rail, the run bar, the dots and
+// the header badge — they used to each invent their own colour for "running".
+function stateClass(status) {
+  if (status === 'passed') return 'passed';
+  if (status === 'running') return 'running';
+  if (status === 'failed' || status === 'blocked') return 'failed';
+  if (status === 'skipped') return 'skipped';
+  return 'pending';
+}
+// When a stage's clock stops. A stage with no endedAt is only still counting if
+// the RUN is still going: a stage parked at a chat handoff has no end timestamp
+// either, and measuring it to now would report how long the human was away —
+// which is how a single stage ended up longer than the whole run.
+function stageEnd(st) {
+  if (st?.endedAt) return st.endedAt;
+  const s = state?.status;
+  if (s && s.overall !== 'running') return s.endedAt || null;
+  return null;
+}
+// Wall-clock seconds for a stage; a live stage is measured up to now.
+function stageSeconds(st) {
+  if (!st?.startedAt) return 0;
+  const end = stageEnd(st);
+  return Math.max(1, Math.floor(((end ? new Date(end) : new Date()) - new Date(st.startedAt)) / 1000));
+}
 function activeAgent() {
   if (selected) return selected;
   const running = state?.status?.stages?.find((s) => s.status === 'running');
@@ -1161,7 +1305,10 @@ function agoText(iso) {
 function fmtDur(a, b) {
   if (!a) return '';
   const s = Math.floor(((b ? new Date(b) : new Date()) - new Date(a)) / 1000);
-  return s < 60 ? s + 's' : `${Math.floor(s / 60)}m ${s % 60}s`;
+  if (s < 60) return s + 's';
+  // Roll over into hours: a long run used to render as "51869m 40s".
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
 const RUNNER_LABELS = {
@@ -1218,58 +1365,141 @@ function renderRuntimeStrip() {
 
 function agentIco(name) {
   const m = AGENTS[name];
-  return `<div class="agent-ico ${name}">${ICONS[m.icon]}</div>`;
+  // A span, not a div: these render inside <button> rail rows, where only
+  // phrasing content is valid.
+  return `<span class="agent-ico ${name}">${ICONS[m.icon]}</span>`;
+}
+
+// The secondary line of a rail row: the agent's role plus whatever loop state
+// that particular stage carries (coder fix cycles, reviewer fix passes).
+function railSubText(name, st) {
+  const bits = [AGENTS[name].sub];
+  if (name === 'coder' && st.cycle > 0) {
+    bits.push(`fix cycle ${st.cycle}/${st.maxCycles || '?'}`);
+    if (st.checks) bits.push(`${st.checks.passedCount ?? '?'}✓${st.checks.failedCount ? ' ' + st.checks.failedCount + '✗' : ''}`);
+    const exts = state?.status?.extensions;
+    if (exts?.length) bits.push(`extended ${exts.length}× (+${exts.reduce((a, e) => a + e.addedCycles, 0)})`);
+  }
+  if (name === 'reviewer') {
+    const rp = state?.status?.reviewPass || 0;
+    if (rp > 0) bits.push(`fix pass ${rp}/${state?.status?.limits?.reviewMax || '?'}`);
+  }
+  return bits.join(' · ');
+}
+
+// The pipeline rail: every stage, always, with its state and its share of the
+// run's wall-clock. Stages never appear or disappear, so nothing shifts as the
+// run advances.
+function renderRail() {
+  const rail = document.getElementById('rail');
+  const totalEl = document.getElementById('rail-total');
+  const cur = activeAgent();
+  const running = runningStageName();
+
+  const secs = {};
+  let sum = 0, max = 0;
+  for (const name of ORDER) {
+    const s = stageSeconds(stageOf(name));
+    secs[name] = s; sum += s;
+    if (s > max) max = s;
+  }
+
+  rail.innerHTML = '';
+  for (const name of ORDER) {
+    const st = stageOf(name) || { status: 'pending' };
+    const cls = stateClass(st.status);
+    const s = secs[name];
+    const pct = max && s ? Math.max(4, Math.round((s / max) * 100)) : 0;
+    const share = sum && s ? Math.round((s / sum) * 100) : 0;
+    const dur = cls === 'skipped' ? 'skipped' : (s ? fmtDur(st.startedAt, stageEnd(st)) : '');
+
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `rail-row is-${cls}` + (cur === name ? ' selected' : '');
+    if (running === name) row.setAttribute('aria-current', 'step');
+    row.title = s
+      ? `${cap(name)} — ${fmtDur(st.startedAt, stageEnd(st))} · ${share}% of run`
+      : `${cap(name)} — ${cls === 'skipped' ? 'skipped (stage not enabled)' : 'not started'}`;
+    row.innerHTML = `<span class="rail-accent"></span>${agentIco(name)}` +
+      `<span class="rail-main">` +
+        `<span class="rail-top">` +
+          `<span class="rail-nm">${cap(name)}</span>` +
+          `<span class="sdot ${esc(st.status)}"></span>` +
+          `<span class="rail-dur">${esc(dur)}</span>` +
+        `</span>` +
+        `<span class="rail-sub">${esc(railSubText(name, st))}</span>` +
+        `<span class="rail-track"><span class="rail-bar" style="width:${pct}%"></span></span>` +
+      `</span>`;
+    row.onclick = () => { switchAgent(name); };
+    rail.appendChild(row);
+  }
+
+  // Run wall-clock, not the sum of stages: it also covers the orchestration
+  // time between them, which is what "how long has this taken" really means.
+  const total = fmtDur(state?.status?.startedAt, state?.status?.endedAt);
+  if (sum > 0 && total) {
+    totalEl.style.display = '';
+    totalEl.innerHTML = `<span>Total run</span><b>${esc(total)}</b>`;
+  } else {
+    totalEl.style.display = 'none';
+  }
+}
+
+// Segmented progress bar: one segment per stage, width proportional to its
+// share of the elapsed time, so the spacing carries information.
+function renderRunBar() {
+  const el = document.getElementById('runbar');
+  if (!state?.status) { el.innerHTML = ''; return; }
+  const secs = ORDER.map((n) => stageSeconds(stageOf(n)));
+  const sum = secs.reduce((a, b) => a + b, 0);
+  el.innerHTML = ORDER.map((name, i) => {
+    const st = stageOf(name) || { status: 'pending' };
+    const cls = stateClass(st.status);
+    // Floor the growth so a fast stage stays visible next to a long one.
+    const grow = sum && secs[i] ? Math.max(0.5, (secs[i] / sum) * ORDER.length) : 0.5;
+    const label = secs[i] ? `${STEP_LABELS[name]} — ${fmtDur(st.startedAt, stageEnd(st))}` : `${STEP_LABELS[name]} — ${cls}`;
+    return `<span class="runbar-seg is-${cls}" style="flex-grow:${grow.toFixed(2)}" title="${esc(label)}"></span>`;
+  }).join('');
+}
+
+// Which engine drives this project's runs, and whether its scaffold is stale.
+// Both matter because every project holds its own copy of the orchestrator.
+function renderEngineNote() {
+  const note = document.getElementById('engine-note');
+  const eng = state?.engine;
+  if (!eng) { note.hidden = true; return; }
+  const short = (sha) => (sha ? sha.slice(0, 7) : '—');
+  if (eng.source === 'host') {
+    note.hidden = false;
+    note.textContent = 'No pipeline/ in this project — runs use the dashboard’s own engine.';
+    note.title = 'Run bootstrap.sh in this project to install its own scaffold.';
+  } else if (eng.mismatch) {
+    note.hidden = false;
+    note.textContent = 'Engine differs from the dashboard’s.';
+    note.title = `Project ${short(eng.projectCommit)} · dashboard ${short(eng.hostCommit)}`;
+  } else {
+    note.hidden = true;
+  }
+}
+
+function renderUpdatePill() {
+  const pill = document.getElementById('update-pill');
+  const install = state?.install;
+  if (!install?.updateAvailable) { pill.hidden = true; return; }
+  pill.hidden = false;
+  pill.textContent = 'update available';
+  pill.title = `Installed ${install.commit ? install.commit.slice(0, 7) : '?'}, upstream ${install.latestCommit ? install.latestCommit.slice(0, 7) : '?'}.\n`
+    + 'Applied automatically on the next run, or now with: bash .agents/skills/orchestrate/scripts/bootstrap.sh --update';
 }
 
 function renderSidebar() {
-  const list = document.getElementById('agent-list');
-  const cur = activeAgent();
-  list.innerHTML = '';
-  for (const name of ORDER) {
-    const st = stageOf(name) || { status: 'pending' };
-    const row = document.createElement('div');
-    row.className = 'agent-row' + (cur === name ? ' selected' : '');
-    row.innerHTML = `${agentIco(name)}<div class="grow"><div class="nm">${cap(name)}</div><div class="sub">${AGENTS[name].sub}</div></div><div class="sdot ${st.status}"></div>`;
-    row.onclick = () => { switchAgent(name); };
-    list.appendChild(row);
-    if (name === 'coder' && st.cycle > 0) {
-      const mini = document.createElement('div');
-      mini.className = 'cycle-mini';
-      mini.textContent = `fix cycle ${st.cycle}/${st.maxCycles || '?'}` +
-        (st.checks ? ` · ${st.checks.passedCount ?? '?'}✓${st.checks.failedCount ? ' ' + st.checks.failedCount + '✗' : ''}` : '');
-      list.appendChild(mini);
-      const exts = state?.status?.extensions;
-      if (exts?.length) {
-        const line = document.createElement('div');
-        line.className = 'ext-history';
-        line.textContent = `extended ${exts.length}× (+${exts.reduce((a, e) => a + e.addedCycles, 0)} cycles total)`;
-        list.appendChild(line);
-      }
-    }
-    if (name === 'reviewer') {
-      const rp = state?.status?.reviewPass || 0;
-      if (rp > 0) {
-        const mini = document.createElement('div');
-        mini.className = 'cycle-mini';
-        mini.textContent = `fix pass ${rp}/${state?.status?.limits?.reviewMax || '?'}`;
-        list.appendChild(mini);
-      }
-    }
-  }
-
-  const stepper = document.getElementById('stepper');
-  stepper.innerHTML = '';
-  ORDER.forEach((name, i) => {
-    const st = stageOf(name) || { status: 'pending' };
-    const cls = st.status === 'passed' ? 'done' : st.status === 'running' ? 'active' : (st.status === 'failed' || st.status === 'blocked') ? 'failed' : st.status === 'skipped' ? 'skipped' : '';
-    const div = document.createElement('div');
-    div.className = 'step ' + cls;
-    div.innerHTML = `<div class="circ">${st.status === 'passed' ? ICONS.check : i + 1}</div><div class="lbl">${STEP_LABELS[name]}</div>`;
-    stepper.appendChild(div);
-  });
-
+  renderEngineNote();
+  renderRunBar();
+  renderRail();
   if (state?.status) {
-    document.getElementById('task-text').textContent = state.status.task;
+    const taskEl = document.getElementById('task-text');
+    taskEl.textContent = state.status.task;
+    taskEl.title = state.status.task;
     document.getElementById('task-when').textContent = agoText(state.status.startedAt);
   }
 }
@@ -1280,6 +1510,7 @@ function renderTop() {
   const cancelBtn = document.getElementById('cancel-btn');
   const s = state?.status;
   cancelBtn.style.display = state?.canCancel ? '' : 'none';
+  renderUpdatePill();
   if (!s) { pill.textContent = 'idle'; pill.className = 'pill'; totals.textContent = ''; renderRuntimeStrip(); return; }
 
   const parts = [];
@@ -1356,33 +1587,13 @@ function stageMetaHtml(name) {
   const effort = st.effort || state?.status?.models?.effort?.[name];
   if (effort) chips.push(`<span class="meta-chip effort-${esc(effort)}">effort <b>${esc(effort)}</b></span>`);
   if (st.startedAt) {
-    const dur = fmtDur(st.startedAt, st.endedAt);
+    const dur = fmtDur(st.startedAt, stageEnd(st));
     if (dur) chips.push(`<span class="meta-chip">took <b>${esc(dur)}</b></span>`);
   }
   if (st.checks && typeof st.checks.passedCount === 'number') {
     chips.push(`<span class="meta-chip">checks <b>${st.checks.passedCount}\u2009/\u2009${st.checks.passedCount + st.checks.failedCount}</b></span>`);
   }
   return chips.length ? `<div class="stage-meta">${chips.join('')}</div>` : '';
-}
-
-// Relative wall-clock per stage. Answers "which stage is burning the run?",
-// which the per-stage header alone could never show.
-function renderTimeline() {
-  const section = document.getElementById('timeline-section');
-  const el = document.getElementById('timeline');
-  const stages = (state?.status?.stages || []).filter((st) => st.startedAt);
-  if (!stages.length) { section.style.display = 'none'; return; }
-  section.style.display = '';
-  const secs = stages.map((st) => Math.max(1, Math.floor(((st.endedAt ? new Date(st.endedAt) : new Date()) - new Date(st.startedAt)) / 1000)));
-  const max = Math.max(...secs);
-  el.innerHTML = stages.map((st, i) => {
-    const pct = Math.max(3, Math.round((secs[i] / max) * 100));
-    return `<div class="tl-row" title="${esc(st.name)}: ${fmtDur(st.startedAt, st.endedAt)}">
-      <span class="tl-name">${esc(STEP_LABELS[st.name] || st.name)}</span>
-      <span class="tl-track"><span class="tl-bar ${esc(st.status)}" style="width:${pct}%"></span></span>
-      <span class="tl-dur">${esc(fmtDur(st.startedAt, st.endedAt))}</span>
-    </div>`;
-  }).join('');
 }
 
 function renderHeader() {
@@ -1395,12 +1606,13 @@ function renderHeader() {
     ? `<div class="runtime-line"><span class="lbl">Agent</span> <strong class="runner-strong">${esc(formatRunner(runner))}</strong>${stageModel ? ` · <span class="lbl">Model</span> <strong class="model-strong">${isPendingOrRunningInHost ? `determined by chat <span style="opacity: 0.7; font-weight: normal;">(suggested: ${esc(stageModel)})</span>` : esc(stageModel)}</strong>` : ''}</div>`
     : '';
   const modelBadge = stageModel ? `<span class="model-badge">${isPendingOrRunningInHost ? 'chat window' : esc(stageModel)}</span>` : '';
-  document.getElementById('agent-header').innerHTML = `
+  document.getElementById('agent-header').innerHTML = `<div class="agent-header-inner">
     ${agentIco(name)}
     <div><div class="nm">${cap(name)} Agent</div><div class="sub">${AGENTS[name].desc}</div>${runtimeLine}${stageMetaHtml(name)}</div>
     <div class="spacer"></div>
     ${modelBadge}
-    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? `Awaiting ${formatRunner(state?.status?.runner)}` : cap(st.status)}</span>`;
+    <span class="badge ${st.status}">${st.status === 'passed' ? 'Completed' : st.status === 'awaiting_host' ? `Awaiting ${formatRunner(state?.status?.runner)}` : cap(st.status)}</span>
+  </div>`;
 
   const banner = document.getElementById('halt-banner');
   const s = state?.status;
@@ -1652,7 +1864,7 @@ function renderRunSelect() {
   sel.value = prev;
 }
 
-function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderTimeline(); renderFeed(); }
+function renderAll() { renderTop(); renderSidebar(); renderHeader(); renderFeed(); }
 
 // Reset feed window when switching agents manually
 function switchAgent(name) {
@@ -1963,7 +2175,11 @@ async function fetchProjects() {
     const r = await fetch('/api/projects');
     const data = await r.json();
     const select = document.getElementById('project-select');
-    const prevSelected = select.value || currentProject;
+    // currentProject is the truth, not the widget: a project registers only when
+    // it is first requested, so the initial fetch can complete before it exists
+    // in the list, leaving the picker naming a different project than the one on
+    // screen for the rest of the session.
+    const prevSelected = currentProject || select.value;
     select.innerHTML = '';
     const list = data.projects || [];
     if (list.length === 0) {
@@ -2012,6 +2228,46 @@ async function startApp() {
   };
   setInterval(fetchProjects, 10000);
 }
+
+// ---- sidebar resize ----
+// Width lives on documentElement as --sidebar-w, so the topbar brand zone
+// (min-width: var(--sidebar-w)) stays aligned for free.
+(function initSidebarResize() {
+  const MIN = 240, MAX = 420;
+  const handle = document.getElementById('resize-handle');
+  const sidebar = document.querySelector('.sidebar');
+  const apply = (w) => document.documentElement.style.setProperty('--sidebar-w', w + 'px');
+  let dragging = false;
+
+  handle.addEventListener('pointerdown', (e) => {
+    dragging = true;
+    handle.classList.add('dragging');
+    document.body.classList.add('resizing');
+    e.preventDefault();
+  });
+  // Tracked on window, not on the handle: the pointer routinely leaves a 5px
+  // strip mid-drag, and relying on pointer capture alone would drop those moves.
+  window.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const left = sidebar.getBoundingClientRect().left;
+    apply(Math.round(Math.min(MAX, Math.max(MIN, e.clientX - left))));
+  });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    handle.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    const w = parseInt(document.documentElement.style.getPropertyValue('--sidebar-w'), 10);
+    if (w) localStorage.setItem('orchestrator-sidebar-w', String(w));
+  };
+  window.addEventListener('pointerup', end);
+  window.addEventListener('pointercancel', end);
+  // Double-click resets: drop the inline override and fall back to :root.
+  handle.addEventListener('dblclick', () => {
+    document.documentElement.style.removeProperty('--sidebar-w');
+    localStorage.removeItem('orchestrator-sidebar-w');
+  });
+})();
 
 startApp();
 setInterval(() => { if (!currentRun) fetchState(); }, 3000);

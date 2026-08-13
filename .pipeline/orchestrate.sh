@@ -85,6 +85,32 @@ if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
   rm -f "$PIPELINE_DIR/.lock"
 fi
 
+# ---- Auto-update -----------------------------------------------------------
+# Every consumer holds a *copy* of the scaffold, so without this a project stays
+# frozen at its install-day version forever. Only NEW runs update: --continue
+# and --resume pick up a checkpoint written by the engine that is installed
+# right now, and swapping the engine underneath them risks reading that
+# checkpoint differently. Failures here are never fatal — an update problem must
+# not cost the user their run.
+AUTO_UPDATE=1
+[ "$RESUME" -eq 1 ] && AUTO_UPDATE=0
+[ "$CONTINUE" -eq 1 ] && AUTO_UPDATE=0
+[ "${ORCH_NO_AUTO_UPDATE:-}" = "1" ] && AUTO_UPDATE=0
+[ -f "$PIPELINE_DIR/.lock" ] && AUTO_UPDATE=0
+if [ "$AUTO_UPDATE" -eq 1 ]; then
+  AUTO_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).autoUpdate===false?0:1)}catch{console.log(1)}")"
+fi
+
+if [ "$AUTO_UPDATE" = "1" ] && [ -f "$REPO_ROOT/pipeline/installer.mjs" ]; then
+  CHECK_JSON="$("$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" --check --repo "$REPO_ROOT" 2>/dev/null || true)"
+  HAS_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).updateAvailable?1:0)}catch{console.log(0)}" "$CHECK_JSON")"
+  if [ "$HAS_UPDATE" = "1" ]; then
+    echo "[orchestrate] Scaffold update available — applying before this run (disable with ORCH_NO_AUTO_UPDATE=1 or \"autoUpdate\": false in .pipeline/config.json)."
+    "$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" --self-update --repo "$REPO_ROOT" \
+      || echo "[orchestrate] Warning: update failed — continuing with the installed version." >&2
+  fi
+fi
+
 # Find a dashboard for THIS repo: reuse any healthy pipeline-ui server on ports.
 UI_PORT="$BASE_PORT"
 if [ "$NO_UI" -eq 1 ]; then

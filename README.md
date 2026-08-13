@@ -20,6 +20,7 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
 - [What gets added to your repo](#what-gets-added-to-your-repo)
+- [Updating the scaffold](#updating-the-scaffold)
 - [Dashboard walkthrough](#dashboard-walkthrough)
 - [Chat mode vs CLI mode](#chat-mode-vs-cli-mode)
 - [The pipeline stages](#the-pipeline-stages)
@@ -181,6 +182,7 @@ After install + bootstrap, your **existing** project gains:
 | `.agents/workflows/orchestrate.md`      | Antigravity workflow — registers `/orchestrate`                                       |
 | `.agent/rules/orchestrate.md`           | Antigravity always-on rule (chat-mode mandate)                                        |
 | `.pipeline/`                            | Config, prompts, entrypoint (`orchestrate.sh`), run artifacts (gitignored at runtime) |
+| `.pipeline/install.json`                | Installed version + file manifest — commit it; drives safe updates                     |
 | `pipeline/`                             | Orchestrator, checker, dashboard server (committed scaffold)                          |
 | `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` | Agent rules (bootstrapped if missing)                                                 |
 | `.cursorrules`                          | Cursor always-on rulebook (bootstrapped if missing)                                   |
@@ -189,7 +191,31 @@ After install + bootstrap, your **existing** project gains:
 
 Your application code, dependencies, and structure stay as they are. The pipeline runs **your** `test` / `lint` / `typecheck` commands from `.pipeline/config.json` against **your** codebase.
 
-To update the skill later: `npx skills update orchestrate`. To refresh the scaffold from upstream, re-run the bootstrap script (backs up nothing — only run on a fresh install or when you intend to overwrite `.pipeline/` and `pipeline/`).
+To update the skill later: `npx skills update orchestrate`. The scaffold keeps itself current — see [Updating the scaffold](#updating-the-scaffold).
+
+## Updating the scaffold
+
+Every project holds its own **copy** of `pipeline/` and `.pipeline/`, so the copies have to be reconciled with upstream. `.pipeline/install.json` records the commit installed and a sha256 of every file delivered, which is what makes a safe update possible.
+
+**Automatic.** Before each *new* run, `orchestrate.sh` checks upstream (at most once a day, cached in `.pipeline/update-check.json`) and applies any update it finds. It never runs on `--continue` or `--resume` — those resume from a checkpoint written by the engine installed right now — never while `.pipeline/.lock` is held, and never fails your run if the update fails.
+
+**Manual.**
+
+```bash
+bash .agents/skills/orchestrate/scripts/bootstrap.sh --update
+```
+
+**What an update may touch:**
+
+| | Behaviour |
+| --- | --- |
+| `pipeline/**`, `.pipeline/orchestrate.sh`, `spawn.sh`, `skill.json` | always overwritten — engine code, not meant to be hand-edited |
+| `.pipeline/prompts/*.txt`, skill/rule/workflow docs, `.cursorrules` | overwritten only if untouched since install; if you edited one it is **kept** and the new version lands beside it as `<file>.new` |
+| `.pipeline/config.json`, run state, `runs/`, `followups/`, `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`, `package.json` | never touched |
+
+New config keys need no migration — `loadConfig` merges defaults, so your `.pipeline/config.json` only has to hold what you actually changed.
+
+Pass `--force` to overwrite edited prompts and docs too. Disable auto-update with `ORCH_NO_AUTO_UPDATE=1` or `"autoUpdate": false` in `.pipeline/config.json`.
 
 ## Dashboard walkthrough
 
@@ -515,6 +541,8 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
   "designStage": false, // run the optional Designer stage (see --design)
   "handoffStage": false, // run the optional Handoff stage (see --handoff)
+  "autoUpdate": true,   // refresh the scaffold from upstream before a new run
+                        // (see "Updating the scaffold"; ORCH_NO_AUTO_UPDATE=1 also disables it)
   "customRunners": {
     // optional: wire up any CLI-shaped agent
     "my-agent": {
@@ -567,7 +595,11 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 
 ## Multiple repos on one machine
 
-Each repository gets its own dashboard. `orchestrate.sh` probes `/healthz` (which reports which `repoRoot` it's serving): a server already serving _this_ repo is reused, a server serving a _different_ repo is skipped, and the next free port (`uiPort` up to `uiPort + 20`) is used instead. You'll never accidentally watch repo B's pipeline from repo A's terminal.
+**One dashboard serves every repo.** `orchestrate.sh` probes `/healthz` across `uiPort … uiPort + 20`; the first healthy `pipeline-ui` it finds is reused, and the repo registers itself with it via `POST /api/register`. Only if no server is running does it start one. Each project keeps its own state, run history, artifacts and SSE stream — `?project=<repoRoot>` scopes every endpoint — and you switch between them with the Workspace picker. The dashboard URL written to `.pipeline/ui.url` already carries the right `?project=`.
+
+**Runs use the target project's own engine.** A run started from the sidebar spawns `<that project>/pipeline/orchestrator.mjs`, the same file its CLI entrypoint would run, so a run behaves identically whichever way it was started. If a registered project has no `pipeline/` of its own, the dashboard falls back to its own engine and says so under the Workspace picker.
+
+Two things to know about the registry: it lives in memory, so restarting the server forgets every project until each one runs again (or you open its `.pipeline/ui.url`); and there is no combined view — you look at one project at a time.
 
 Concurrent runs **within** the same repo are intentionally blocked by the mutex lock — the dashboard always reflects exactly one active (or most-recently-halted) run at a time, with history for the rest.
 

@@ -31,7 +31,20 @@ bash .agents/skills/orchestrate/scripts/bootstrap.sh
 bash skills/orchestrate/scripts/bootstrap.sh
 ```
 
-Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the GitHub repo.
+Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the GitHub repo, then records
+`.pipeline/install.json` (installed commit + a hash of every delivered file).
+
+## Update an installed scaffold
+
+```bash
+bash .agents/skills/orchestrate/scripts/bootstrap.sh --update   # engine always; prompts/docs only if untouched
+bash .agents/skills/orchestrate/scripts/bootstrap.sh --force    # also overwrite edited prompts/docs
+```
+
+`orchestrate.sh` also applies pending updates automatically before a new run (never on `--continue` /
+`--resume`, never while `.pipeline/.lock` is held). Disable with `ORCH_NO_AUTO_UPDATE=1` or
+`"autoUpdate": false` in `.pipeline/config.json`. An edited prompt is never overwritten — the new
+version is written beside it as `<file>.new`. `.pipeline/config.json` and run state are never touched.
 
 ## Direct CLI
 

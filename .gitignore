@@ -18,6 +18,9 @@
 .pipeline/followups/
 .pipeline/diff.patch
 .pipeline/runs/
+# Update-check cache — ephemeral. .pipeline/install.json IS committed: it pins
+# the installed version and is what makes a safe update possible.
+.pipeline/update-check.json
 
 # Sandbox worktree
 .pipeline_sandbox/

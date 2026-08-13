@@ -13,7 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { CONTROL_PLANE_FILES } from './adapters.mjs';
 import { STAGE_ARTIFACT_FILES } from './state.mjs';
 
-function hashFile(file) {
+export function hashFile(file) {
   try {
     return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   } catch {

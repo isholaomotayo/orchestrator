@@ -41,10 +41,24 @@ function startUi() {
   fs.writeFileSync(pidFile, String(child.pid));
 }
 
+// A dashboard on this port may belong to a DIFFERENT project — one server
+// serves many repos, and our own spawn dies with EADDRINUSE while /healthz keeps
+// answering. Without checking repoRoot the capture silently screenshots someone
+// else's dashboard and overwrites the committed PNGs with it.
 async function waitForServer() {
   for (let i = 0; i < 40; i++) {
     const res = spawnSync('curl', ['-sf', `${url}/healthz`], { encoding: 'utf8' });
-    if (res.status === 0) return;
+    if (res.status === 0) {
+      let health = {};
+      try { health = JSON.parse(res.stdout); } catch {}
+      if (health.repoRoot && path.resolve(health.repoRoot) !== repoRoot) {
+        throw new Error(
+          `Port ${port} is serving a different project (${health.repoRoot}).\n` +
+          `Re-run on a free port, e.g. PIPELINE_UI_PORT=4650 npm run screenshots`
+        );
+      }
+      return;
+    }
     await new Promise((r) => setTimeout(r, 150));
   }
   throw new Error(`Dashboard not reachable at ${url}`);

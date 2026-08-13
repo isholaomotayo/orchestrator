@@ -9,12 +9,13 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pipelinePaths, loadConfig, pidAlive, readLock, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, loadConfig, pidAlive, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, EFFORT_LEVELS, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
 import { isOrchestratorSourceRepo } from './self-guard.mjs';
+import { resolveEngineEntry, readInstall, readCheck, gitHead, packageVersion } from './installer.mjs';
 
 // Dashboard-initiated runs must honor the same self-targeting guard as the CLI
 // entrypoints (the spawned engine would refuse anyway — this returns a friendly
@@ -27,6 +28,23 @@ function selfGuardError(project) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// One dashboard serves many projects, so "which engine runs this?" is a real
+// question. Prefer the target project's own orchestrator.mjs — that is what its
+// CLI entrypoint uses, and a run should not behave differently just because it
+// was started from the sidebar.
+function orchestratorEntry(project) {
+  const resolved = resolveEngineEntry({ repoRoot: project.repoRoot, hostDir: __dirname });
+  if (resolved.source === 'host' && !project.warnedHostEngine) {
+    project.warnedHostEngine = true;
+    console.warn(`[UI] ${project.repoRoot} has no pipeline/orchestrator.mjs — falling back to this server's engine.`);
+  }
+  return resolved.entry;
+}
+
+// The host's own identity, resolved once, for comparison against each project's.
+const HOST_ENGINE = { version: packageVersion(path.dirname(__dirname)), commit: gitHead(__dirname) };
+
 const defaultRepoRoot = path.resolve(process.cwd());
 const defaultPaths = pipelinePaths(defaultRepoRoot);
 const defaultConfig = loadConfig(defaultPaths);
@@ -170,11 +188,40 @@ function orchestratorAlive(project) {
   return !!(lock && pidAlive(lock.pid));
 }
 
+// Which engine this project's runs use, and whether its scaffold is behind
+// upstream. Both are read from disk each time — they are two small JSON files,
+// and a stale answer here would be worse than the read.
+function engineInfo(project) {
+  const installed = readInstall(project.repoRoot);
+  const check = readCheck(project.repoRoot);
+  const source = resolveEngineEntry({ repoRoot: project.repoRoot, hostDir: __dirname }).source;
+  const latest = check?.latestCommit || null;
+  return {
+    engine: {
+      source,
+      projectCommit: installed?.commit || null,
+      hostCommit: HOST_ENGINE.commit,
+      // Commits are not orderable from here, so this says "differs" — never "older".
+      mismatch: !!(installed?.commit && HOST_ENGINE.commit && installed.commit !== HOST_ENGINE.commit),
+    },
+    install: installed && {
+      version: installed.version || null,
+      commit: installed.commit || null,
+      updatedAt: installed.updatedAt || null,
+      latestCommit: latest,
+      updateAvailable: !!(installed.commit && latest && installed.commit !== latest),
+    },
+  };
+}
+
 function readState(project, runId) {
   const dir = runDir(project, runId);
   if (!dir) return { error: 'unknown run' };
   let status = null;
   try { status = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8')); } catch {}
+  // Backfill stages a legacy (4-stage) status.json never wrote, so the dashboard
+  // can tell "optional stage never ran" (skipped) from "not started yet" (pending).
+  if (status) ensureStageEntries(status);
   const live = dir === project.paths.dir;
   const stale = live && status?.overall === 'running' && !orchestratorAlive(project);
   const artifacts = ARTIFACTS.filter((n) => {
@@ -208,6 +255,7 @@ function readState(project, runId) {
     canApprovePlan,
     canContinue: idle && status?.overall === 'awaiting_chat',
     stageReady,
+    ...engineInfo(project),
     runners: [...RUNNERS, ...Object.keys(project.config.customRunners || {})],
     defaults: {
       maxCoderCycles: project.config.maxCoderCycles,
@@ -271,7 +319,7 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
       }
     }
   }
-  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--task', task.trim(), '--model-profile', profile];
+  const nodeArgs = [orchestratorEntry(project), '--task', task.trim(), '--model-profile', profile];
   if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
@@ -306,7 +354,7 @@ function extendRun(project, { extend, runner }) {
   if (status.overall !== 'halted' || status.haltReason !== 'MAX_CYCLES') {
     return { error: `cannot extend: last halt reason was "${status.haltReason || status.overall}", not MAX_CYCLES`, code: 409 };
   }
-  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume', '--extend', String(n)];
+  const nodeArgs = [orchestratorEntry(project), '--resume', '--extend', String(n)];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
@@ -329,7 +377,7 @@ function resumeInterruptedRunUi(project, { runner }) {
   if (!isInterrupted && !stale) {
     return { error: `cannot resume: run is not interrupted or stale (overall=${status.overall}, haltReason=${status.haltReason})`, code: 409 };
   }
-  const nodeArgs = [path.join(__dirname, 'orchestrator.mjs'), '--resume'];
+  const nodeArgs = [orchestratorEntry(project), '--resume'];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
@@ -367,7 +415,7 @@ function continueRun(project, { approve = false } = {}) {
     return { error: `cannot continue: run is "${status.overall}", not awaiting a handoff or approval`, code: 409 };
   }
 
-  const child = spawnOrchestrator(project, [path.join(__dirname, 'orchestrator.mjs'), '--continue'], { append: true });
+  const child = spawnOrchestrator(project, [orchestratorEntry(project), '--continue'], { append: true });
   return { ok: true, pid: child.pid, continued: status.overall };
 }
 
