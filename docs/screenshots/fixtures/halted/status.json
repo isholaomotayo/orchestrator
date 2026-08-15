@@ -11,10 +11,10 @@
     "selection": "auto",
     "runner": "claude",
     "stages": {
-      "planner": "opus-4",
-      "coder": "sonnet-4",
-      "tester": "sonnet-4",
-      "reviewer": "opus-4"
+      "planner": "opus-5",
+      "coder": "sonnet-5",
+      "tester": "sonnet-5",
+      "reviewer": "opus-5"
     }
   },
   "sandbox": false,

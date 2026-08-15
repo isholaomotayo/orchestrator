@@ -1,6 +1,6 @@
 # Gemini CLI Instructions
 
-This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → Coder self-healing loop → Tester → Reviewer, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift).
+This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → optional Handoff, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift).
 
 ## For `/orchestrate` or non-trivial feature/refactoring requests:
 
@@ -14,6 +14,7 @@ This repository ships `/orchestrate` — a portable multi-agent pipeline declare
    ```bash
    bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client gemini --model-profile auto
    ```
+   Additional optional flags: `--approve-plan`, `--design`, `--handoff`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`.
 4. **Tell the user** to open the live dashboard URL from `.pipeline/ui.url` (do not hardcode 4600).
 5. When it exits, read `.pipeline/review_report.md` and report the verdict.
 

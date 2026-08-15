@@ -4,6 +4,11 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { appendEvent } from './state.mjs';
 
+// Trust boundary: `cmd` comes from config.checks.{lint,typecheck,test} in
+// .pipeline/config.json, a project-level file the repo owner controls — never
+// from agent output, PR content, or any other runtime/untrusted input. shell:true
+// is required so config authors can write real shell (`npm test && npm run x`).
+// Treat .pipeline/config.json with the same care as CI workflow files.
 function runCommand(cmd, cwd, timeoutMs) {
   const res = spawnSync(cmd, {
     cwd,

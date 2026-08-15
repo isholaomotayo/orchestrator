@@ -11,7 +11,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 
 ## Instructions
 
-1. **Pre-flight**: If `.pipeline/.lock` exists and status is not `awaiting_chat`, a run is active — do not start overlapping work.
+1. **Pre-flight / self-invocation guard**: read `.pipeline/status.json`'s `overall` field. If it is `running`, `awaiting_chat`, or `awaiting_plan_approval`, a run is already active — do NOT invoke `bash .pipeline/orchestrate.sh` with a new task. `.pipeline/.lock` alone is not reliable: a chat-mode handoff releases the lock the instant control returns to this session, so it can be absent for the whole time a stage is being worked on while the run is still active. If `.pipeline/stage-handoff.json` exists, you are already inside an active run's stage — including when that stage is itself "build a feature" — so go straight to the **Chat handoff loop** (step 7) instead of starting a new one. Re-invoking here archives the in-progress run as if it had finished and silently starts a new one on top of it.
 2. **Bootstrap** (if `.pipeline/orchestrate.sh` is missing):
    ```bash
    bash skills/orchestrate/scripts/bootstrap.sh
@@ -41,7 +41,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 7. **Chat handoff loop** (while `.pipeline/stage-handoff.json` exists):
    - Read the handoff + stage prompt file.
    - If `handoff.model` is set, **switch to that model in Cursor** before completing the stage.
-   - Complete the stage (write the required artifact).
+   - Complete the stage (write the required artifact). While doing so, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box writes live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. If it has content, apply it immediately and delete the file.
    - Run `bash .pipeline/orchestrate.sh --continue`
    - Repeat until done or halted.
 8. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.

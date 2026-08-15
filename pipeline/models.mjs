@@ -7,7 +7,7 @@
 // Without this layer a profile value like 'opus-4.8' is passed verbatim to
 // `claude --model`, which accepts only an alias (opus|sonnet|fable|haiku) or a
 // full name (claude-opus-5) — and silently belongs to neither.
-import { CORE_STAGES, OPTIONAL_STAGES } from './state.mjs';
+import { CORE_STAGES, OPTIONAL_STAGES } from './stages.mjs';
 
 // Sentinel model id meaning "use whatever model this chat session is running".
 // Never assume a specific vendor's models exist in the hosting IDE.

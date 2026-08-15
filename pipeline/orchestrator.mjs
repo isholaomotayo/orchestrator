@@ -164,6 +164,17 @@ function loadHistory() {
   try { history = JSON.parse(fs.readFileSync(paths.testHistory, 'utf8')); } catch { history = { coder: [], postTester: [] }; }
 }
 
+// Backfill fields a legacy (pre-designer/handoff/review-panel, or pre-reviewMax)
+// on-disk status.json won't have, before --continue/--resume touches it.
+// Idempotent — safe to call more than once on the same status object.
+function ensureRunDefaults(status) {
+  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
+  if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
+  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
+  if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
+  if (status.reviewPass == null) status.reviewPass = 0;
+}
+
 function releaseLock() {
   try { fs.unlinkSync(paths.lock); } catch {}
 }
@@ -205,13 +216,9 @@ if (args.continue) {
   }
   status = onDisk;
   ensureStageEntries(status);
-  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
-  if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
+  ensureRunDefaults(status);
   status.overall = 'running';
   status.awaitingStage = null;
-  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
-  if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
-  if (status.reviewPass == null) status.reviewPass = 0;
   runner = status.runner || 'host';
   models = status.models || null;
   // Backfill attribution: legacy runs (or runs started outside the IDE) learn
@@ -237,11 +244,7 @@ if (args.continue) {
     }
     status = onDisk;
     ensureStageEntries(status);
-    status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
-    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
-    status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles }; // back-compat
-    if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
-    if (status.reviewPass == null) status.reviewPass = 0;
+    ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
     if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
@@ -266,8 +269,7 @@ if (args.continue) {
     }
     status = onDisk;
     ensureStageEntries(status);
-    status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
-    if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
+    ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
     if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
@@ -276,6 +278,23 @@ if (args.continue) {
     console.log(`[Orchestrator] Resuming interrupted/stale run${dashboardMsg}`);
   }
 } else {
+  // ---- Guardrail: refuse to clobber a run parked at a chat handoff -----------
+  // Chat-mode handoffs release the mutex lock the instant control returns to the
+  // driving session (see `process.on('exit', releaseLock)` above), so acquireLock()
+  // above succeeds trivially even while a run is still very much active, just
+  // waiting on chat. Without this check, a fresh invocation here would silently
+  // archive that run as if it had finished and start a new one on top of it —
+  // exactly what happens if a chat session mistakes its own in-progress stage
+  // (or a stray /orchestrate re-invocation) for a brand-new request.
+  if (fs.existsSync(paths.status)) {
+    let prior = null;
+    try { prior = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {}
+    if (prior && (prior.overall === 'awaiting_chat' || prior.overall === 'awaiting_plan_approval')) {
+      console.error(`[Orchestrator] A run is already active, parked at a chat handoff (overall=${prior.overall}${prior.awaitingStage ? `, awaitingStage=${prior.awaitingStage}` : ''}). Refusing to start a new run over it. Complete the pending stage and run --continue, or --resume/--cancel it first.`);
+      haltAndExit(1);
+    }
+  }
+
   // ---- Guardrail 1: sandbox worktree ------------------------------------------
   workCwd = repoRoot;
   if (args.sandbox) {
@@ -1070,92 +1089,12 @@ async function chatContinueRun() {
     setStage(completedStage, { model: actualModel });
   }
 
-  if (step === 'after_planner') {
-    requireArtifact('planner', paths.specs);
-    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    await continueAfterPlanner();
-    return;
-  }
-
-  if (step === 'after_designer') {
-    requireArtifact('designer', paths.design);
-    setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
-    await runCoderOnward();
-    return;
-  }
-
-  if (step === 'after_coder') {
-    // Review fix pass: the Coder just applied the reviewer's action items. Skip
-    // the coder's own checker gate (the Tester stage's post-tester loop validates
-    // the fix) and hand off to the Tester for regression coverage.
-    if (context.loop === 'review') {
-      const pass = context.reviewPass ?? status.reviewPass;
-      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
-      if (!(await runTesterStage(reviewTesterTask(pass), { reviewPass: pass }))) return;
-      await runReviewerStage();
-      return;
-    }
-    if (context.loop === 'postTester') {
-      const outcome = await runCoderChecksAfterPostTesterCycle(context.cycle);
-      if (outcome === 'pass') {
-        setStage('coder', { status: 'passed' });
-        setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: stage('coder').checks });
-        await runReviewerStage();
-        return;
-      }
-      if (outcome === 'exhausted') {
-        haltMaxCycles('postTester', 'tester', status.limits.postTesterMax);
-        return;
-      }
-      await invokePostTesterCoderCycle(context.cycle + 1);
-      return;
-    }
-
-    const outcome = await runCoderChecksAfterInitialCycle(context.cycle);
-    if (outcome === 'pass') {
-      setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
-      if (!(await runTesterStage())) return;
-      await runReviewerStage();
-      return;
-    }
-    if (outcome === 'exhausted') {
-      haltMaxCycles('coder', 'coder', status.limits.coderMax);
-      return;
-    }
-    await invokeInitialCoderCycle(context.cycle + 1);
-    return;
-  }
-
-  if (step === 'after_tester') {
-    requireArtifact('tester', paths.testSuite);
-    console.log('[Checker] Re-running full suite with the new tests...');
-    let check = runChecks({ cwd: workCwd, config, paths });
-    console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
-    if (!check.isPassed) {
-      history.postTester.push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: false, at: new Date().toISOString() });
-      saveHistory();
-      const green = await runPostTesterLoop(status.limits.coderMax + 1);
-      if (!green) { haltMaxCycles('postTester', 'tester', status.limits.postTesterMax); return; }
-      setStage('coder', { status: 'passed' });
-      check = stage('coder').checks;
-    }
-    setStage('tester', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'test_suite.md', checks: { passedCount: check.passedCount, failedCount: check.failedCount, isPassed: true } });
-    await runReviewerStage();
-    return;
-  }
-
-  if (step === 'after_reviewer') {
-    await afterReviewerAudit();
-    return;
-  }
-
-  if (step === 'after_handoff') {
-    finishHandoffStage(true);
-    finishApproved();
-    return;
-  }
-
-  halt('orchestrator', 'AGENT_ERROR', `Unknown chat resume step "${step}".`);
+  // status.chatResume.step is always one of the after_X checkpoints below (set
+  // by requestChatHandoff right before this process last exited), and this
+  // function only ever runs in invocationMode 'chat' (gated by the --continue
+  // handler above), so dispatchResumeStep's chat-mode branches are exactly
+  // this function's old, hand-duplicated behavior.
+  await dispatchResumeStep(step, context);
 }
 
 async function freshRun() {
@@ -1197,22 +1136,17 @@ function getResumePoint() {
   return { step: 'reviewer', context: {} };
 }
 
-async function resumeInterruptedRun() {
-  status.overall = 'running';
-  status.haltReason = null;
-  status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
-  if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
-  if (status.reviewPass == null) status.reviewPass = 0;
-  writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted' });
-
-  const pt = getResumePoint();
-  const step = pt.step;
-  const context = pt.context || {};
+// Single step -> action mapping, shared by chatContinueRun (always
+// invocationMode 'chat', step known exactly from status.chatResume) and
+// resumeInterruptedRun (any invocation mode, step inferred by getResumePoint
+// when a run was killed/stale rather than cleanly handed off). The two used to
+// hand-duplicate this ~150-line dispatch; a mismatch fixed in one and not the
+// other was the single biggest correctness risk in the file. Steps that only
+// resumeInterruptedRun can land on (plain 'planner'/'designer'/'coder'/etc.,
+// vs. the 'after_X' checkpoints) are simply never reached from a chat return.
+async function dispatchResumeStep(step, context = {}) {
   const cycle = context.cycle;
   const loop = context.loop;
-
-  console.log(`[Orchestrator] Resuming interrupted run at step: ${step}${cycle ? ` (cycle ${cycle}, loop ${loop})` : ''}`);
 
   if (step === 'planner') {
     await runPlannerStage();
@@ -1265,6 +1199,9 @@ async function resumeInterruptedRun() {
   }
 
   if (step === 'after_coder') {
+    // Review fix pass: the Coder just applied the reviewer's action items. Skip
+    // the coder's own checker gate (the Tester stage's post-tester loop validates
+    // the fix) and hand off to the Tester for regression coverage.
     if (loop === 'review') {
       const pass = context.reviewPass ?? status.reviewPass;
       setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md' });
@@ -1363,6 +1300,18 @@ async function resumeInterruptedRun() {
   if (step === 'after_handoff') { finishHandoffStage(true); finishApproved(); return; }
 
   halt('orchestrator', 'AGENT_ERROR', `Unknown resume step "${step}".`);
+}
+
+async function resumeInterruptedRun() {
+  // ensureRunDefaults already ran in the --resume branch above that dispatches here.
+  status.overall = 'running';
+  status.haltReason = null;
+  writeStatus(paths, status);
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted' });
+
+  const { step, context = {} } = getResumePoint();
+  console.log(`[Orchestrator] Resuming interrupted run at step: ${step}${context.cycle ? ` (cycle ${context.cycle}, loop ${context.loop})` : ''}`);
+  await dispatchResumeStep(step, context);
 }
 
 async function resumeRun() {

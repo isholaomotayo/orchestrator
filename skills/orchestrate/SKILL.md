@@ -1,7 +1,7 @@
 ---
 name: orchestrate
-description: Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Use when the user invokes /orchestrate, asks to orchestrate a feature, delegate implementation, or run the agent pipeline. Triggers on /orchestrate, orchestrate, or multi-file autonomous implementation requests.
-when_to_use: Trigger on phrases like "orchestrate this", "run the pipeline", "delegate this to agents", "build this autonomously", "use the multi-agent pipeline", or when the user provides a task after /orchestrate.
+description: Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or delegate to the multi-agent pipeline. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
+when_to_use: Trigger only on explicit phrases like "/orchestrate", "orchestrate this", "run the pipeline", "use the multi-agent pipeline", or when the user provides a task directly after /orchestrate. Do not trigger on generic build/implement/refactor requests, and never trigger while already completing a stage handoff for an active run.
 argument-hint: "[task] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--runner claude|cursor|codex|gemini] [--approve-plan] [--design] [--handoff] [--allow-self]"
 arguments:
   - task
@@ -19,6 +19,8 @@ Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (
 ## Current environment
 
 !`[ -f .pipeline/.lock ] && cat .pipeline/.lock || echo "No active pipeline run"`
+
+!`[ -f .pipeline/status.json ] && cat .pipeline/status.json || echo "No status.json"`
 
 !`[ -f .pipeline/ui.url ] && echo "Dashboard: $(cat .pipeline/ui.url)" || echo "Dashboard: not yet started"`
 
@@ -39,6 +41,7 @@ If `$task` was not provided as an argument, extract it from the user's message (
 ### 2. Pre-flight Check
 
 Before running anything:
+- **Self-invocation guard, check this first, no exceptions**: look at `status.json`'s `overall` field from the environment above. If it is `running`, `awaiting_chat`, or `awaiting_plan_approval`, a pipeline run is already active — do NOT invoke `bash .pipeline/orchestrate.sh` with a new task. The lock file is not a reliable signal here: a chat-mode handoff releases `.pipeline/.lock` the instant control returns to this session, so the lock can be absent for the entire time a stage is being worked on while the run is still active. If you are the one currently completing that stage (`.pipeline/stage-handoff.json` exists) — including when the assigned stage is itself "build a feature" — that is not a new orchestrate request; go straight to the **Chat Handoff Loop** (step 6) instead of re-running step 4. Invoking the script again here would archive the in-progress run as if it had already finished and silently start a new one on top of it.
 - If the environment above shows an active lock file with status **not** `awaiting_chat`, stop and inform the user a pipeline run is active.
 - If `.pipeline/orchestrate.sh` is missing, bootstrap the scaffold:
   ```bash
@@ -89,7 +92,7 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 
 1. Read the handoff file and its referenced prompt.
 2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model.
-3. Work on the assigned pipeline stage in this session (specs, design, code, tests, or review). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set).
+3. Work on the assigned pipeline stage in this session (specs, design, code, tests, or review). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set). **While you work**, this session is "the currently running agent" that the dashboard's chat box targets — the orchestrator process has already exited for this handoff and won't check for you. Periodically (between tool calls, or every couple of minutes on a longer stage) check `.pipeline/followups/<stage>.txt` for the stage you're on; if it has content, that's a live note from the dashboard — read it, apply it to your current work immediately, then delete the file so it isn't reapplied when this stage runs again.
 4. Set `"actualModel": "your model name"` in `stage-handoff.json`.
 5. Resume:
    ```bash

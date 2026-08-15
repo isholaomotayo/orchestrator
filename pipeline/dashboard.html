@@ -719,6 +719,11 @@
     display: flex; gap: 6px; align-items: center;
     max-width: var(--content-w); margin: 0 auto;
   }
+  .composer-hint {
+    font-size: 11px; color: var(--faint);
+    max-width: var(--content-w); margin: 5px auto 0;
+    padding: 0 2px; min-height: 14px;
+  }
   .composer-input-wrap {
     flex: 1; position: relative; min-width: 0;
   }
@@ -965,6 +970,7 @@
             <button id="followup-resume" title="Queue note and resume pipeline"></button>
           </div>
         </div>
+        <div class="composer-hint" id="composer-hint"></div>
       </div>
 
       <footer class="statusline">
@@ -1562,6 +1568,10 @@ function followupHint(name) {
   const st = stageOf(name);
   if (st?.status === 'passed') return 'this stage is done — queue on Coder or resume won\'t use this';
   if (state?.canResume) return 'note queued — applies when you resume';
+  // The chat session driving this stage checks .pipeline/followups/<stage>.txt
+  // for new notes while it works and applies them immediately — this is the
+  // one case where a queued note is picked up live, not on the next invocation.
+  if (st?.status === 'awaiting_host') return 'note queued — the active chat session picks up new notes as it works';
   if (s && s.overall === 'running' && !state.stale) {
     if (st?.status === 'running' && name === 'coder') return 'note queued — next fix cycle';
     if (st?.status === 'running') return 'note queued — applies if stage re-runs, else next run';
@@ -1913,6 +1923,8 @@ function updateFollowupButtons() {
   } else {
     resumeBtn.style.display = 'none';
   }
+  const hint = document.getElementById('composer-hint');
+  if (hint) hint.textContent = state?.status ? followupHint(activeAgent()) : '';
 }
 
 async function sendFollowup() {
@@ -1921,10 +1933,16 @@ async function sendFollowup() {
   if (!text || state?.live === false) return;
   try {
     const qs = currentProject ? '?project=' + encodeURIComponent(currentProject) : '';
-    await fetch('/api/followup' + qs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: activeAgent(), text }) });
+    const target = activeAgent();
+    await fetch('/api/followup' + qs, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stage: target, text }) });
     input.value = '';
     updateFollowupButtons();
-    fetchState();
+    await fetchState();
+    const q = document.getElementById('queued-pill');
+    if (q) {
+      q.style.display = '';
+      q.textContent = `queued for ${cap(target)}`;
+    }
   } catch {}
 }
 

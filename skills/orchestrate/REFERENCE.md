@@ -49,7 +49,7 @@ version is written beside it as `<file>.new`. `.pipeline/config.json` and run st
 ## Direct CLI
 
 ```bash
-bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox]
+bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox]
 bash .pipeline/orchestrate.sh --resume [--extend 5]
 node pipeline/orchestrator.mjs --task "description" --model-profile auto
 ```

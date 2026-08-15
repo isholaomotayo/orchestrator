@@ -2,11 +2,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, mergeModelProfiles } from './models.mjs';
+import { STAGES, CORE_STAGES, OPTIONAL_STAGES, STAGE_ARTIFACT_FILES } from './stages.mjs';
 
-export const STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
-// The four always-on stages; designer/handoff are opt-in and default to 'skipped'.
-export const CORE_STAGES = ['planner', 'coder', 'tester', 'reviewer'];
-export const OPTIONAL_STAGES = ['designer', 'handoff'];
+export { STAGES, CORE_STAGES, OPTIONAL_STAGES, STAGE_ARTIFACT_FILES };
 
 export function pipelinePaths(repoRoot) {
   const dir = path.join(repoRoot, '.pipeline');
@@ -33,15 +31,6 @@ export function pipelinePaths(repoRoot) {
     runs: path.join(dir, 'runs'),
   };
 }
-
-export const STAGE_ARTIFACT_FILES = {
-  planner: 'specs.md',
-  designer: 'design.md',
-  coder: 'changes.md',
-  tester: 'test_suite.md',
-  reviewer: 'review_report.md',
-  handoff: 'handoff.md',
-};
 
 // True when the given PID belongs to a live process we can signal.
 export function pidAlive(pid) {

@@ -3,12 +3,12 @@
 ## Workspace skill: `/orchestrate`
 
 This repository ships a portable multi-agent pipeline declared in `.pipeline/skill.json`.
-It runs: **Planner → Coder (self-healing builder-checker loop) → Tester → Reviewer**, writing artifacts to `.pipeline/*.md` with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
+It runs: **Planner → (optional Designer) → Coder (self-healing builder-checker loop) → Tester → Reviewer (or Review Panel) → (optional Handoff)**, writing artifacts to `.pipeline/*.md` with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
 
 When the user invokes `/orchestrate`, or tasks you with building a feature, resolving complex requirements, or a multi-stage refactor:
 
 1. Do NOT plan and edit many files manually in a single run.
-2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--host-client claude|cursor|codex|gemini|antigravity`, `--runner claude|cursor|codex|gemini|host`, `--model-profile auto|manual`, `--models JSON`, `--sandbox`, `--allow-self`, `--no-ui`).
+2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--host-client claude|cursor|codex|gemini|antigravity`, `--runner claude|cursor|codex|gemini|host`, `--model-profile auto|manual`, `--models JSON`, `--approve-plan`, `--design`, `--handoff`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`, `--no-ui`).
 3. **If YOU are a chat session** (any IDE): always invoke with `--mode chat --host-client <your-client>` (claude, cursor, codex, gemini, antigravity). Never pass `--runner`. Never spawn or delegate to another agent CLI — YOU complete each stage from `.pipeline/stage-handoff.json`, then run `--continue`.
 4. **Before starting** (slash command / chat): ask the user whether to use automatic cost-optimized per-stage models or manual model selection. This is the only pre-run question. Then pass `--model-profile auto` or `--model-profile manual --models '...'`.
 5. **Tell the user** to open the live dashboard URL from the script output or `.pipeline/ui.url` (always read this dynamically rather than hardcoding 4600, as the port drifts if occupied or in multi-repo setups) so they can follow stage progress.
