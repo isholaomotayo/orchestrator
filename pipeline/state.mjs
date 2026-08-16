@@ -72,6 +72,7 @@ export function loadConfig(paths) {
     maxPostTesterCycles: 2,
     maxReviewCycles: 3,
     uiPort: 4600,
+    uiIdleTimeoutMs: 3600000, // 0 disables auto-shutdown; see ui-server.mjs
     checks: {
       test: 'npm test --silent',
       lint: 'npm run lint --if-present --silent',
@@ -109,6 +110,7 @@ export function loadConfig(paths) {
     merged[field] = coercePositiveInt(raw[field], defaults[field], field);
   }
   merged.agentRetries = coerceNonNegativeInt(raw.agentRetries, defaults.agentRetries, 'agentRetries');
+  merged.uiIdleTimeoutMs = coerceNonNegativeInt(raw.uiIdleTimeoutMs, defaults.uiIdleTimeoutMs, 'uiIdleTimeoutMs');
   return merged;
 }
 

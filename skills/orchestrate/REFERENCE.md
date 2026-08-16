@@ -66,6 +66,7 @@ node pipeline/orchestrator.mjs --task "description" --model-profile auto
 | — | `agentRetries` | `2` | Bounded retries for **transient** agent failures (429/5xx/overloaded/network/timeout) with exponential backoff. Auth, quota, and bad-model failures are fatal and never retried. Set `0` to disable. |
 | — | `stageEffort` | see below | Per-stage reasoning effort. |
 | `--allow-self` | env `ORCH_ALLOW_SELF=1` | off | Override the self-repo guard: without it, targeting the orchestrator SOURCE repository exits with code **3** (markers: `skills/orchestrate/SKILL.md` + `pipeline/orchestrator.mjs`). Consumers installed via bootstrap never trip the guard. |
+| — | `uiIdleTimeoutMs` / env `PIPELINE_UI_IDLE_TIMEOUT_MS` | `3600000` (1h) | The dashboard server runs detached and nothing else ever stops it, so it auto-exits once idle past this many ms with no open browser tab (no requests, no SSE clients) **and** no registered project has a run in flight. Set `0` to disable and keep it running forever. |
 
 The first three also live in `.pipeline/config.json` as top-level booleans and can be enabled by default without passing the flag each run.
 

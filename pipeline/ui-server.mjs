@@ -51,6 +51,18 @@ const defaultConfig = loadConfig(defaultPaths);
 const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600);
 const HOST = '127.0.0.1';
 
+// This server is started detached (nohup, see orchestrate.sh) so nothing else
+// ever stops it — a run finishing doesn't touch it, since one dashboard is
+// meant to keep serving run history and other projects after that. Left alone
+// that means it survives indefinitely: idle for hours or days after every run
+// it was watching has finished. Auto-shut-down once nobody has a tab open
+// (no requests, no SSE clients) AND no registered project has a run in flight.
+// 0 disables this (see uiIdleTimeoutMs in config.json / PIPELINE_UI_IDLE_TIMEOUT_MS).
+const IDLE_TIMEOUT_MS = process.env.PIPELINE_UI_IDLE_TIMEOUT_MS !== undefined
+  ? Number(process.env.PIPELINE_UI_IDLE_TIMEOUT_MS)
+  : defaultConfig.uiIdleTimeoutMs;
+let lastActivityAt = Date.now();
+
 const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
@@ -454,6 +466,7 @@ const GUARDED_POST_PATHS = new Set([
 ]);
 
 const server = http.createServer((req, res) => {
+  lastActivityAt = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   if (req.method === 'POST' && GUARDED_POST_PATHS.has(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
@@ -589,6 +602,15 @@ const server = http.createServer((req, res) => {
   }
 });
 
+function anySseClientsConnected() {
+  for (const project of projects.values()) if (project.sseClients.size > 0) return true;
+  return false;
+}
+function anyRunActive() {
+  for (const project of projects.values()) if (orchestratorAlive(project)) return true;
+  return false;
+}
+
 setInterval(() => {
   for (const project of projects.values()) {
     const msg = `data: ${JSON.stringify({ type: 'ping' })}\n\n`;
@@ -596,7 +618,21 @@ setInterval(() => {
       try { res.write(msg); } catch { project.sseClients.delete(res); }
     }
   }
+
+  if (IDLE_TIMEOUT_MS > 0 && Date.now() - lastActivityAt > IDLE_TIMEOUT_MS && !anySseClientsConnected() && !anyRunActive()) {
+    console.log(`[UI] Idle for over ${Math.round(IDLE_TIMEOUT_MS / 60000)}m with no open tabs and no active runs across ${projects.size} project(s) — shutting down.`);
+    process.exit(0);
+  }
 }, 25000);
+
+// Nothing else will do this: the process is started detached (nohup), so its
+// own pid/url files are the only record that it's running. Leaving them behind
+// after an idle shutdown (or any other exit) would make the next
+// orchestrate.sh invocation trust a stale ui.url until its health check fails.
+process.on('exit', () => {
+  try { fs.unlinkSync(path.join(defaultPaths.dir, 'ui-server.pid')); } catch {}
+  try { fs.unlinkSync(path.join(defaultPaths.dir, 'ui.url')); } catch {}
+});
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
