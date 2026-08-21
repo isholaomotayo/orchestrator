@@ -19,6 +19,6 @@
     "eval": "node evals/run.mjs"
   },
   "devDependencies": {
-    "playwright": "1.52.0"
+    "playwright": "1.55.1"
   }
 }
