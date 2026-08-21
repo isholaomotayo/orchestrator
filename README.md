@@ -481,6 +481,8 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   },
   "checkTimeoutMs": 300000, // kill a check command after this long
   "agentTimeoutMs": 1800000, // kill an agent invocation after this long
+  "repoScanDepth": 4, // how deep to look for nested repos when scoping the review diff
+  "maxDiffBytes": 2000000, // total diff.patch budget across all repos in scope
   "modelProfiles": {
     // per-stage model FAMILIES when --model-profile auto. Families are
     // vendor-neutral; each runner CLI receives the identifier it accepts
@@ -587,7 +589,7 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 | `events.jsonl`                                                                                                | Append-only, newline-delimited event log (every stage transition and agent output line)                                                                       |
 | `logs/<stage>.log`                                                                                            | Human-readable verbose transcript per stage                                                                                                                   |
 | `specs.md`, `design.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md`, `handoff.md` | The stages' artifacts (`design.md` and `handoff.md` only when `--design` / `--handoff` are enabled; `handoff.md` is also written automatically on every halt) |
-| `diff.patch`                                                                                                  | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs                                                                         |
+| `diff.patch`                                                                                                  | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs. Covers every repo in scope — the run root's own repo plus any clone or submodule found beneath it — as one `## repo <label>` section each, so a run rooted at a folder of sibling clones is still reviewable |
 | `test_history.json`                                                                                           | Pass/fail counts per cycle, used for regression detection                                                                                                     |
 | `followups/<stage>.txt`                                                                                       | Queued human notes awaiting injection                                                                                                                         |
 | `.lock`                                                                                                       | Mutex — contains the owning process's PID                                                                                                                     |

@@ -61,7 +61,7 @@ export function coerceNonNegativeInt(value, fallback, label) {
   return fallback;
 }
 
-const NUMERIC_CONFIG_FIELDS = ['maxCoderCycles', 'maxPostTesterCycles', 'maxReviewCycles', 'uiPort', 'checkTimeoutMs', 'agentTimeoutMs'];
+const NUMERIC_CONFIG_FIELDS = ['maxCoderCycles', 'maxPostTesterCycles', 'maxReviewCycles', 'uiPort', 'checkTimeoutMs', 'agentTimeoutMs', 'repoScanDepth', 'maxDiffBytes'];
 // agentRetries is the one numeric knob where 0 is meaningful (retries disabled),
 // so it cannot use coercePositiveInt.
 
@@ -80,6 +80,8 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    repoScanDepth: 4,     // how deep to look for nested repos when scoping the diff
+    maxDiffBytes: 2000000, // total .pipeline/diff.patch budget across all repos
     agentRetries: 2, // bounded retries for TRANSIENT agent failures only
     approvePlan: false,
     designStage: false,
@@ -123,7 +125,8 @@ export function newStatus(task, { design = false, handoff = false } = {}) {
     invocationMode: 'cli', // chat | cli — how agent stages are executed
     runner: 'auto',
     models: null,
-    baseRef: null,      // commit SHA the run started from; diff is scoped against it
+    baseRef: null,      // primary repo's commit SHA at run start; diff is scoped against it
+    repos: [],          // every repo in diff scope: { root, label, enclosing, baseRef }
     awaitingStage: null,
     chatResume: null,   // { step, context } — set when handing off to IDE chat
     resumePoint: null,  // { step, context } — tracks last saved checkpoint for resuming

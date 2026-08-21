@@ -30,11 +30,29 @@ INSTRUCTIONS:
    `.pipeline/review_report.md`.
 2. Read the historical context: `.pipeline/specs.md`, `.pipeline/changes.md`,
    `.pipeline/test_suite.md`, and `.pipeline/design.md` if present.
-3. Read `.pipeline/diff.patch` (the full base-to-HEAD diff for this run,
-   including committed and uncommitted changes). If the diff is unavailable or
-   reports no changes, do NOT skip the review — audit the implementation
-   directly from `.pipeline/changes.md` and the source files it references.
-4. Run the two axes SEPARATELY. Do not merge, average, or prioritize one over
+3. Read `.pipeline/diff.patch` (the base-to-HEAD diff for this run, including
+   committed and uncommitted changes). It may contain a `## repo <label>` section
+   per repository when the run spans several — audit every section. If the diff
+   is unavailable, truncated, reports no changes, or warns that it is
+   incomplete, do NOT skip or narrow the review: open the affected source files
+   directly and audit from them plus `.pipeline/changes.md`.
+4. The diff is where the review starts, not where it ends. A defect is usually
+   invisible in the diff alone, so for anything the change touches, OPEN THE
+   SURROUNDING CODE: the callers of every changed signature (grep for all of
+   them — a partially applied change is the most common real bug), the error
+   paths, and the tests that were supposed to cover it. Verify the Coder's
+   "## Self-Review" claims against the code rather than trusting them, and read
+   the Tester's "## Uncovered / Deferred Coverage" — a gap named there is a
+   confirmed hole, and a gap NOT named there that you can see is a finding
+   against the test suite.
+5. EVIDENCE RULE. Every item you report as a defect must carry:
+   (a) `path/to/file:line`, (b) the defect class, and (c) a concrete failure
+   scenario — the specific input, timing, or state that produces the wrong
+   result, and what the wrong result IS. If you cannot state the scenario, it is
+   not a defect: put it under "Observations" instead. Padding an audit with
+   unfalsifiable style notes costs a full automated fix pass and buries the real
+   findings, so an honest short list beats a long speculative one.
+6. Run the two axes SEPARATELY. Do not merge, average, or prioritize one over
    the other.
 
 AXIS A — STANDARDS & ARCHITECTURE:
@@ -58,10 +76,20 @@ AXIS B — SPEC & FUNCTIONAL:
   - **Scope creep:** code implementing features or helpers the specification
     never asked for.
 
-5. Reference findings as `path/to/file:line`; do not paste large code blocks —
+7. Reference findings as `path/to/file:line`; do not paste large code blocks —
    quote at most the minimal offending snippet.
-6. Write progress notes as you work; your stdout is streamed to a live dashboard.
-7. Generate `.pipeline/review_report.md` structured EXACTLY like this:
+8. VERDICT BAR. `APPROVED` asserts that you checked and found nothing that
+   warrants a fix pass. It is FORBIDDEN when any of these is true:
+   - a tracer-bullet ticket is unimplemented or only partially implemented;
+   - a failure-mode row (E1, E2, …) has no handling in code, or no test proving
+     the handling;
+   - a Spec Coverage Verification row below is a GAP;
+   - the diff was incomplete/unavailable AND you did not read the source instead.
+   Use `REQUEST_CHANGES` for defects the automated fix pass can act on, and
+   `BLOCK` for anything unsafe to fix automatically (data loss, credential
+   exposure, a design that must be re-planned).
+9. Write progress notes as you work; your stdout is streamed to a live dashboard.
+10. Generate `.pipeline/review_report.md` structured EXACTLY like this:
 
 # ARCHITECTURE & SECURITY AUDIT REVIEW
 
@@ -73,11 +101,26 @@ AXIS B — SPEC & FUNCTIONAL:
 ## 2. Spec & Functional Axis
 - [Axis B findings verbatim: missing implementations, logic bugs, scope creep]
 
-## 3. Summary
+## 3. Spec Coverage Verification
+| Ticket / Case | Implemented at | Test at | Status |
+|---|---|---|---|
+| Ticket 1 | `path/file.ext:line` | `path/test.ext:line` | OK / GAP |
+| E1 | `path/file.ext:line` | `path/test.ext:line` | OK / GAP |
+[One row per tracer-bullet ticket AND one per failure-mode row in specs.md. No
+row may be skipped: use `—` in a cell and mark the row GAP when nothing
+implements or covers it. This table is the evidence that the audit actually
+happened, so fill it from the code you opened, not from changes.md's claims.]
+
+## 4. Observations (not defects)
+- [Anything you noticed that has no concrete failure scenario. These are NOT
+  action items and do not trigger a fix pass. Write "None" if there are none.]
+
+## 5. Summary
 - **Standards violations found:** [Yes/No]
 - **Spec gaps found:** [Yes/No]
+- **Failure-mode rows verified / total:** [n/m]
 
-## 4. Final Recommendations / Action Items
+## 6. Final Recommendations / Action Items
 - [If the verdict is APPROVED, briefly note the strongest optimization items.]
 - [If the verdict is REQUEST_CHANGES or BLOCK, this section is consumed verbatim
   by an automatic Coder + Tester fix pass, so it MUST be a concrete, numbered,

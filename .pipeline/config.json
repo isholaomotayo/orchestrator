@@ -11,6 +11,8 @@
   },
   "checkTimeoutMs": 300000,
   "agentTimeoutMs": 1800000,
+  "repoScanDepth": 4,
+  "maxDiffBytes": 2000000,
   "approvePlan": false,
   "designStage": false,
   "handoffStage": false,

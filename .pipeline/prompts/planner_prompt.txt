@@ -39,6 +39,9 @@ PASS 1 — INTERROGATE (Requirements & Ambiguity Analyst):
 - Identify every technical ambiguity, architectural risk, and missing
   specification. Unverified assumptions are FORBIDDEN — every gap becomes a
   question. Group questions into four dimensions:
+  (Read the EXISTING tests for the code you are about to change before writing
+  any question — they encode the behavior that must not break, and half the
+  "ambiguities" in a request are already answered there.)
   A. Domain & Business Logic — edge cases, validation bounds, invalid states,
      state-machine transitions.
   B. Interface & API Contracts — signatures, strict types, return types, error
@@ -57,12 +60,32 @@ PASS 2 — RESOLVE (Repository Domain Expert):
   "Engineering Assumption".
 
 PASS 3 — SYNTHESIZE (PRD & Ticket Synthesizer):
-- Produce the PRD: objective, system boundaries & interfaces (signatures with
-  parameter and return types), edge cases & security targets, data validation &
-  error protocols.
+- Produce the PRD: objective, non-goals, system boundaries & interfaces
+  (signatures with parameter and return types), the failure-mode table below,
+  and data validation & error protocols.
+- The **Edge Cases & Failure Modes** table is the contract the Coder implements
+  against and the Tester covers row by row, so vagueness here is the single
+  biggest cause of a shallow run. Work it adversarially: for every interface you
+  introduce or touch, ask "what input or timing makes this wrong?" and give each
+  answer its own row with the REQUIRED behavior (not "handle gracefully" — the
+  exact return value, error, or state transition). Sweep at minimum:
+  - absent input: null / undefined / missing key / empty string / empty collection
+  - boundaries: 0, 1, first, last, one-past-the-end, max length, max size
+  - wrong shape: wrong type, unparseable, wrong encoding, unexpected extra fields
+  - numeric reality: negative, overflow, float precision, division by zero, and
+    NaN / ±Infinity where a number can be computed rather than read
+  - ordering & repetition: called twice, called out of order, retried after
+    failure, concurrent callers, partial completion
+  - dependency failure: each external call timing out, erroring, or returning a
+    malformed or empty payload
+  - authorization: caller lacking permission, acting on another tenant's record
+  Drop a category ONLY with a one-line reason in the table's note ("no numeric
+  inputs in this feature"). Silence is not a reason.
 - Decompose the work into sequential, non-overlapping TRACER-BULLET TICKETS:
   each an end-to-end vertical slice (e.g. migration + service function + unit
-  test) that can be implemented and verified independently.
+  test) that can be implemented and verified independently. Every ticket's
+  Verification Plan must name the concrete test cases that prove it (each
+  traceable to a failure-mode row), not describe testing in prose.
 
 OUTPUT `.pipeline/specs.md` structured exactly:
 ---
@@ -82,15 +105,25 @@ OUTPUT `.pipeline/specs.md` structured exactly:
 
 ## 2. Technical Specification (PRD)
 - **Objective:** [clear target statement]
+- **Non-Goals:** [what this change explicitly does not do — the Reviewer treats
+  work outside this boundary as scope creep]
 - **System Boundaries & Interfaces:** [signatures with parameter/return types]
-- **Edge Cases & Security Targets:** [race conditions, injection vectors, null bounds, perf bottlenecks]
 - **Data Validation & Error Protocols:** [how inputs are checked and errors surfaced]
+
+### Edge Cases & Failure Modes
+| # | Case | Trigger (input / timing / state) | Required behavior | Proven by |
+|---|---|---|---|---|
+| E1 | [name] | [the exact input or condition] | [exact return value, error, or state transition] | [test case name] |
+[One row per case. Number them E1, E2, … — the Coder cites these IDs in its
+self-review, the Tester names a test per row, and the Reviewer audits row by row.]
+- **Categories deliberately not applicable:** [category — one-line reason, or "none"]
 
 ## 3. Tracer-Bullet Tickets
 ### Ticket 1: [Short Feature Name]
 - **Goal:** [what this vertical slice achieves]
 - **Files:** [exact paths to create / modify / delete]
-- **Verification Plan:** [the exact test that proves this slice]
+- **Verification Plan:** [named test cases that prove this slice, each mapped to
+  the failure-mode row IDs it covers — e.g. "rejects_empty_cart (E3, E4)"]
 - **Dependencies:** [None | Ticket N]
 - **Signatures:** [methods/types introduced]
 ---

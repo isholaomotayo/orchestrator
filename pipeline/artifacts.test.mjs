@@ -5,9 +5,12 @@ import { parseVerdict, validateArtifact, detectTestWeakening, totalTests, compac
 const SPEC = `# TECHNICAL SPECIFICATION: Thing
 ## 2. Technical Specification (PRD)
 - **Objective:** ship the thing
+### Edge Cases & Failure Modes
+| # | Case | Trigger | Required behavior | Proven by |
+| E1 | empty input | \`[]\` | returns 0 | sums_empty |
 ## 3. Tracer-Bullet Tickets
 ### Ticket 1: do it
-`.padEnd(300, '\n- filler line');
+`.padEnd(400, '\n- filler line');
 
 test('parseVerdict reads the canonical heading', () => {
   assert.deepEqual(parseVerdict('## Verdict: APPROVED'), { verdict: 'APPROVED', ok: true });
@@ -47,18 +50,54 @@ test('validateArtifact enforces the skeleton each prompt mandates', () => {
 });
 
 test('validateArtifact requires a parseable verdict from the reviewer', () => {
-  const body = 'x'.repeat(400);
+  const body = `## 3. Spec Coverage Verification\n${'x'.repeat(400)}`;
   assert.equal(validateArtifact('reviewer', `# AUDIT\n## Verdict: APPROVED\n${body}`).ok, true);
   const noVerdict = validateArtifact('reviewer', `# AUDIT\n${body}`);
   assert.equal(noVerdict.ok, false);
   assert.match(noVerdict.reason, /verdict/i);
 });
 
-test('validateArtifact leaves free-form artifacts unconstrained beyond length', () => {
+test('validateArtifact leaves the handoff artifact unconstrained beyond length', () => {
+  assert.equal(validateArtifact('handoff', 'a real handoff document '.repeat(20)).ok, true);
+});
+
+// ---- Depth gates: the sections that make a shallow stage output unusable ----
+
+test('a spec with no failure-mode table is rejected', () => {
+  const shallow = SPEC.replace('### Edge Cases & Failure Modes', '### Edge Cases');
+  assert.equal(validateArtifact('planner', shallow).ok, false);
+  assert.match(validateArtifact('planner', shallow).reason, /failure modes/);
+});
+
+test('a changes.md with no self-review is rejected', () => {
   const body = 'a real changes document '.repeat(20);
-  assert.equal(validateArtifact('coder', body).ok, true);
-  assert.equal(validateArtifact('tester', body).ok, true);
-  assert.equal(validateArtifact('handoff', body).ok, true);
+  assert.equal(validateArtifact('coder', body).ok, false);
+  assert.match(validateArtifact('coder', body).reason, /self-review/);
+  assert.equal(validateArtifact('coder', `${body}\n## Self-Review\nE1 handled at src/x.js:12`).ok, true);
+});
+
+test('a test_suite.md must carry both a coverage map and an honest gap list', () => {
+  const body = 'a real test summary document '.repeat(20);
+  assert.equal(validateArtifact('tester', `${body}\n## Coverage Map\n| E1 | t | x:1 |`).ok, false);
+  assert.match(validateArtifact('tester', `${body}\n## Coverage Map\n`).reason, /uncovered/);
+  assert.equal(
+    validateArtifact('tester', `${body}\n## Coverage Map\n| E1 | t | x:1 |\n## Uncovered / Deferred Coverage\nNone`).ok,
+    true,
+  );
+});
+
+test('a review with a verdict but no spec-coverage table is rejected', () => {
+  const shallow = `# AUDIT\n## Verdict: APPROVED\n${'looks good to me. '.repeat(30)}`;
+  assert.equal(validateArtifact('reviewer', shallow).ok, false);
+  assert.match(validateArtifact('reviewer', shallow).reason, /spec coverage/);
+});
+
+test('required sections survive punctuation and spacing drift', () => {
+  // A hard halt over "Self Review" vs "Self-Review" would be indefensible.
+  const body = 'a real changes document '.repeat(20);
+  for (const heading of ['## Self-Review', '## Self Review', '## SELF_REVIEW', '### Self — Review']) {
+    assert.equal(validateArtifact('coder', `${body}\n${heading}\nE1 at src/x.js:9`).ok, true, heading);
+  }
 });
 
 test('detectTestWeakening fires when the suite shrinks', () => {
@@ -140,11 +179,12 @@ test('compactChangelog also folds post-tester and review sections', () => {
 
 test('a short but honest change note is accepted', () => {
   // Regression: a one-line fix produces a genuinely small changes.md. A flat
-  // 200-byte floor rejected it and halted an otherwise healthy run.
-  const honest = `# Implementation Notes
-## Ticket 1
-- \`src/paginate.js:5\` — switched page count from Math.floor to Math.ceil so the
-  trailing partial page is emitted. slice() already clamps the final bound.
+  // 200-byte floor rejected it and halted an otherwise healthy run. The
+  // self-review gate must not reintroduce that — a self-review can be one line.
+  const honest = `# Notes
+- \`src/paginate.js:5\` — floor -> ceil; trailing partial page now emitted.
+## Self-Review
+- E1 empty list: \`src/paginate.js:3\`. No other rows touched.
 `;
   assert.ok(honest.length < 200, 'fixture must be under the structured floor');
   assert.equal(validateArtifact('coder', honest).ok, true);

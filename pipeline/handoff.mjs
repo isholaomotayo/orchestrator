@@ -70,7 +70,15 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
     lines.push(`- Base commit for this run: ${status.baseRef || '(none captured)'}`);
     lines.push(`- Working tree: ${git.dirty ? 'DIRTY (uncommitted changes present)' : 'clean'}`);
   } else {
-    lines.push('- Not a git repository (or git unavailable).');
+    lines.push('- The run root is not a git repository (or git is unavailable).');
+  }
+  // A run rooted at a container folder of clones has its real git state one
+  // level down, where the `git` block above cannot see it.
+  if (status.repos?.length > 1) {
+    lines.push(`- Repositories in diff scope (${status.repos.length}):`);
+    for (const r of status.repos) {
+      lines.push(`  - \`${r.label}\` — base commit ${r.baseRef ? r.baseRef.slice(0, 12) : '(none captured)'}`);
+    }
   }
   lines.push('', '## 6. How to Resume');
   if (halted) {

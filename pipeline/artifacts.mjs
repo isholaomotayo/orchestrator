@@ -32,15 +32,36 @@ const MIN_BYTES_FREEFORM = 80;
 const STRUCTURED = new Set(['specs', 'design', 'review_report']);
 
 // Substrings each artifact must contain, drawn from the skeleton its prompt
-// mandates. Matched case-insensitively so heading case drift is tolerated.
+// mandates.
+//
+// These are the pipeline's only real lever on depth. A prompt asking for an
+// edge-case table, a coverage map, or a spec-coverage audit is a suggestion; a
+// marker here makes the stage's output unusable without it. Keep every marker
+// tied to a section the prompt mandates verbatim, and keep the list short —
+// each one is a way for an otherwise good run to halt.
 const REQUIRED_MARKERS = {
-  specs: ['tracer-bullet', 'objective'],
+  // "failure modes": the per-case table of what must happen at each boundary.
+  // Without it the Coder has nothing concrete to implement against and the
+  // Tester has nothing concrete to cover.
+  specs: ['tracer-bullet', 'objective', 'failure modes'],
   design: ['final contracts'],
-  changes: [],
-  test_suite: [],
-  review_report: ['verdict'],
+  // "self-review": the Coder's own pass over the spec's failure-mode rows.
+  changes: ['self-review'],
+  // "uncovered": the Tester's honest gap list ("None" is an acceptable body).
+  test_suite: ['coverage map', 'uncovered'],
+  // "spec coverage": the ticket-by-ticket verification table that makes an
+  // APPROVED verdict cost something to write.
+  review_report: ['verdict', 'spec coverage'],
   handoff: [],
 };
+
+// Marker matching ignores case, punctuation and whitespace runs: prompts mandate
+// a heading, and models render it with an underscore, an en dash, or no hyphen
+// at all. Halting a run over "Self Review" vs "Self-Review" would be
+// indefensible; halting it over a missing section is the point.
+function normalizeForMarkers(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+}
 
 const ARTIFACT_KEYS = {
   planner: 'specs',
@@ -62,7 +83,8 @@ export function validateArtifact(stage, content) {
   if (text.length < min) {
     return { ok: false, reason: `artifact is only ${text.length} bytes — too short to be a real ${stage} output` };
   }
-  const missing = (REQUIRED_MARKERS[key] || []).filter((m) => !text.toLowerCase().includes(m));
+  const normalized = normalizeForMarkers(text);
+  const missing = (REQUIRED_MARKERS[key] || []).filter((m) => !normalized.includes(normalizeForMarkers(m)));
   if (missing.length) {
     return { ok: false, reason: `artifact is missing required section(s): ${missing.join(', ')}` };
   }

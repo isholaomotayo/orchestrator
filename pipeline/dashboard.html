@@ -1228,10 +1228,22 @@ function diffLineHtml(line) {
 function splitDiffFiles(patch) {
   const files = [];
   let current = null;
+  let repo = null;
   for (const line of patch.split('\n')) {
+    // A multi-repo diff carries one "## repo `<label>` — diff vs <ref>" heading
+    // per repository. Break the card stream there, or the heading disappears
+    // into the tail of the previous file and two repos' identically-named files
+    // render as indistinguishable cards.
+    const section = line.match(/^##\s+repo\s+`(.+?)`/);
+    if (section) {
+      repo = section[1] === '.' ? null : section[1];
+      current = { name: null, lines: [line], add: 0, del: 0 };
+      files.push(current);
+      continue;
+    }
     const header = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
     if (header) {
-      current = { name: header[2], lines: [line], add: 0, del: 0 };
+      current = { name: repo ? repo + '/' + header[2] : header[2], lines: [line], add: 0, del: 0 };
       files.push(current);
       continue;
     }

@@ -2,7 +2,9 @@
 
 This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → optional Handoff, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift).
 
-## For `/orchestrate` or non-trivial feature/refactoring requests:
+Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestrate this", "run the pipeline", "use the multi-agent pipeline"). Do NOT infer an implicit request from an ordinary "build this feature" / "fix this bug" / "refactor this" ask — do those directly. Never self-invoke, and never use it to hand off a task you were asked to do yourself.
+
+## When `/orchestrate` was explicitly requested:
 
 1. **Pre-flight**: if `.pipeline/.lock` exists, a pipeline run is active — do not start overlapping autonomous work.
 2. **Model selection (required before starting)**: Ask the user:

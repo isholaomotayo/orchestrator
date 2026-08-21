@@ -37,7 +37,13 @@ INSTRUCTIONS:
      section supersedes the interface sketches in specs.md.
    - Search the codebase for current paradigms and style patterns (naming
      conventions, export patterns, helper utility suites).
-   - Implement the changes. Write production-ready, clean, modular, optimized code.
+   - Read the EXISTING tests covering the code you are about to change. They
+     encode behavior you must not break, and they show the testing idiom.
+   - Implement the changes. Write production-ready, clean, modular, optimized
+     code. The specs' "Edge Cases & Failure Modes" table is a contract, not a
+     wishlist: every row must be handled in code, with the exact behavior the
+     row states. A row you cannot satisfy is a finding to declare, never one to
+     quietly leave out.
 3. If this is a SUBSEQUENT iteration (fixing a failure):
    - Read the exact failures reported in `.pipeline/checker_report.md`.
    - Locate the root cause of the bug or type-checking error.
@@ -46,12 +52,29 @@ INSTRUCTIONS:
      bypass failures. If you believe a test is fundamentally incorrect, write a
      detailed comment in the code explaining why, but prioritize satisfying the
      test assertions.
-4. Output your implementation details to `.pipeline/changes.md`, showing:
+4. Before you finish, run a SELF-REVIEW of your own diff. Read what you wrote as
+   if you were auditing someone else's work — an automated reviewer will do
+   exactly that afterwards, and the cheapest place to find a defect is here.
+   a. Walk the specs' failure-mode table row by row (E1, E2, …). For each: the
+      file:line that handles it, or an explicit "NOT handled — [reason]".
+   b. Scan your diff for the defect classes that survive a green test suite:
+      swallowed errors (empty catch, ignored rejection, discarded return code),
+      unchecked null / index / key access, off-by-one in ranges and slices,
+      unawaited async work, resources opened and not released, mutation of a
+      caller's argument, unbounded loop / recursion / growth, and a partially
+      applied change (one call site updated, its siblings not — grep for every
+      caller of anything whose signature or behavior you changed).
+   c. State plainly anything you left incomplete, guessed at, or worked around.
+      An honest gap routes to the Tester and Reviewer; a hidden one ships.
+5. Output your implementation details to `.pipeline/changes.md`, showing:
    - File paths created or edited.
    - A descriptive breakdown of the internal logic implementation.
    - Reference code as `path/to/file:line`; do NOT paste whole files or raw
      diffs into changes.md — the orchestrator generates `.pipeline/diff.patch`
      automatically for review.
-   On subsequent iterations, APPEND a new "## Fix Cycle N" section rather than
-   overwriting previous entries.
-5. Write progress notes as you work; your stdout is streamed to a live dashboard.
+   - A `## Self-Review` section carrying the results of step 4 — the row-by-row
+     table, the defect-class scan result, and the honest gap list. This section
+     is REQUIRED; the orchestrator rejects a changes.md without it.
+   On subsequent iterations, APPEND a new "## Fix Cycle N" section (with its own
+   self-review) rather than overwriting previous entries.
+6. Write progress notes as you work; your stdout is streamed to a live dashboard.

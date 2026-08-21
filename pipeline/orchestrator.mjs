@@ -21,6 +21,7 @@ import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from '.
 import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES } from './integrity.mjs';
 import { parseVerdict, validateArtifactFile, detectTestWeakening, compactChangelog } from './artifacts.mjs';
 import { classifyFailure, backoffMs, sleep } from './retry.mjs';
+import { discoverRepos, captureBaseRefs, buildDiffArtifact } from './repos.mjs';
 import { LENSES, aggregatePanel } from './review-panel.mjs';
 
 function parseArgs(argv) {
@@ -358,11 +359,17 @@ if (args.continue) {
   status.hostClient = runner === 'host' ? hostClient : null;
   status.models = models;
   status.sandbox = args.sandbox;
-  // Capture the commit the run starts from, before any agent runs, so the
+  // Capture the commit each repo starts from, before any agent runs, so the
   // review diff can be scoped to this run even after agents commit their work.
+  // Plural because the run root may be a container folder of sibling clones, or
+  // a repo with nested clones — see repos.mjs.
   {
-    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: workCwd, encoding: 'utf8' });
-    status.baseRef = head.status === 0 ? head.stdout.trim() : null;
+    status.repos = captureBaseRefs(discoverRepos(workCwd, { maxDepth: config.repoScanDepth }));
+    // Primary repo, kept as a scalar for the halt handoff and legacy consumers.
+    status.baseRef = status.repos[0]?.baseRef ?? null;
+    if (status.repos.length > 1) {
+      console.log(`[Orchestrator] Diff scope: ${status.repos.length} repositories — ${status.repos.map((r) => r.label).join(', ')}`);
+    }
   }
   status.haltedPhase = null;
   status.extensions = [];
@@ -610,49 +617,15 @@ function enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore, exclude =
   }
 }
 
-// Git's canonical empty-tree object; diffing against it renders every tracked
-// file as an addition, so a repo with no commits yet still yields a real diff.
-const GIT_EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
-
-function resolveDiffBaseRef(git) {
-  // 1. Prefer the commit the run started from (captures committed + uncommitted work).
-  const captured = status?.baseRef;
-  if (captured && git(['cat-file', '-e', `${captured}^{commit}`]).status === 0) return captured;
-  // 2. Fall back to the merge-base with a default branch (for legacy runs missing baseRef).
-  for (const branch of ['main', 'master']) {
-    const mb = git(['merge-base', 'HEAD', branch]);
-    if (mb.status === 0 && mb.stdout.trim()) return mb.stdout.trim();
-  }
-  // 3. If there is at least one commit, diff the working tree against HEAD.
-  if (git(['rev-parse', '--verify', 'HEAD']).status === 0) return 'HEAD';
-  // 4. No commit available (fresh repo): diff against the empty tree so all
-  //    tracked/staged content is still shown to the reviewer.
-  return GIT_EMPTY_TREE;
-}
-
 function writeDiffArtifact() {
-  const git = (gitArgs) => spawnSync('git', gitArgs, { cwd: workCwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  // No git context at all: don't block the review — point the reviewer at the
-  // implementation artifacts and source files instead of a git diff.
-  if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) {
-    const note = '# diff unavailable (no git repository)\n\nReview the implementation directly from .pipeline/changes.md and the source files it references.\n';
-    try { fs.writeFileSync(paths.diff, note); } catch {}
-    return;
-  }
-  const baseRef = resolveDiffBaseRef(git);
-  let patch = git(['diff', baseRef]).stdout || '';
-  const untracked = (git(['ls-files', '--others', '--exclude-standard']).stdout || '').split('\n').filter(Boolean);
-  for (const f of untracked) {
-    if (f.startsWith('.pipeline')) continue;
-    patch += git(['diff', '--no-index', '/dev/null', f]).stdout || '';
-  }
-  let shortRef;
-  if (baseRef === 'HEAD') shortRef = 'HEAD (working tree)';
-  else if (baseRef === GIT_EMPTY_TREE) shortRef = 'empty tree (no commits yet)';
-  else shortRef = baseRef.slice(0, 12);
-  const body = patch
-    ? `# diff vs ${shortRef}\n\n${patch}`
-    : '# no changes detected\n\nNo diff against the run baseline. Review the implementation directly from .pipeline/changes.md and the source files it references.\n';
+  // Runs started before multi-repo discovery existed (and --resume against such
+  // a run) carry only the scalar baseRef, so rediscover and adopt it for the
+  // primary repo rather than losing the run's baseline.
+  const repos = status?.repos?.length
+    ? status.repos
+    : discoverRepos(workCwd, { maxDepth: config.repoScanDepth })
+      .map((r, i) => ({ ...r, baseRef: i === 0 ? (status?.baseRef ?? null) : null }));
+  const body = buildDiffArtifact(repos, { maxBytes: config.maxDiffBytes });
   try { fs.writeFileSync(paths.diff, body); } catch {}
 }
 

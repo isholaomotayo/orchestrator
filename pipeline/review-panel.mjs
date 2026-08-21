@@ -21,7 +21,13 @@ specs.md tracer-bullet tickets (and design.md Final Contracts if present),
 ticket by ticket. Report: missing implementations, logic and edge-case bugs
 (conditionals, boundary handling, data mutation, error paths), and scope creep —
 code implementing things the spec never asked for. Ignore style and security;
-other reviewers own those.`,
+other reviewers own those.
+
+You own the "## Spec Coverage Verification" table for the whole panel — the
+aggregated report inherits it from your report, so it must be present here: one
+row per tracer-bullet ticket AND one per failure-mode row (E1, E2, …) in
+specs.md, each with where it is implemented, the test that proves it, and
+OK / GAP. Fill it from code you opened yourself.`,
   },
   {
     key: 'security',

@@ -33,7 +33,22 @@ test('compileHaltHandoff renders REGRESSION_BLOCKED as not extendable', () => {
 test('compileHaltHandoff tolerates missing history and git info', () => {
   const doc = compileHaltHandoff({ status: haltedStatus('AGENT_ERROR') });
   assert.match(doc, /No checker runs recorded/);
-  assert.match(doc, /Not a git repository/);
+  assert.match(doc, /run root is not a git repository/);
+});
+
+test('compileHaltHandoff lists every repo in scope when the run spans several', () => {
+  // A run rooted at a container folder of clones has no git state at the root,
+  // so without this the handoff would claim there is no repository at all.
+  const s = haltedStatus('AGENT_ERROR', {
+    repos: [
+      { label: 'web', root: '/x/web', enclosing: false, baseRef: 'a'.repeat(40) },
+      { label: 'api', root: '/x/api', enclosing: false, baseRef: null },
+    ],
+  });
+  const doc = compileHaltHandoff({ status: s });
+  assert.match(doc, /Repositories in diff scope \(2\)/);
+  assert.match(doc, /`web` — base commit aaaaaaaaaaaa/);
+  assert.match(doc, /`api` — base commit \(none captured\)/);
 });
 
 test('compileHaltHandoff includes the stage table and git state', () => {

@@ -17,9 +17,17 @@ ${items.length ? items.map((t, i) => `${i + 1}. ${t}`).join('\n') : '- No action
 }
 
 const lensOf = (key) => LENSES.find((l) => l.key === key);
+// The correctness lens owns the Spec Coverage Verification table for the whole
+// panel — the merged report inherits it from that lens's report.
+const SPEC_COVERAGE = '## Spec Coverage Verification\n| Ticket 1 | `src/a.js:4` | `test/a.test.js:9` | OK |';
 const panel = (verdicts, opts = {}) => LENSES.map((l) => ({
   lens: l,
-  content: report(verdicts[l.key], opts[l.key] || {}),
+  content: report(verdicts[l.key], {
+    ...(opts[l.key] || {}),
+    ...(l.key === 'correctness'
+      ? { body: `${(opts[l.key] || {}).body ?? 'findings body text'}\n\n${SPEC_COVERAGE}` }
+      : {}),
+  }),
   ok: verdicts[l.key] !== undefined,
 }));
 
