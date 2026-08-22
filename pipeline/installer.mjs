@@ -306,11 +306,12 @@ function flagValue(argv, name, fallback = null) {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 }
 
+// A ref is required, never optional: an unpinned clone would fetch whatever the
+// default branch happens to point at.
 function cloneSource(source, ref) {
+  if (!ref) throw new Error('cloneSource requires a pinned ref');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-update-'));
-  const args = ref
-    ? ['clone', '--depth', '1', '--branch', ref, source, tmp]
-    : ['clone', '--depth', '1', source, tmp];
+  const args = ['-c', 'advice.detachedHead=false', 'clone', '--quiet', '--depth', '1', '--branch', ref, source, tmp];
   const res = spawnSync('git', args, { encoding: 'utf8', timeout: 120000 });
   if (res.status !== 0) {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}

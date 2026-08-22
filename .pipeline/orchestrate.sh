@@ -26,7 +26,10 @@ else
   JS_RUNNER="node"
 fi
 
-BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
+# Paths are passed as argv, never interpolated into the JS source: a repo path
+# containing a quote or backslash would otherwise break out of the string
+# literal. The rest of this file already follows that convention.
+BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1]+'/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}" "$PIPELINE_DIR")"
 
 USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --task-file <path> [same flags as above]
@@ -90,7 +93,7 @@ fi
 
 # Guardrail 3: pre-flight mutex check. Allow --continue when awaiting chat handoff.
 if [ -f "$PIPELINE_DIR/.lock" ] && [ "$CONTINUE" -eq 0 ]; then
-  LOCK_PID="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/.lock','utf8')).pid||'')}catch{console.log('')}")"
+  LOCK_PID="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1]+'/.lock','utf8')).pid||'')}catch{console.log('')}" "$PIPELINE_DIR")"
   if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
     echo "[orchestrate] Pipeline is locked by a running orchestrator (pid $LOCK_PID). Retry after it finishes." >&2
     exit 1
@@ -119,7 +122,7 @@ NOTIFY_UPDATE=1
 [ "${ORCH_NO_AUTO_UPDATE:-}" = "1" ] && NOTIFY_UPDATE=0
 [ -f "$PIPELINE_DIR/.lock" ] && NOTIFY_UPDATE=0
 if [ "$NOTIFY_UPDATE" -eq 1 ]; then
-  AUTO_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).autoUpdate===true?1:0)}catch{console.log(0)}")"
+  AUTO_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1]+'/config.json','utf8')).autoUpdate===true?1:0)}catch{console.log(0)}" "$PIPELINE_DIR")"
 fi
 
 if [ "$NOTIFY_UPDATE" = "1" ] && [ -f "$REPO_ROOT/pipeline/installer.mjs" ]; then

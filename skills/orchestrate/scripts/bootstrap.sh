@@ -73,7 +73,7 @@ cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
 echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF ..."
-git clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
 
 # Verify BEFORE copying or executing anything from the fetched tree.
 if [ "$SKIP_VERIFY" -eq 1 ]; then
@@ -173,5 +173,5 @@ if [ -f "$TMP/pipeline/installer.mjs" ]; then
     || echo "[orchestrate] Warning: could not write install manifest; --update will refresh engine files only." >&2
 fi
 
-echo "[orchestrate] Scaffold installed. Run: bash .pipeline/orchestrate.sh \"your task\""
-echo "[orchestrate] Later: bash .pipeline/orchestrate.sh updates the scaffold automatically, or run bootstrap.sh --update."
+echo "[orchestrate] Scaffold installed ($ORCHESTRATOR_REF, integrity-verified). Run: bash .pipeline/orchestrate.sh \"your task\""
+echo "[orchestrate] Updates are explicit: a run tells you when one is available; apply it with bootstrap.sh --update."
