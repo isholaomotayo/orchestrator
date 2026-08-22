@@ -30,6 +30,24 @@ import { isOrchestratorSourceRepo } from './self-guard.mjs';
 export const INSTALL_FILE = '.pipeline/install.json';
 export const CHECK_FILE = '.pipeline/update-check.json';
 export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git';
+// Fetches are pinned to a tagged release, never a floating branch, and the
+// fetched tree is verified against the sha256 manifest that ships with the
+// installed skill before any of it is copied or executed — see
+// skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
+// travel out-of-band from the clone.
+export const DEFAULT_REF = 'v1.0.1';
+// Relative to the consumer project: the manifest and verifier delivered by the
+// skill install. `.agents/…` is where bootstrap.sh puts them (the source path
+// `skills/…` is deliberately never written into a consumer — it is the
+// self-target guard's marker).
+export const VERIFIER_RELS = [
+  '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs',
+  '.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs',
+];
+export const MANIFEST_RELS = [
+  '.agents/skills/orchestrate/scripts/scaffold.sha256',
+  '.gemini/skills/orchestrate/scripts/scaffold.sha256',
+];
 export const CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -52,6 +70,12 @@ export const MANAGED = [
   { src: '.pipeline/spawn.sh', dest: '.pipeline/spawn.sh', cls: 'engine' },
   { src: '.pipeline/skill.json', dest: '.pipeline/skill.json', cls: 'engine' },
   { src: '.pipeline/prompts', dest: '.pipeline/prompts', cls: 'tunable', tree: true },
+  // The integrity manifest and its verifier are the trust anchor for every
+  // future fetch, so they are engine-class (always overwritten, never treated
+  // as a local edit to preserve). Listed before the tree entry below because
+  // listManaged is first-wins per destination.
+  { src: 'skills/orchestrate/scripts/scaffold-manifest.mjs', dest: '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs', cls: 'engine' },
+  { src: 'skills/orchestrate/scripts/scaffold.sha256', dest: '.agents/skills/orchestrate/scripts/scaffold.sha256', cls: 'engine' },
   { src: 'skills/orchestrate', dest: '.agents/skills/orchestrate', cls: 'tunable', tree: true },
   { src: 'skills/orchestrate', dest: '.gemini/skills/orchestrate', cls: 'tunable', tree: true, only: ['SKILL.md', 'REFERENCE.md'] },
   { src: '.agents/workflows/orchestrate.md', dest: '.agents/workflows/orchestrate.md', cls: 'tunable' },
@@ -282,14 +306,50 @@ function flagValue(argv, name, fallback = null) {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 }
 
-function cloneSource(source) {
+function cloneSource(source, ref) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestrator-update-'));
-  const res = spawnSync('git', ['clone', '--depth', '1', source, tmp], { encoding: 'utf8', timeout: 120000 });
+  const args = ref
+    ? ['clone', '--depth', '1', '--branch', ref, source, tmp]
+    : ['clone', '--depth', '1', source, tmp];
+  const res = spawnSync('git', args, { encoding: 'utf8', timeout: 120000 });
   if (res.status !== 0) {
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
     return null;
   }
   return tmp;
+}
+
+/** First existing candidate under repoRoot, or null. */
+export function firstExisting(repoRoot, rels, exists = fs.existsSync) {
+  for (const rel of rels) {
+    const abs = path.join(repoRoot, rel);
+    if (exists(abs)) return abs;
+  }
+  return null;
+}
+
+/**
+ * Verify a freshly fetched tree against the manifest that shipped with the
+ * installed skill, BEFORE anything in it is copied or executed. The verifier
+ * and manifest are both taken from the consumer project (out-of-band from the
+ * clone) — running the clone's own copy of either would let a tampered tree
+ * approve itself.
+ *
+ * @returns {{ok: boolean, reason?: string, detail?: string}} `ok:true` with
+ *   `reason:'unverifiable'` when this project predates the manifest (installed
+ *   by an older bootstrap): there is no trusted hash to compare against, so
+ *   the caller decides whether to proceed rather than hard-failing an existing
+ *   working install.
+ */
+export function verifyFetchedTree({ repoRoot, srcRoot, runner = process.execPath }) {
+  const verifier = firstExisting(repoRoot, VERIFIER_RELS);
+  const manifest = firstExisting(repoRoot, MANIFEST_RELS);
+  if (!verifier || !manifest) {
+    return { ok: true, reason: 'unverifiable', detail: 'no scaffold manifest is installed in this project (installed before manifests existed)' };
+  }
+  const res = spawnSync(runner, [verifier, '--verify', srcRoot, '--manifest', manifest], { encoding: 'utf8', timeout: 120000 });
+  if (res.status === 0) return { ok: true, reason: 'verified' };
+  return { ok: false, reason: 'mismatch', detail: (res.stderr || res.stdout || '').trim() };
 }
 
 function doApply({ repoRoot, srcRoot, force, source }) {
@@ -369,11 +429,25 @@ function main(argv) {
     let cloned = null;
     const source = flagValue(argv, '--source', readInstall(repoRoot)?.source || DEFAULT_SOURCE);
     if (!srcRoot) {
-      cloned = cloneSource(source);
-      if (!cloned) { console.error(`[installer] Could not fetch ${source}.`); return 1; }
+      const ref = flagValue(argv, '--ref', DEFAULT_REF);
+      cloned = cloneSource(source, ref);
+      if (!cloned) { console.error(`[installer] Could not fetch ${source}@${ref}.`); return 1; }
+      const check = argv.includes('--skip-verify')
+        ? { ok: true, reason: 'skipped' }
+        : verifyFetchedTree({ repoRoot, srcRoot: cloned });
+      if (!check.ok) {
+        console.error(`[installer] Integrity check failed for ${source}@${ref}:`);
+        if (check.detail) console.error(check.detail);
+        console.error('[installer] Refusing to update from a tree that does not match the reviewed release recorded in this project\'s scaffold manifest. If you are deliberately updating to a NEWER release, reinstall the skill first (npx skills add …) so its manifest matches, or pass --skip-verify to accept an unverified tree.');
+        try { fs.rmSync(cloned, { recursive: true, force: true }); } catch {}
+        return 1;
+      }
+      if (check.reason === 'unverifiable') console.error(`[installer] Warning: ${check.detail} — proceeding unverified.`);
+      if (check.reason === 'skipped') console.error('[installer] Warning: --skip-verify given; the fetched tree was NOT integrity-checked.');
       srcRoot = cloned;
       // Hand off to the freshly fetched installer so an update is always
-      // applied by the NEW logic, never by the stale local copy.
+      // applied by the NEW logic, never by the stale local copy. Integrity is
+      // already verified above, before any code from `cloned` has run.
       const fresh = path.join(cloned, 'pipeline', 'installer.mjs');
       if (fs.existsSync(fresh) && !argv.includes('--no-rexec')) {
         const res = spawnSync(process.execPath, [fresh, '--apply', '--src', cloned, '--repo', repoRoot, '--no-rexec', ...(force ? ['--force'] : [])], { stdio: 'inherit' });
@@ -394,7 +468,7 @@ function main(argv) {
     return 0;
   }
 
-  console.error('Usage: node pipeline/installer.mjs --check | --plan --src <dir> | --apply [--src <dir>] [--force] | --self-update | --write-manifest --src <dir>');
+  console.error('Usage: node pipeline/installer.mjs --check | --plan --src <dir> | --apply [--src <dir>] [--ref <tag>] [--skip-verify] [--force] | --self-update | --write-manifest --src <dir>');
   return 2;
 }
 

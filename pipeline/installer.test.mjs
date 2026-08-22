@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import {
   MANAGED, listManaged, planUpdate, applyUpdate, nextManifestFiles,
   manifestFilesAfterInstall, shouldCheck, resolveEngineEntry, summarize, isValidSource, CHECK_TTL_MS,
+  firstExisting, verifyFetchedTree, DEFAULT_REF, VERIFIER_RELS, MANIFEST_RELS,
 } from './installer.mjs';
 import { SELF_MARKERS } from './self-guard.mjs';
 
@@ -260,3 +261,73 @@ test('summarize reports every outcome, and says so when there is nothing to do',
 function manifestHash(root, rel) {
   return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
 }
+
+test('the default fetch ref is a pinned tag, never a branch', () => {
+  assert.match(DEFAULT_REF, /^v\d+\.\d+\.\d+$/, 'DEFAULT_REF must be an immutable release tag');
+  for (const bad of ['main', 'master', 'HEAD', 'develop']) {
+    assert.notEqual(DEFAULT_REF, bad);
+  }
+});
+
+test('firstExisting picks the first candidate that is present', () => {
+  assert.equal(firstExisting('/r', ['a', 'b'], (p) => p === path.join('/r', 'b')), path.join('/r', 'b'));
+  assert.equal(firstExisting('/r', ['a', 'b'], () => false), null);
+});
+
+// The trust anchor must come from the consumer project, never from the tree
+// being checked — these paths are what bootstrap.sh actually installs.
+test('the verifier and manifest are looked up outside the fetched tree', () => {
+  for (const rel of [...VERIFIER_RELS, ...MANIFEST_RELS]) {
+    assert.ok(rel.startsWith('.agents/') || rel.startsWith('.gemini/'), `${rel} must be an installed-skill path`);
+    assert.ok(!rel.startsWith('skills/'), `${rel} must not use the self-guard marker path`);
+  }
+});
+
+// A project installed before manifests existed has no trusted hash to compare
+// against. That must not hard-fail an existing working install, but it must be
+// reported rather than silently treated as verified.
+test('verifyFetchedTree reports unverifiable when no manifest is installed', () => {
+  const repoRoot = tmpDir('orch-repo-');
+  const result = verifyFetchedTree({ repoRoot, srcRoot: tmpDir('orch-src-') });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'unverifiable');
+  assert.match(result.detail, /manifest/i);
+});
+
+test('verifyFetchedTree runs the installed verifier and passes on a clean tree', () => {
+  const repoRoot = tmpDir('orch-repo-');
+  const srcRoot = tmpDir('orch-src-', { 'pipeline/orchestrator.mjs': 'engine' });
+  // Stand-in verifier: asserts it was handed the fetched tree and the manifest.
+  write(repoRoot, VERIFIER_RELS[0], `
+    const a = process.argv.slice(2);
+    if (a[0] !== '--verify' || !a[1] || a[2] !== '--manifest' || !a[3]) process.exit(2);
+    process.exit(0);
+  `);
+  write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.0","files":{}}');
+  const result = verifyFetchedTree({ repoRoot, srcRoot });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'verified');
+});
+
+test('verifyFetchedTree fails closed when the installed verifier rejects the tree', () => {
+  const repoRoot = tmpDir('orch-repo-');
+  const srcRoot = tmpDir('orch-src-', { 'pipeline/orchestrator.mjs': 'tampered' });
+  write(repoRoot, VERIFIER_RELS[0], 'console.error("modified (1): pipeline/orchestrator.mjs"); process.exit(1);');
+  write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.0","files":{}}');
+  const result = verifyFetchedTree({ repoRoot, srcRoot });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'mismatch');
+  assert.match(result.detail, /orchestrator\.mjs/);
+});
+
+test('the manifest and verifier are engine-class, so a local edit can never preserve a stale trust anchor', () => {
+  const src = sources();
+  write(src, 'skills/orchestrate/scripts/scaffold-manifest.mjs', 'verifier v2');
+  write(src, 'skills/orchestrate/scripts/scaffold.sha256', '{"ref":"v2","files":{}}');
+  const managed = listManaged(src);
+  for (const rel of ['scaffold-manifest.mjs', 'scaffold.sha256']) {
+    const entry = managed.find((m) => m.dest === `.agents/skills/orchestrate/scripts/${rel}`);
+    assert.ok(entry, `${rel} must be managed`);
+    assert.equal(entry.cls, 'engine', `${rel} must always be overwritten, not preserved as a user edit`);
+  }
+});

@@ -215,7 +215,17 @@ bash .agents/skills/orchestrate/scripts/bootstrap.sh --update
 
 New config keys need no migration — `loadConfig` merges defaults, so your `.pipeline/config.json` only has to hold what you actually changed.
 
-Pass `--force` to overwrite edited prompts and docs too. Disable auto-update with `ORCH_NO_AUTO_UPDATE=1` or `"autoUpdate": false` in `.pipeline/config.json`.
+Pass `--force` to overwrite edited prompts and docs too.
+
+**Updates are explicit by default.** A run tells you when an update is available but does not install
+it — applying upstream code before a run would let a remote change the engine and the stage prompts
+underneath that run, unattended. Opt in per project with `"autoUpdate": true` in
+`.pipeline/config.json` (`ORCH_NO_AUTO_UPDATE=1` then suppresses it for a single run).
+
+**Every fetch is pinned and verified.** Both the initial install and any update fetch a *tagged*
+release and then check the fetched tree file-by-file against `scaffold.sha256`, which ships with the
+skill itself — out-of-band from the code it validates — before anything is copied or executed. A
+mismatch aborts. See [Supply-chain integrity](skills/orchestrate/REFERENCE.md#supply-chain-integrity).
 
 ## Dashboard walkthrough
 
@@ -543,8 +553,10 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
   "designStage": false, // run the optional Designer stage (see --design)
   "handoffStage": false, // run the optional Handoff stage (see --handoff)
-  "autoUpdate": true,   // refresh the scaffold from upstream before a new run
-                        // (see "Updating the scaffold"; ORCH_NO_AUTO_UPDATE=1 also disables it)
+  "autoUpdate": false,  // opt in to refreshing the scaffold from upstream before a new run.
+                        // Off by default: a run should not let a remote change the engine and
+                        // stage prompts underneath it. Updates are otherwise explicit, via
+                        // bootstrap.sh --update (see "Updating the scaffold").
   "customRunners": {
     // optional: wire up any CLI-shaped agent
     "my-agent": {

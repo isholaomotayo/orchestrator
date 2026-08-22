@@ -9,7 +9,7 @@ arguments:
   - mode
   - runner
 disable-model-invocation: true
-allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read
+allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt)
 ---
 
 # Orchestrate
@@ -64,10 +64,10 @@ This is the **only** pre-run question. Do not ask about mode, runner, or other f
 
 ### 4. Execute the Pipeline
 
-Assemble the command from what was gathered:
+Write `$task` to `.pipeline/task.txt` using the Write tool (not by embedding it in a shell command — `$task` is free-form text and may contain characters that would otherwise need re-quoting on a command line), then run:
 
 ```bash
-bash .pipeline/orchestrate.sh "$task" \
+bash .pipeline/orchestrate.sh --task-file .pipeline/task.txt \
   --mode chat --host-client <your-client> \
   --model-profile auto \
   [--approve-plan] [--design] [--handoff]

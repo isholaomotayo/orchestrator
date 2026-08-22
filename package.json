@@ -1,6 +1,6 @@
 {
   "name": "agent-pipeline",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -9,8 +9,9 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test pipeline/*.test.mjs evals/*.test.mjs",
-    "typecheck": "for f in pipeline/*.mjs evals/*.mjs; do node --check \"$f\" || exit 1; done",
+    "test": "node --test pipeline/*.test.mjs evals/*.test.mjs skills/orchestrate/scripts/*.test.mjs",
+    "typecheck": "for f in pipeline/*.mjs evals/*.mjs scripts/*.mjs skills/orchestrate/scripts/*.mjs; do node --check \"$f\" || exit 1; done",
+    "release:manifest": "node scripts/gen-scaffold-manifest.mjs",
     "ui": "node pipeline/ui-server.mjs",
     "orchestrate": "bash .pipeline/orchestrate.sh",
     "pipeline": "bash .pipeline/orchestrate.sh",

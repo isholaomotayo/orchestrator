@@ -34,6 +34,41 @@ bash skills/orchestrate/scripts/bootstrap.sh
 Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the GitHub repo, then records
 `.pipeline/install.json` (installed commit + a hash of every delivered file).
 
+## Supply-chain integrity
+
+Every fetch — the initial bootstrap clone and every `--update` / `--self-update`
+— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v1.0.1`),
+never a floating branch, and the fetched tree is then **verified file-by-file
+against `scaffold.sha256`** before anything in it is copied or executed.
+
+Pinning alone would not be integrity: a tag can be moved, a repo can be
+hijacked, a proxy can rewrite a response. The manifest closes that gap.
+
+| Property | Why it matters |
+|---|---|
+| The manifest ships **with the skill**, not with the clone | A manifest fetched alongside the code it describes proves nothing — whoever controls the code controls the manifest. `scaffold.sha256` arrives via `npx skills add`, out-of-band from the tree it validates. |
+| The **verifier** also runs from the installed skill | Running the clone's own copy would let a tampered tree approve itself. |
+| Verification happens **before** any fetched code runs | Including before the re-exec into the fetched `installer.mjs`. |
+| Coverage includes **stage prompts** and `package.json` | Prompts steer the agents and npm scripts execute, so both are as security-relevant as engine code. |
+| **Extra** files fail the check too | `npm test` globs `pipeline/*.test.mjs`, so a merely *added* file can execute. |
+| Fails **closed** | A mismatch aborts the install; it never proceeds with a warning. |
+
+Escape hatch, for local development against a fork only:
+`ORCHESTRATOR_REPO` / `ORCHESTRATOR_REF` / `ORCHESTRATOR_MANIFEST` to point at
+your own release, or `--skip-verify` to install unverified (prints a warning).
+
+Cutting a release:
+
+```bash
+npm run release:manifest -- --ref vX.Y.Z   # rehash the tree
+git commit -am "release vX.Y.Z"            # commit the manifest
+git tag vX.Y.Z && git push --tags
+```
+
+The manifest never hashes itself, which is what makes a same-commit pin
+possible — a file cannot contain its own hash, and a commit cannot contain its
+own SHA.
+
 ## Update an installed scaffold
 
 ```bash
@@ -41,18 +76,28 @@ bash .agents/skills/orchestrate/scripts/bootstrap.sh --update   # engine always;
 bash .agents/skills/orchestrate/scripts/bootstrap.sh --force    # also overwrite edited prompts/docs
 ```
 
-`orchestrate.sh` also applies pending updates automatically before a new run (never on `--continue` /
-`--resume`, never while `.pipeline/.lock` is held). Disable with `ORCH_NO_AUTO_UPDATE=1` or
-`"autoUpdate": false` in `.pipeline/config.json`. An edited prompt is never overwritten — the new
+Updates are **explicit by default**. `orchestrate.sh` tells you when one is available but does not
+install it: applying upstream code before a run would let a remote change the engine and the stage
+prompts underneath that run, unattended. Opt in per project with `"autoUpdate": true` in
+`.pipeline/config.json` (then `ORCH_NO_AUTO_UPDATE=1` suppresses it for one run); auto-update never
+runs on `--continue` / `--resume`, nor while `.pipeline/.lock` is held. Either way the fetch is
+pinned and integrity-verified as described above. An edited prompt is never overwritten — the new
 version is written beside it as `<file>.new`. `.pipeline/config.json` and run state are never touched.
 
 ## Direct CLI
 
 ```bash
 bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox]
+bash .pipeline/orchestrate.sh --task-file .pipeline/task.txt [same flags as above]
 bash .pipeline/orchestrate.sh --resume [--extend 5]
 node pipeline/orchestrator.mjs --task "description" --model-profile auto
+node pipeline/orchestrator.mjs --task-file .pipeline/task.txt --model-profile auto
 ```
+
+`--task-file` reads the task text from a file instead of a shell argument.
+Chat-mode hosts should prefer it: it means free-form, user-supplied task text
+never has to be embedded in (and correctly re-quoted within) a shell command
+the agent constructs.
 
 ## New flags and config keys
 

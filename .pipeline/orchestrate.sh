@@ -29,18 +29,31 @@ fi
 BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}")"
 
 USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
+   or: bash .pipeline/orchestrate.sh --task-file <path> [same flags as above]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]
 
+--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line.
 Exit code 3 = self-target guard: this repo is the orchestrator source; override with --allow-self or ORCH_ALLOW_SELF=1.'
 
 RESUME=0
 CONTINUE=0
 TASK=""
+TASK_FILE=""
 if [ "${1:-}" = "--resume" ]; then
   RESUME=1
 elif [ "${1:-}" = "--continue" ]; then
   CONTINUE=1
+elif [ "${1:-}" = "--task-file" ]; then
+  # Reads the task text from a file instead of a shell argument — prefer this
+  # in chat mode so free-form task text never has to be embedded in, and
+  # correctly re-quoted within, a command line.
+  TASK_FILE="${2:-}"
+  if [ -z "$TASK_FILE" ]; then
+    echo "$USAGE" >&2
+    exit 2
+  fi
+  shift 2
 else
   TASK="${1:-}"
   if [ -z "$TASK" ] || [[ "$TASK" == --* ]]; then
@@ -93,22 +106,31 @@ fi
 # right now, and swapping the engine underneath them risks reading that
 # checkpoint differently. Failures here are never fatal — an update problem must
 # not cost the user their run.
-AUTO_UPDATE=1
-[ "$RESUME" -eq 1 ] && AUTO_UPDATE=0
-[ "$CONTINUE" -eq 1 ] && AUTO_UPDATE=0
-[ "${ORCH_NO_AUTO_UPDATE:-}" = "1" ] && AUTO_UPDATE=0
-[ -f "$PIPELINE_DIR/.lock" ] && AUTO_UPDATE=0
-if [ "$AUTO_UPDATE" -eq 1 ]; then
-  AUTO_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).autoUpdate===false?0:1)}catch{console.log(1)}")"
+# Auto-update is OPT-IN. Fetching and applying upstream code before a run would
+# make every run depend on a remote that can change the engine and the stage
+# prompts underneath it — i.e. remote content steering local agents, unattended.
+# Updates are therefore explicit (`bootstrap.sh --update`) unless a project
+# deliberately turns this on with "autoUpdate": true. Notification stays on: we
+# still say when an update exists, we just do not install it for you.
+AUTO_UPDATE=0
+NOTIFY_UPDATE=1
+[ "$RESUME" -eq 1 ] && NOTIFY_UPDATE=0
+[ "$CONTINUE" -eq 1 ] && NOTIFY_UPDATE=0
+[ "${ORCH_NO_AUTO_UPDATE:-}" = "1" ] && NOTIFY_UPDATE=0
+[ -f "$PIPELINE_DIR/.lock" ] && NOTIFY_UPDATE=0
+if [ "$NOTIFY_UPDATE" -eq 1 ]; then
+  AUTO_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync('$PIPELINE_DIR/config.json','utf8')).autoUpdate===true?1:0)}catch{console.log(0)}")"
 fi
 
-if [ "$AUTO_UPDATE" = "1" ] && [ -f "$REPO_ROOT/pipeline/installer.mjs" ]; then
+if [ "$NOTIFY_UPDATE" = "1" ] && [ -f "$REPO_ROOT/pipeline/installer.mjs" ]; then
   CHECK_JSON="$("$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" --check --repo "$REPO_ROOT" 2>/dev/null || true)"
   HAS_UPDATE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).updateAvailable?1:0)}catch{console.log(0)}" "$CHECK_JSON")"
-  if [ "$HAS_UPDATE" = "1" ]; then
-    echo "[orchestrate] Scaffold update available — applying before this run (disable with ORCH_NO_AUTO_UPDATE=1 or \"autoUpdate\": false in .pipeline/config.json)."
+  if [ "$HAS_UPDATE" = "1" ] && [ "$AUTO_UPDATE" = "1" ]; then
+    echo "[orchestrate] Scaffold update available — applying before this run (\"autoUpdate\": true is set in .pipeline/config.json; disable with ORCH_NO_AUTO_UPDATE=1)."
     "$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" --self-update --repo "$REPO_ROOT" \
       || echo "[orchestrate] Warning: update failed — continuing with the installed version." >&2
+  elif [ "$HAS_UPDATE" = "1" ]; then
+    echo "[orchestrate] A scaffold update is available. Review and apply it deliberately: bash .agents/skills/orchestrate/scripts/bootstrap.sh --update"
   fi
 fi
 
@@ -249,6 +271,8 @@ if [ "$CONTINUE" -eq 1 ]; then
   PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --continue "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 elif [ "$RESUME" -eq 1 ]; then
   PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
+elif [ -n "$TASK_FILE" ]; then
+  PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --task-file "$TASK_FILE" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 else
   PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --task "$TASK" "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 fi
