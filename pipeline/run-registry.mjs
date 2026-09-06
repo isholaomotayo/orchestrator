@@ -54,7 +54,10 @@ export function newRunId({ featureId = null, ticketId = null, kind = 'ticket', n
   const parts = [stamp];
   if (featureId) parts.push(sanitizeSegment(featureId, 'f'));
   parts.push(sanitizeSegment(ticketId || kind, 'run'));
-  parts.push(crypto.randomBytes(2).toString('hex'));
+  // 4 bytes, not 2: a run id collides only if two runs share a directory, which
+  // silently merges two runs' state. At 2 bytes the birthday bound puts a
+  // collision within reach of a busy pool; at 4 it is ~1 in 4 billion per pair.
+  parts.push(crypto.randomBytes(4).toString('hex'));
   return parts.join('-');
 }
 

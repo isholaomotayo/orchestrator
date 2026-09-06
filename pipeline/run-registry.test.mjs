@@ -21,15 +21,15 @@ function tmpRun(runId = 'r1') {
 
 test('newRunId encodes timestamp, feature and ticket and stays filesystem-safe', () => {
   const id = newRunId({ featureId: 'F1', ticketId: 'T02', now: new Date('2026-09-06T07:05:12Z') });
-  assert.match(id, /^20260906T070512Z-F1-T02-[0-9a-f]{4}$/);
+  assert.match(id, /^20260906T070512Z-F1-T02-[0-9a-f]{8}$/);
   // The dashboard only serves run dirs matching this shape.
   assert.match(id, /^[\w.-]+$/);
   assert.equal(isValidRunId(id), true);
 });
 
 test('newRunId falls back to the run kind when there is no ticket', () => {
-  assert.match(newRunId({ featureId: 'F1', kind: 'plan' }), /-F1-plan-[0-9a-f]{4}$/);
-  assert.match(newRunId({ kind: 'adhoc' }), /^\d{8}T\d{6}Z-adhoc-[0-9a-f]{4}$/);
+  assert.match(newRunId({ featureId: 'F1', kind: 'plan' }), /-F1-plan-[0-9a-f]{8}$/);
+  assert.match(newRunId({ kind: 'adhoc' }), /^\d{8}T\d{6}Z-adhoc-[0-9a-f]{8}$/);
 });
 
 test('newRunId sorts chronologically as a plain string', () => {
@@ -39,9 +39,13 @@ test('newRunId sorts chronologically as a plain string', () => {
 });
 
 test('newRunId is unique across many draws in the same millisecond', () => {
+  // Same timestamp and same kind, so only the random suffix separates them.
+  // With 4 random bytes the birthday bound over 1000 draws puts the expected
+  // number of collisions at ~0.0001, so tolerating one and no more keeps this
+  // assertion both meaningful and stable.
   const now = new Date('2026-09-06T07:05:12Z');
   const ids = new Set(Array.from({ length: 1000 }, () => newRunId({ kind: 'adhoc', now })));
-  assert.ok(ids.size > 990, `expected near-unique ids, got ${ids.size}/1000`);
+  assert.ok(ids.size >= 999, `expected near-unique ids, got ${ids.size}/1000`);
 });
 
 test('newRunId sanitizes feature and ticket ids that would break a path', () => {
