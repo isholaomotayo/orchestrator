@@ -20,6 +20,10 @@ export function buildSnapshot({
   const features = roadmap?.features || [];
   const byFeature = new Map(features.map((f) => [f.id, f]));
 
+  // Anything waiting on a person belongs here, not only formal decisions. A
+  // feature that failed, or an escalation with no question attached, still
+  // needs someone to look — and a digest that says "nothing needs your
+  // decision" while the roadmap is stuck is worse than no digest at all.
   const needsDecision = decisions
     .filter((d) => d.status === 'open')
     .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
@@ -35,6 +39,44 @@ export function buildSnapshot({
       artifacts: d.artifacts || [],
       since: d.ts ?? null,
     }));
+
+  const covered = new Set(needsDecision.map((d) => d.featureId).filter(Boolean));
+  for (const feature of features) {
+    if (!['failed', 'held'].includes(feature.status) || covered.has(feature.id)) continue;
+    needsDecision.push({
+      decisionId: null,
+      kind: feature.status === 'held' ? 'held' : 'feature-failed',
+      runId: feature.integrationRunId ?? null,
+      featureId: feature.id,
+      featureTitle: feature.title,
+      question: feature.status === 'held'
+        ? `${feature.id} (${feature.title}) is on hold${feature.heldReason ? `: ${feature.heldReason}` : ''}.`
+        : `${feature.id} (${feature.title}) did not complete and the roadmap cannot continue past it.`,
+      options: feature.status === 'held' ? ['release', 'skip'] : ['retry', 'skip', 'hold'],
+      recommended: null,
+      artifacts: [],
+      since: feature.startedAt ?? null,
+    });
+    covered.add(feature.id);
+  }
+
+  // Escalations the supervisor raised that are not attached to a decision.
+  for (const item of attention) {
+    if (!item.escalate || item.decisionId || covered.has(item.featureId)) continue;
+    needsDecision.push({
+      decisionId: null,
+      attentionId: item.id ?? null,
+      kind: item.kind || 'attention',
+      runId: item.runId ?? null,
+      featureId: item.featureId ?? null,
+      featureTitle: byFeature.get(item.featureId)?.title ?? null,
+      question: item.summary || 'Something needs your attention.',
+      options: [],
+      recommended: null,
+      artifacts: [],
+      since: item.ts ?? null,
+    });
+  }
 
   const recentlyLanded = features
     .filter((f) => f.status === 'landed')
@@ -139,7 +181,14 @@ export function renderDigest(snapshot) {
     const where = [d.featureId, d.runId].filter(Boolean).join(' · ');
     const options = d.options.length ? ` Options: ${d.options.join(', ')}.` : '';
     const recommended = d.recommended ? ` Recommended: ${d.recommended}.` : '';
-    return `- **${d.question}** (${where}) — answer with \`pool decide ${d.decisionId} "<answer>"\`.${options}${recommended}`;
+    const how = d.decisionId
+      ? ` — answer with \`pool decide ${d.decisionId} "<answer>"\``
+      : d.kind === 'feature-failed'
+        ? ` — read \`pool status\`, then \`roadmap skip ${d.featureId}\` or fix and re-run`
+        : d.kind === 'held'
+          ? ` — release with \`roadmap release ${d.featureId}\``
+          : '';
+    return `- **${d.question}** (${where})${how}.${options}${recommended}`;
   }), 'Nothing needs your decision right now.'));
 
   parts.push(section('Recently landed', snapshot.recentlyLanded.map((f) => {

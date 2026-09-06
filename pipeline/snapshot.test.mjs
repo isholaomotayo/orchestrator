@@ -125,3 +125,44 @@ test('an empty section says so instead of rendering an empty heading', () => {
   const text = renderDigest(buildSnapshot({ roadmap: null, runs: [], decisions: [], attention: [], supervisor: null, now: new Date() }));
   assert.match(text, /Nothing needs your attention|Nothing needs your decision/i);
 });
+
+test('a failed feature appears as something needing the operator, not silence', () => {
+  // The digest saying "nothing needs your decision" while the roadmap is stuck
+  // behind a failed feature is worse than no digest at all.
+  const stuck = { ...roadmap, features: [{ ...roadmap.features[1], status: 'failed' }] };
+  const s = buildSnapshot({ roadmap: stuck, runs: [], decisions: [], attention: [], supervisor, now: new Date() });
+  assert.equal(s.needsDecision.length, 1);
+  assert.equal(s.needsDecision[0].kind, 'feature-failed');
+  assert.equal(s.needsDecision[0].decisionId, null);
+  const text = renderDigest(s);
+  assert.match(text, /did not complete/);
+  assert.doesNotMatch(text, /pool decide null/);
+});
+
+test('a held feature says how to release it', () => {
+  const held = { ...roadmap, features: [{ ...roadmap.features[1], status: 'held', heldReason: 'waiting on design' }] };
+  const text = renderDigest(buildSnapshot({ roadmap: held, runs: [], decisions: [], attention: [], supervisor, now: new Date() }));
+  assert.match(text, /waiting on design/);
+  assert.match(text, /roadmap release F2/);
+});
+
+test('an escalation with no decision attached still reaches the operator', () => {
+  const s = buildSnapshot({
+    roadmap: null, runs: [], decisions: [], supervisor,
+    attention: [{ id: 'a1', escalate: true, kind: 'dead', runId: 'r9', summary: 'The worker process is gone', ts: '2026-09-06T11:00:00Z' }],
+    now: new Date(),
+  });
+  assert.equal(s.needsDecision.length, 1);
+  assert.match(renderDigest(s), /worker process is gone/);
+});
+
+test('a feature already covered by a decision is not listed twice', () => {
+  const stuck = { ...roadmap, features: [{ ...roadmap.features[1], status: 'failed' }] };
+  const s = buildSnapshot({
+    roadmap: stuck, runs: [], supervisor, attention: [],
+    decisions: [{ decisionId: 'd9', status: 'open', featureId: 'F2', kind: 'merge-conflict', question: 'resolve?', options: [] }],
+    now: new Date(),
+  });
+  assert.equal(s.needsDecision.length, 1);
+  assert.equal(s.needsDecision[0].decisionId, 'd9');
+});

@@ -39,11 +39,56 @@ USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|
 --task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line.
 Exit code 3 = self-target guard: this repo is the orchestrator source; override with --allow-self or ORCH_ALLOW_SELF=1.'
 
+# ---- Pool and roadmap subcommands ------------------------------------------
+# These read and steer a whole roadmap rather than starting one run, so they
+# bypass the single-run plumbing entirely.
+case "${1:-}" in
+  pool|roadmap)
+    SUB="$1"; shift
+    cd "$REPO_ROOT"
+    if [ "$SUB" = "roadmap" ]; then
+      exec "$JS_RUNNER" pipeline/pool-cli.mjs roadmap "$@"
+    fi
+    case "${1:-}" in
+      start)
+        shift
+        # The supervisor runs detached: it must outlive the shell that started it.
+        mkdir -p "$PIPELINE_DIR/control"
+        if [ -f "$PIPELINE_DIR/control/supervisor.pid" ] && kill -0 "$(cat "$PIPELINE_DIR/control/supervisor.pid")" 2>/dev/null; then
+          echo "[orchestrate] A supervisor is already running (pid $(cat "$PIPELINE_DIR/control/supervisor.pid"))." >&2
+          exit 1
+        fi
+        "$JS_RUNNER" pipeline/pool-cli.mjs roadmap compile || exit 1
+        ;;
+      stop)
+        PID_FILE="$PIPELINE_DIR/control/supervisor.pid"
+        if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+          kill -TERM "$(cat "$PID_FILE")"
+          echo "[orchestrate] Asked the supervisor to stop; running workers finish their current stage."
+        else
+          echo "[orchestrate] No supervisor is running."
+        fi
+        exit 0
+        ;;
+      *)
+        exec "$JS_RUNNER" pipeline/pool-cli.mjs "$@"
+        ;;
+    esac
+    ;;
+esac
+
 RESUME=0
 CONTINUE=0
 TASK=""
 TASK_FILE=""
-if [ "${1:-}" = "--resume" ]; then
+POOL_START=0
+if [ "${1:-}" = "--roadmap" ]; then
+  # `--roadmap <file>` is the one-shot form: compile the roadmap and start the
+  # supervisor, with the dashboard discovery below applying as usual.
+  POOL_START=1
+  ROADMAP_FILE="${2:-.pipeline/roadmap.md}"
+  shift 2 2>/dev/null || shift $#
+elif [ "${1:-}" = "--resume" ]; then
   RESUME=1
 elif [ "${1:-}" = "--continue" ]; then
   CONTINUE=1
@@ -270,7 +315,20 @@ fi
 
 cd "$REPO_ROOT"
 set +e
-if [ "$CONTINUE" -eq 1 ]; then
+if [ "$POOL_START" -eq 1 ]; then
+  if [ "${ROADMAP_FILE:-}" != ".pipeline/roadmap.md" ] && [ -n "${ROADMAP_FILE:-}" ] && [ -f "$ROADMAP_FILE" ]; then
+    cp "$ROADMAP_FILE" "$PIPELINE_DIR/roadmap.md"
+  fi
+  "$JS_RUNNER" pipeline/pool-cli.mjs roadmap compile
+  COMPILE_CODE=$?
+  if [ "$COMPILE_CODE" -ne 0 ]; then
+    EXIT_CODE=$COMPILE_CODE
+  else
+    PIPELINE_UI_PORT="$UI_PORT" nohup "$JS_RUNNER" pipeline/supervisor-bin.mjs > "$PIPELINE_DIR/control/supervisor.out" 2>&1 &
+    echo "[orchestrate] Supervisor started (pid $!). Watch it with: bash .pipeline/orchestrate.sh pool digest"
+    EXIT_CODE=0
+  fi
+elif [ "$CONTINUE" -eq 1 ]; then
   PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs --continue "${ORCH_ARGS[@]+"${ORCH_ARGS[@]}"}"
 elif [ "$RESUME" -eq 1 ]; then
   PIPELINE_UI_PORT="$UI_PORT" "$JS_RUNNER" pipeline/orchestrator.mjs "${ORCH_ARGS[@]}"
