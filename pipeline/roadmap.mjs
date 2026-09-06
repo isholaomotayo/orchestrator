@@ -24,6 +24,9 @@ export const FEATURE_STATUSES = [
   'integrating',
   'reviewing',
   'awaiting_merge_approval',
+  // Consent recorded, but not yet merged: the supervisor still performs a live
+  // mergeability read before touching the base branch.
+  'merge_approved',
   'merging',
   'landed',
   'failed',
