@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildInvocation, runAgent, detectRunner, agentEnv } from './adapters.mjs';
+import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
 const base = { systemPrompt: 'sys', task: 'do it', config: {}, model: null };
@@ -168,6 +168,28 @@ test('a read-only stage gains only the skill read-only commands it declared', ()
   assert.doesNotMatch(allow, /deliver/);
   // Still no general write access.
   assert.doesNotMatch(allow, /acceptEdits/);
+});
+
+test('resolvePoolRunner passes an explicit runner through untouched', () => {
+  assert.equal(resolvePoolRunner('claude'), 'claude');
+  assert.equal(resolvePoolRunner('host'), 'host');
+});
+
+test('resolvePoolRunner never throws for auto/unset and always resolves to a real runner or host', () => {
+  for (const requested of ['auto', null, undefined]) {
+    const resolved = resolvePoolRunner(requested);
+    assert.ok(Object.keys(RUNNER_BINS).includes(resolved), `"${resolved}" should be a known runner`);
+  }
+});
+
+test('checkRunnerAvailable always accepts host', () => {
+  assert.deepEqual(checkRunnerAvailable('host'), { ok: true });
+});
+
+test('checkRunnerAvailable rejects an unknown runner name with a clear reason', () => {
+  const result = checkRunnerAvailable('nope');
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /Unknown runner/);
 });
 
 test('an agent process never receives forge credentials', () => {

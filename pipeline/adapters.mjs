@@ -7,7 +7,27 @@ import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
 import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
 
-const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
+export const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
+
+// Resolve a pool feature/ticket's declared runner ('auto'/null/a name) to the
+// runner the supervisor should actually use. 'auto' prefers an authenticated
+// CLI so real parallel automation keeps working unattended, but never throws —
+// falling back to 'host' keeps a roadmap runnable with zero CLI auth at all.
+export function resolvePoolRunner(requested) {
+  if (!requested || requested === 'auto') return firstAuthenticatedRunner() || 'host';
+  return requested;
+}
+
+// Preflight a resolved (non-auto) runner before the supervisor spawns anything
+// for it, so an unusable runner is a clean attention item instead of a crash
+// inside a detached child process.
+export function checkRunnerAvailable(runner) {
+  if (runner === 'host') return { ok: true };
+  if (!RUNNER_BINS[runner]) return { ok: false, reason: `Unknown runner "${runner}".` };
+  if (!binExists(RUNNER_BINS[runner])) return { ok: false, reason: `"${runner}" is not installed on PATH.` };
+  if (!probeRunnerAuth(runner)) return { ok: false, reason: `"${runner}" is on PATH but not authenticated.` };
+  return { ok: true };
+}
 
 // Control-plane files a writing stage must never author. The orchestrator trusts
 // these to decide verdicts, cycle budgets, and what the next stage is told to do,
