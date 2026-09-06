@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries } from './state.mjs';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile } from './state.mjs';
 import { runChecks } from './checker.mjs';
 import { runAgent, detectRunner } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
@@ -108,25 +108,14 @@ const hostClient = invocationMode === 'chat'
 // lock. On EEXIST, inspect the owner: reclaim only if its process is gone.
 fs.mkdirSync(paths.dir, { recursive: true });
 function acquireLock() {
-  const payload = JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(paths.lock, 'wx');
-      fs.writeSync(fd, payload);
-      fs.closeSync(fd);
-      return true;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      const lock = readLock(paths);
-      if (lock && pidAlive(lock.pid)) {
-        console.error(`[Orchestrator] Pipeline execution is locked by a running orchestrator (pid ${lock.pid}).`);
-        process.exit(1);
-      }
-      console.error('[Orchestrator] Clearing stale lock (owning process is gone).');
-      try { fs.unlinkSync(paths.lock); } catch {}
-    }
+  if (acquireLockFile(paths.lock, { pid: process.pid })) return true;
+  const lock = readLock(paths);
+  if (lock && pidAlive(lock.pid)) {
+    const role = lock.role ? ` (${lock.role})` : '';
+    console.error(`[Orchestrator] Pipeline execution is locked by a running orchestrator${role} (pid ${lock.pid}).`);
+  } else {
+    console.error('[Orchestrator] Could not acquire lock after clearing a stale one (lost a race to another orchestrator).');
   }
-  console.error('[Orchestrator] Could not acquire lock after clearing a stale one (lost a race to another orchestrator).');
   process.exit(1);
 }
 acquireLock();

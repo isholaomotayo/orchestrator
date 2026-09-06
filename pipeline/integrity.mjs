@@ -11,7 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { CONTROL_PLANE_FILES } from './adapters.mjs';
-import { STAGE_ARTIFACT_FILES } from './state.mjs';
+import { STAGE_ARTIFACT_FILES, resolvePipelineRel } from './state.mjs';
 
 export function hashFile(file) {
   try {
@@ -28,7 +28,10 @@ export function hashFile(file) {
 export function snapshotControlPlane(paths) {
   const snap = {};
   for (const rel of CONTROL_PLANE_FILES) {
-    snap[rel] = hashFile(path.join(paths.root, rel));
+    // Resolve against THIS run, not the repo root: in a pooled run the control
+    // plane lives in .pipeline/runs/<runId>/, and hashing the repo-root copy
+    // would compare a file the stage never had access to.
+    snap[rel] = hashFile(resolvePipelineRel(paths, rel));
   }
   let prompts = [];
   try { prompts = fs.readdirSync(paths.prompts).filter((f) => f.endsWith('.txt')); } catch {}

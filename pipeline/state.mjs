@@ -6,14 +6,51 @@ import { STAGES, CORE_STAGES, OPTIONAL_STAGES, STAGE_ARTIFACT_FILES } from './st
 
 export { STAGES, CORE_STAGES, OPTIONAL_STAGES, STAGE_ARTIFACT_FILES };
 
-export function pipelinePaths(repoRoot) {
-  const dir = path.join(repoRoot, '.pipeline');
+/**
+ * Every path the engine reads or writes, derived from the repo root.
+ *
+ * With no `runId` the result is exactly the v1 layout: run state lives directly
+ * in `.pipeline/`. With a `runId` the run's own state (status, events, logs,
+ * lock, artifacts) moves under `.pipeline/runs/<runId>/`, so many runs can be
+ * live at once. Shared, repo-level inputs — the prompts, config.json, the runs
+ * root and the control tree — never move, because they are shared by every run.
+ *
+ * @param {string} repoRoot
+ * @param {{ runId?: string|null }} [opts]
+ */
+export function pipelinePaths(repoRoot, { runId = null } = {}) {
+  const rootDir = path.join(repoRoot, '.pipeline');
+  const runs = path.join(rootDir, 'runs');
+  const control = path.join(rootDir, 'control');
+  // The one line that makes a run self-contained: everything below hangs off
+  // `dir`, so the same code writes v1 and v2 layouts unchanged.
+  const dir = runId ? path.join(runs, runId) : rootDir;
   return {
     root: repoRoot,
     dir,
-    prompts: path.join(dir, 'prompts'),
+    runId,
+    rootDir,
+    // Shared inputs — repo-level for every run.
+    prompts: path.join(rootDir, 'prompts'),
+    config: path.join(rootDir, 'config.json'),
+    runs,
+    roadmapMd: path.join(rootDir, 'roadmap.md'),
+    // Control tree (the pool's own state; the supervisor is its only writer).
+    control,
+    controlLock: path.join(control, '.lock'),
+    snapshot: path.join(control, 'snapshot.json'),
+    roadmapJson: path.join(control, 'roadmap.json'),
+    decisions: path.join(control, 'decisions.jsonl'),
+    attention: path.join(control, 'attention.jsonl'),
+    briefs: path.join(control, 'briefs'),
+    notes: path.join(control, 'notes'),
+    supervisorPid: path.join(control, 'supervisor.pid'),
+    supervisorLog: path.join(control, 'supervisor.log'),
+    paused: path.join(control, 'paused'),
+    worktrees: path.join(rootDir, 'worktrees'),
+    worktree: runId ? path.join(rootDir, 'worktrees', runId) : null,
+    // Per-run state.
     logs: path.join(dir, 'logs'),
-    config: path.join(dir, 'config.json'),
     lock: path.join(dir, '.lock'),
     status: path.join(dir, 'status.json'),
     events: path.join(dir, 'events.jsonl'),
@@ -28,8 +65,26 @@ export function pipelinePaths(repoRoot) {
     testHistory: path.join(dir, 'test_history.json'),
     diff: path.join(dir, 'diff.patch'),
     stageHandoff: path.join(dir, 'stage-handoff.json'),
-    runs: path.join(dir, 'runs'),
+    reports: path.join(dir, 'reports'),
+    runMeta: runId ? path.join(dir, 'run.json') : null,
+    runStatusLog: runId ? path.join(dir, 'run.status') : null,
   };
+}
+
+/**
+ * Resolve a `.pipeline/`-relative path (the form used in prompts, permission
+ * allowlists and CONTROL_PLANE_FILES) against THIS run rather than the repo
+ * root. `.pipeline/specs.md` belongs to the run; `.pipeline/prompts/x.txt` and
+ * `.pipeline/config.json` are shared and stay put.
+ */
+export function resolvePipelineRel(paths, rel) {
+  const normalized = rel.split(path.sep).join('/');
+  if (!normalized.startsWith('.pipeline/')) return path.join(paths.root, rel);
+  const tail = normalized.slice('.pipeline/'.length);
+  if (tail === 'config.json') return paths.config;
+  if (tail === 'roadmap.md') return paths.roadmapMd;
+  if (tail.startsWith('prompts/')) return path.join(paths.prompts, tail.slice('prompts/'.length));
+  return path.join(paths.dir, tail);
 }
 
 // True when the given PID belongs to a live process we can signal.
@@ -173,6 +228,45 @@ export function atomicWrite(file, contents) {
   const tmp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, contents);
   fs.renameSync(tmp, file);
+}
+
+/**
+ * Take a lock file atomically, or report that someone live already holds it.
+ *
+ * The 'wx' flag is the whole point: two processes starting in the same tick
+ * cannot both pass an existsSync check and clobber each other. On EEXIST we
+ * inspect the owner and reclaim only when its process is gone (crash, kill -9,
+ * reboot), so a stale lock never needs deleting by hand.
+ *
+ * @returns {boolean} true when the lock is now held by this caller
+ */
+export function acquireLockFile(file, payload) {
+  const body = JSON.stringify({ startedAt: new Date().toISOString(), ...payload });
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(file, 'wx');
+      fs.writeSync(fd, body);
+      fs.closeSync(fd);
+      return true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      let owner = null;
+      try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+      // A corrupt lock cannot name a live owner, so it is reclaimable too.
+      if (owner && pidAlive(owner.pid)) return false;
+      try { fs.unlinkSync(file); } catch {}
+    }
+  }
+  return false;
+}
+
+// Append one newline-terminated line, creating the parent directory if needed.
+// O_APPEND writes under PIPE_BUF are atomic on POSIX, so short lines from two
+// writers interleave safely rather than corrupting each other.
+export function appendLine(file, line) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, `${line}\n`);
 }
 
 export function writeStatus(paths, status) {
