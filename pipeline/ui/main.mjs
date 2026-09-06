@@ -14,7 +14,7 @@
 
 import { esc, renderMd } from './md.mjs';
 import { renderDiff } from './diff.mjs';
-import { createTabStore, tabId } from './tabs.mjs';
+import { createTabStore } from './tabs.mjs';
 import { buildTree, attentionByRun, featureLabel } from './pool-tree.mjs';
 import { createApi } from './api.mjs';
 import { stageIcon, agentMeta, STAGE_ORDER } from './stages.mjs';
@@ -40,7 +40,6 @@ const state = {
   projects: [],
   pool: null,
   runs: [],
-  primary: null, // full state of the live legacy run, for the sidebar rail
   status: null,
   sse: null,
   seq: 0,
@@ -78,23 +77,19 @@ function renderSidebar() {
   const tree = buildTree(state.pool?.snapshot ?? null);
 
   if (!tree.enabled) {
-    // Single-run project: the live run gets the rich pipeline rail (this is
-    // the everyday view for a plain, non-roadmap project); anything archived
-    // falls back to a plain list underneath.
-    if (state.primary) side.append(...renderPrimaryRail(state.primary));
-    const archived = state.runs.filter((r) => r.id !== '');
-    if (archived.length || !state.primary) {
-      side.append(sectionNode({
-        key: 'runs', title: state.primary ? 'Previous runs' : 'Runs',
-        count: archived.length, emptyText: 'No runs yet.',
-        items: archived.map((r) => ({
-          id: r.id, kind: 'run',
-          label: r.task ? String(r.task).slice(0, 60) : r.id,
-          sub: [r.overall, r.verdict].filter(Boolean).join(' · '),
-          dot: r.overall === 'done' ? 'done' : r.overall === 'halted' ? 'fail' : 'run',
-        })),
-      }));
-    }
+    // Single-run project: the sidebar is a plain overview — every run, live
+    // one first. The pipeline itself (all 7 stages, with progress) lives in
+    // that run's own tab, not here — the sidebar has to stay a navigation
+    // list once more than one run's tab can be open at a time.
+    side.append(sectionNode({
+      key: 'runs', title: 'Runs', count: state.runs.length, emptyText: 'No runs yet.',
+      items: state.runs.map((r) => ({
+        id: r.id, kind: 'run',
+        label: r.task ? String(r.task).slice(0, 60) : (r.id || 'Current run'),
+        sub: [r.overall, r.verdict].filter(Boolean).join(' · '),
+        dot: r.overall === 'done' ? 'done' : r.overall === 'halted' ? 'fail' : 'run',
+      })),
+    }));
     return renderSideFoot(tree);
   }
 
@@ -102,43 +97,20 @@ function renderSidebar() {
   renderSideFoot(tree);
 }
 
-// The pipeline rail: one row per stage of the live legacy run, in place of
-// the flat runs list — restores the pre-tabs single-run sidebar, which this
-// is still the everyday view for (a plain project with no roadmap).
-function renderPrimaryRail(data) {
-  const status = data.status || {};
-  const nodes = [];
-
-  if (status.task) {
-    nodes.push(el('div', { class: 'side-section' }, [
-      el('div', { class: 'side-title' }, el('span', { text: 'Current task' })),
-      el('div', { class: 'task-box' }, [
-        el('div', { class: 'task-text', text: status.task }),
-        status.startedAt ? el('div', { class: 'when', text: `Started ${agoText(status.startedAt)}` }) : null,
-      ]),
-    ]));
-  }
-
-  const stages = status.stages?.length ? status.stages : STAGE_ORDER.map((name) => ({ name, status: 'pending' }));
-  const activeTab = tabs.get(tabId({ kind: 'run', subject: '' }));
-  const isRunTabActive = !!activeTab && tabs.activeId() === activeTab.id;
-  const effectiveStage = activeTab?.stage
-    || stages.find((s) => s.status === 'running')?.name
-    || stages[stages.length - 1]?.name;
+// The pipeline rail: every stage a run has, in order, each a full row (icon,
+// name, description, a progress track for its state) — not just the one
+// stage being read. Lives inside a run's own tab, so it scales to as many
+// open runs as there are tabs, unlike a single sidebar ever could.
+function buildStageRail(stages, activeName, onSelect) {
   const rail = el('div', { class: 'rail' });
   for (const stage of stages) {
     const cls = stage.status === 'passed' ? 'is-passed'
       : stage.status === 'running' ? 'is-running'
         : stage.status === 'failed' ? 'is-failed'
           : stage.status === 'skipped' ? 'is-skipped' : 'is-pending';
-    const selected = isRunTabActive && stage.name === effectiveStage;
     rail.append(el('button', {
-      class: `rail-row ${cls}${selected ? ' selected' : ''}`,
-      onclick: () => {
-        open({ kind: 'run', subject: '', title: status.task || 'Current run' });
-        const tab = tabs.get(tabId({ kind: 'run', subject: '' }));
-        if (tab) { tab.stage = stage.name; render(); }
-      },
+      class: `rail-row ${cls}${stage.name === activeName ? ' selected' : ''}`,
+      onclick: () => onSelect(stage.name),
     }, [
       el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
       el('div', { class: 'rail-main' }, [
@@ -148,22 +120,7 @@ function renderPrimaryRail(data) {
       ]),
     ]));
   }
-  nodes.push(el('div', { class: 'side-section' }, [
-    el('div', { class: 'side-title' }, el('span', { text: 'Pipeline' })),
-    rail,
-  ]));
-  return nodes;
-}
-
-function agoText(iso) {
-  const ms = Date.now() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return '';
-  const mins = Math.round(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
+  return rail;
 }
 
 function sectionNode(section) {
@@ -413,8 +370,14 @@ async function viewRun(wrap, tab) {
   const status = data.status || {};
   sub.remove();
 
-  const stages = (status.stages || []).filter((s) => s.status !== 'skipped');
-  const active = tab.stage || stages.find((s) => s.status === 'running')?.name || stages[stages.length - 1]?.name || 'planner';
+  // Every run shows all 7 steps, in order, whatever this run's own status.json
+  // actually recorded — a stage it never reached yet is 'pending', not absent.
+  const byName = new Map((status.stages || []).map((s) => [s.name, s]));
+  const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
+  const active = tab.stage
+    || stages.find((s) => s.status === 'running')?.name
+    || [...stages].reverse().find((s) => s.status !== 'pending')?.name
+    || 'planner';
   const meta = agentMeta(active);
 
   // The header every run opens with: which specialist is at work, what it
@@ -429,18 +392,7 @@ async function viewRun(wrap, tab) {
     el('span', { class: `pill ${status.overall || ''}`, text: (status.overall || 'no state recorded').replace(/_/g, ' ') }),
   ]));
 
-  const bar = el('div', { class: 'stagebar' });
-  body.append(bar);
-  for (const stage of stages) {
-    bar.append(el('button', {
-      class: 'stagebtn', 'aria-current': stage.name === active ? 'step' : null,
-      onclick: () => { tab.stage = stage.name; render(); },
-    }, [
-      el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
-      el('span', { text: stage.name }),
-      el('span', { class: `dot ${stage.status === 'passed' ? 'done' : stage.status === 'running' ? 'run' : stage.status === 'failed' ? 'fail' : 'pending'}` }),
-    ]));
-  }
+  body.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
 
   // Run controls: only the live run (no runId — the root .pipeline/ state)
   // can be steered from here; an archived run is read-only history.
@@ -630,11 +582,6 @@ async function refresh() {
     ]);
     state.pool = pool.enabled ? pool : null;
     state.runs = runs.runs || [];
-    // The sidebar's pipeline rail needs per-stage detail that /api/runs does
-    // not carry — only fetch it when it will actually be shown (single-run
-    // mode with a live run), not on every poll of a pool project.
-    const live = !state.pool && state.runs.find((r) => r.id === '' && r.live);
-    state.primary = live ? await api.state('').catch(() => null) : null;
   } catch { /* keep the last good view rather than blanking the page */ }
 
   // Badge the tabs whose runs need someone, without stealing focus.
