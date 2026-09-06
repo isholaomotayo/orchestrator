@@ -187,7 +187,9 @@ export function renderDigest(snapshot) {
         ? ` — read \`pool status\`, then \`roadmap skip ${d.featureId}\` or fix and re-run`
         : d.kind === 'held'
           ? ` — release with \`roadmap release ${d.featureId}\``
-          : '';
+          : d.kind === 'claim-run'
+            ? ` — pick it up with \`pool claim ${d.runId}\``
+            : '';
     return `- **${d.question}** (${where})${how}.${options}${recommended}`;
   }), 'Nothing needs your decision right now.'));
 

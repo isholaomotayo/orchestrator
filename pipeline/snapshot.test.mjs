@@ -146,6 +146,16 @@ test('a held feature says how to release it', () => {
   assert.match(text, /roadmap release F2/);
 });
 
+test('a claim-run item tells the operator exactly which command picks it up', () => {
+  const s = buildSnapshot({
+    roadmap: null, runs: [], decisions: [], supervisor,
+    attention: [{ id: 'a1', escalate: true, kind: 'claim-run', runId: 'r9', summary: 'Ready for a human to complete the "coder" stage in chat.', ts: '2026-09-06T11:00:00Z' }],
+    now: new Date(),
+  });
+  assert.equal(s.needsDecision.length, 1);
+  assert.match(renderDigest(s), /pool claim r9/);
+});
+
 test('an escalation with no decision attached still reaches the operator', () => {
   const s = buildSnapshot({
     roadmap: null, runs: [], decisions: [], supervisor,

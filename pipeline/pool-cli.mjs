@@ -24,6 +24,7 @@ Roadmap:
   roadmap hold <id> [why]      |  roadmap release <id>  |  roadmap skip <id> [why]
 
 Acting:
+  claim <runId>                 pick up a run parked at a chat handoff (runner: host)
   decide <decisionId> "<answer>"
   approve-plan <runId>
   approve-merge <featureId> [--note "..."]
@@ -106,6 +107,20 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
         if (sub === 'skip') { out(json, pool.skipFeature(paths, args[2], args.slice(3).join(' ')), `Skipped ${args[2]}.`); return 0; }
         console.error(USAGE);
         return 2;
+      }
+      case 'claim': {
+        if (!args[1]) { console.error(USAGE); return 2; }
+        const res = pool.claim(paths, args[1]);
+        out(json, res, [
+          `${res.runId} is awaiting the "${res.stage}" stage${res.featureId ? ` (${res.featureId}${res.ticketId ? `/${res.ticketId}` : ''})` : ''}.`,
+          res.brief ? `Brief: ${res.brief}` : null,
+          `Worktree: ${res.worktree}`,
+          `Stage handoff: ${res.stageHandoff}`,
+          '',
+          'Complete that stage yourself, then run:',
+          `  ${res.continueCmd}`,
+        ].filter((l) => l !== null).join('\n'));
+        return 0;
       }
       case 'decide': {
         if (!args[1] || !args[2]) { console.error(USAGE); return 2; }

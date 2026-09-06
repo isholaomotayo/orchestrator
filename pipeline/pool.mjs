@@ -365,6 +365,32 @@ export function addNote(paths, { kind = 'learning', text, runId = null, featureI
   return { file: path.relative(paths.root, file) };
 }
 
+/**
+ * Claim a host-runner run that is parked at a chat handoff: everything a
+ * human (or any attending chat agent, in any client) needs to pick it up and
+ * complete that stage exactly as in single-run chat mode.
+ */
+export function claim(paths, runId) {
+  const runPaths = pipelinePaths(paths.root, { runId });
+  let status;
+  try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); }
+  catch { throw new Error(`Unknown run "${runId}".`); }
+  if (status.overall !== 'awaiting_chat') {
+    throw new Error(`Run "${runId}" is not awaiting a chat handoff (overall=${status.overall}).`);
+  }
+  const meta = readRunMeta(runPaths);
+  return {
+    runId,
+    featureId: status.featureId ?? null,
+    ticketId: status.ticketId ?? null,
+    stage: status.awaitingStage ?? null,
+    worktree: path.relative(paths.root, runPaths.worktree),
+    brief: meta?.brief ?? null,
+    stageHandoff: path.relative(paths.root, runPaths.stageHandoff),
+    continueCmd: `node pipeline/orchestrator.mjs --continue --run-id ${runId}`,
+  };
+}
+
 export function pause(paths, why = '') {
   fs.mkdirSync(paths.control, { recursive: true });
   fs.writeFileSync(paths.paused, JSON.stringify({ at: new Date().toISOString(), why }));

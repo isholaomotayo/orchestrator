@@ -10,6 +10,7 @@ import {
   decide, approvePlan, approveMerge, requestChanges,
   holdFeature, releaseFeature, skipFeature, addNote, pause, resume,
   listRunStates, supervisorState, queueFollowup, requestExtend,
+  claim, poolConfig,
 } from './pool.mjs';
 import { setFeatureStatus } from './roadmap.mjs';
 
@@ -254,6 +255,54 @@ test('extend is recorded as a request for the supervisor, not run directly', () 
   requestExtend(paths, 'r1', 3);
   assert.equal(JSON.parse(fs.readFileSync(rp.runMeta, 'utf8')).requests.extend.cycles, 3);
   fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+// ---- claim ------------------------------------------------------------------
+
+test('claim refuses a run that is not awaiting a chat handoff', () => {
+  const paths = tmpPool();
+  fakeRun(paths, 'r1', { overall: 'running' });
+  assert.throws(() => claim(paths, 'r1'), /not awaiting a chat handoff/);
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('claim on an unknown run fails clearly rather than throwing an fs error', () => {
+  const paths = tmpPool();
+  assert.throws(() => claim(paths, 'nope'), /Unknown run/);
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('claim returns everything needed to pick up a host-runner run', () => {
+  const paths = tmpPool();
+  const rp = pipelinePaths(paths.root, { runId: 'r1' });
+  fs.mkdirSync(rp.dir, { recursive: true });
+  fs.writeFileSync(rp.status, JSON.stringify({ overall: 'awaiting_chat', featureId: 'F1', ticketId: 'T1', awaitingStage: 'coder' }));
+  fs.writeFileSync(rp.runMeta, JSON.stringify({ runId: 'r1', featureId: 'F1', ticketId: 'T1', runner: 'host', brief: 'control/briefs/r1.md' }));
+  fs.writeFileSync(rp.stageHandoff, JSON.stringify({ stage: 'coder' }));
+  const res = claim(paths, 'r1');
+  assert.equal(res.runId, 'r1');
+  assert.equal(res.stage, 'coder');
+  assert.equal(res.featureId, 'F1');
+  assert.equal(res.ticketId, 'T1');
+  assert.equal(res.brief, 'control/briefs/r1.md');
+  assert.match(res.continueCmd, /--continue --run-id r1$/);
+  assert.match(res.stageHandoff, /stage-handoff\.json$/);
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+// ---- pool config ------------------------------------------------------------
+
+test('poolConfig defaults defaultRunner to auto', () => {
+  assert.equal(poolConfig({}).defaultRunner, 'auto');
+});
+
+test('poolConfig inherits an existing single-runner preference as the pool default', () => {
+  assert.equal(poolConfig({ runner: 'claude' }).defaultRunner, 'claude');
+  assert.equal(poolConfig({ runner: 'auto' }).defaultRunner, 'auto');
+});
+
+test('an explicit pool.defaultRunner wins over the top-level runner setting', () => {
+  assert.equal(poolConfig({ runner: 'claude', pool: { defaultRunner: 'host' } }).defaultRunner, 'host');
 });
 
 test('notes are written as committable markdown with provenance', () => {
