@@ -20,4 +20,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level=high
       - run: pnpm run typecheck
+      # The served dashboard is built from pipeline/ui/ and committed. This
+      # fails if someone edited a source module without rebuilding it.
+      - run: pnpm run build:ui -- --check
       - run: pnpm test
