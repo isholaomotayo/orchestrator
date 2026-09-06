@@ -138,27 +138,20 @@
   .node .label span { display:block; font-size:11.5px; color:var(--muted); }
   .side-empty { font-size:12px; color:var(--faint); padding:2px 8px 6px; }
 
-  /* Current task card, above the pipeline rail in single-run mode. */
-  .task-box { padding:6px 8px 10px; }
-  .task-box .task-text { font-size:12.5px; line-height:1.5; display:-webkit-box;
-    -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
-  .task-box .when { font-size:10.5px; color:var(--faint); margin-top:5px; }
-
-  /* Pipeline rail: one row per stage, in the sidebar, for the single live
-     run — identity, state and a share of wall-clock in one glance. */
-  .rail { display:flex; flex-direction:column; gap:2px; }
-  .rail-row { position:relative; display:flex; align-items:flex-start; gap:10px; width:100%;
-    text-align:left; padding:8px 10px 9px; border:1px solid transparent; border-radius:9px;
-    background:transparent; color:inherit; font:inherit; cursor:pointer; }
+  /* Pipeline rail: one compact card per stage, side by side — identity and a
+     thin progress track, not a full row each; seven of them must still read
+     as one strip, not a page of its own. */
+  .rail { display:flex; gap:6px; margin:0 0 16px; flex-wrap:wrap; }
+  .rail-row { position:relative; display:flex; flex-direction:column; gap:5px; flex:1 1 108px; min-width:100px;
+    text-align:left; padding:7px 10px 8px; border:1px solid var(--border); border-radius:10px;
+    background:var(--surface); color:inherit; font:inherit; cursor:pointer; }
   .rail-row:hover { background:var(--surface-hover); }
-  .rail-row.selected { background:var(--accent-row); border-color:var(--border); }
-  .rail-row .agent-ico { width:26px; height:26px; margin-top:1px; flex-shrink:0; }
-  .rail-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
-  .rail-top { display:flex; align-items:center; gap:7px; }
-  .rail-nm { font-weight:600; font-size:12.5px; line-height:1.3; flex:1; min-width:0; }
-  .rail-sub { font-size:10.5px; color:var(--muted); line-height:1.35;
-    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-  .rail-track { display:block; height:4px; margin-top:3px; background:var(--track);
+  .rail-row.selected { background:var(--accent-row); border-color:var(--focus); }
+  .rail-top { display:flex; align-items:center; gap:6px; }
+  .rail-row .agent-ico { width:18px; height:18px; flex-shrink:0; }
+  .rail-nm { font-weight:600; font-size:12px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rail-sub { display:none; } /* kept in the DOM for a11y; the compact card has no room to show it */
+  .rail-track { display:block; height:3px; margin-top:1px; background:var(--track);
     border-radius:999px; overflow:hidden; }
   .rail-bar { display:block; height:100%; width:0; border-radius:999px;
     background-color:var(--st-pending); transition:width .45s cubic-bezier(.4,0,.2,1); }
@@ -167,8 +160,8 @@
   .rail-row.is-failed .rail-bar { background-color:var(--st-fail); width:100%; }
   .rail-row.is-pending .rail-bar { width:0; }
   .rail-row.is-skipped { opacity:.55; }
-  .rail-row.is-skipped .rail-track { height:2px; margin-top:4px; border-radius:0; background:none;
-    background-image:repeating-linear-gradient(90deg, var(--st-skip) 0 4px, transparent 4px 8px); }
+  .rail-row.is-skipped .rail-track { background:none;
+    background-image:repeating-linear-gradient(90deg, var(--st-skip) 0 3px, transparent 3px 6px); }
   .side-foot { border-top:1px solid var(--border); padding:8px 10px; display:flex; gap:6px; flex-wrap:wrap; }
   .resize { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; }
 

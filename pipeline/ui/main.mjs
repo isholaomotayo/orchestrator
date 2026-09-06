@@ -110,14 +110,15 @@ function buildStageRail(stages, activeName, onSelect) {
           : stage.status === 'skipped' ? 'is-skipped' : 'is-pending';
     rail.append(el('button', {
       class: `rail-row ${cls}${stage.name === activeName ? ' selected' : ''}`,
+      title: agentMeta(stage.name).sub,
       onclick: () => onSelect(stage.name),
     }, [
-      el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
-      el('div', { class: 'rail-main' }, [
-        el('div', { class: 'rail-top' }, el('span', { class: 'rail-nm', text: cap(stage.name) })),
-        el('div', { class: 'rail-sub', text: agentMeta(stage.name).sub }),
-        el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
+      el('div', { class: 'rail-top' }, [
+        el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
+        el('span', { class: 'rail-nm', text: cap(stage.name) }),
       ]),
+      el('div', { class: 'rail-sub', text: agentMeta(stage.name).sub }),
+      el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
     ]));
   }
   return rail;
@@ -212,20 +213,36 @@ function syncUrl() {
 
 // ---- panels ---------------------------------------------------------------
 
+// The panel/wrap elements are only recreated when the active tab actually
+// changes. A background refresh of the same tab (an SSE event, the 15s
+// fallback poll) reuses them, so scroll position survives and the view
+// function below decides for itself how much of its own content to disturb
+// — most of them only need to touch the one piece of data that changed.
+let lastPanelTabId = null;
+
 function render() {
   renderTabs();
   const host = $('panels');
-  host.replaceChildren();
   const tab = tabs.active();
-  if (!tab) return host.append(el('div', { class: 'panel' }, el('div', { class: 'empty', text: 'Nothing open.' })));
-  const panel = el('div', { class: 'panel' });
-  const wrap = el('div', { class: 'wrap' });
-  panel.append(wrap);
-  host.append(panel);
+  if (!tab) {
+    host.replaceChildren(el('div', { class: 'panel' }, el('div', { class: 'empty', text: 'Nothing open.' })));
+    lastPanelTabId = null;
+    return;
+  }
+  let panel = host.querySelector('.panel');
+  let wrap = panel?.querySelector('.wrap');
+  if (tab.id !== lastPanelTabId || !panel || !wrap) {
+    host.replaceChildren();
+    panel = el('div', { class: 'panel' });
+    wrap = el('div', { class: 'wrap' });
+    panel.append(wrap);
+    host.append(panel);
+    panel.scrollTop = tab.scrollTop || 0;
+    panel.addEventListener('scroll', () => { tab.scrollTop = panel.scrollTop; }, { passive: true });
+    lastPanelTabId = tab.id;
+  }
   const view = VIEWS[tab.kind] || VIEWS.home;
   view(wrap, tab);
-  panel.scrollTop = tab.scrollTop || 0;
-  panel.addEventListener('scroll', () => { tab.scrollTop = panel.scrollTop; }, { passive: true });
 }
 
 const VIEWS = {
@@ -238,6 +255,7 @@ const VIEWS = {
 };
 
 function viewHome(wrap) {
+  wrap.replaceChildren();
   const snap = state.pool?.snapshot;
   if (!snap) {
     wrap.append(el('h1', { text: 'Orchestrator' }));
@@ -318,6 +336,7 @@ function decisionCard(item) {
 }
 
 function viewDecisions(wrap) {
+  wrap.replaceChildren();
   wrap.append(el('h1', { text: 'Decisions' }));
   const items = state.pool?.snapshot?.needsDecision || [];
   if (!items.length) return wrap.append(el('div', { class: 'empty', text: 'Nothing is waiting for you.' }));
@@ -326,6 +345,7 @@ function viewDecisions(wrap) {
 }
 
 function viewFeature(wrap, tab) {
+  wrap.replaceChildren();
   const feature = state.pool?.snapshot?.roadmap?.features?.find((f) => f.id === tab.subject);
   if (!feature) return wrap.append(el('div', { class: 'empty', text: 'That feature is no longer in the roadmap.' }));
   wrap.append(el('h1', { text: `${feature.id}: ${feature.title}` }));
@@ -358,17 +378,28 @@ const STAGE_ARTIFACT = {
 };
 
 async function viewRun(wrap, tab) {
-  const sub = el('p', { class: 'sub', text: 'Loading…' });
-  wrap.append(sub);
-  const body = el('div');
-  wrap.append(body);
+  // A background refresh of a tab already showing this run must not blank it
+  // while re-fetching: that is the "page flashes on every update" complaint.
+  // Only a first mount, with nothing on screen yet, gets the loading state.
+  const firstMount = !wrap.querySelector('.agent-header');
+  // A rebuild replaces the note textarea even when its text survives via
+  // tab._noteDraft — restore focus and caret too, so a mid-sentence refresh
+  // doesn't even cost the reader having to click back in.
+  const priorNote = wrap.querySelector('textarea');
+  const hadFocus = !!priorNote && priorNote === document.activeElement;
+  const caret = hadFocus ? priorNote.selectionStart : null;
+  if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: 'Loading…' }));
 
   let data;
-  try { data = await api.state(tab.subject); } catch (err) { sub.textContent = err.message; return; }
+  try { data = await api.state(tab.subject); }
+  catch (err) {
+    if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: err.message }));
+    return; // a refresh that failed leaves the last good view up rather than blanking it
+  }
   if (tabs.activeId() !== tab.id) return; // the reader moved on while we fetched
 
   const status = data.status || {};
-  sub.remove();
+  const body = el('div');
 
   // Every run shows all 7 steps, in order, whatever this run's own status.json
   // actually recorded — a stage it never reached yet is 'pending', not absent.
@@ -454,19 +485,32 @@ async function viewRun(wrap, tab) {
     logBox.replaceChildren(el('code', { text: log.text || 'No log for this stage.' }));
   }).catch(() => logBox.replaceChildren(el('code', { text: 'No log for this stage.' })));
 
-  // A note for the agent working this stage.
-  const note = el('textarea', { placeholder: `Note for the ${active} stage — it is picked up on the next cycle.` });
+  // A note for the agent working this stage. Its draft lives on the tab, not
+  // just the DOM, so a background refresh rebuilding this element never
+  // costs the reader whatever they were mid-typing.
+  const note = el('textarea', {
+    placeholder: `Note for the ${active} stage — it is picked up on the next cycle.`,
+    oninput: (e) => { tab._noteDraft = e.target.value; },
+  });
+  note.value = tab._noteDraft || '';
   body.append(el('h3', { text: 'Send a note' }), note, el('div', { class: 'row', style: 'margin-top:8px' }, [
     el('button', {
       class: 'btn', text: 'Send',
       onclick: async () => {
         if (!note.value.trim()) return toast('Write a note first.');
-        try { await api.followup(active, note.value.trim(), tab.subject); note.value = ''; toast('Queued for the agent.'); }
-        catch (err) { toast(err.message); }
+        try {
+          await api.followup(active, note.value.trim(), tab.subject);
+          note.value = ''; tab._noteDraft = ''; toast('Queued for the agent.');
+        } catch (err) { toast(err.message); }
       },
     }),
     el('button', { class: 'btn ghost', text: 'Review this run', onclick: () => open({ kind: 'review', subject: tab.subject, title: `Review ${tab.title || tab.subject}` }) }),
   ]));
+
+  // One atomic swap: the reader never sees an interim empty state on a
+  // refresh, only ever the previous content or the next content.
+  wrap.replaceChildren(body);
+  if (hadFocus) { note.focus(); if (caret != null) note.setSelectionRange(caret, caret); }
 }
 
 function eventBlock(ev) {
@@ -483,6 +527,7 @@ function eventBlock(ev) {
 // ---- review view ----------------------------------------------------------
 
 async function viewReview(wrap, tab) {
+  wrap.replaceChildren();
   wrap.append(el('h1', { text: tab.title || `Review ${tab.subject}` }));
   const sub = el('p', { class: 'sub', text: 'Loading…' });
   wrap.append(sub);
@@ -560,6 +605,11 @@ async function viewReview(wrap, tab) {
 // ---- report view ----------------------------------------------------------
 
 function viewReport(wrap, tab) {
+  // An iframe must never be torn down and recreated on a background refresh
+  // — that reloads it, discarding whatever state the report itself holds.
+  // Its content is static once generated, so build it once and leave it.
+  if (wrap.querySelector('iframe.report')) return;
+  wrap.replaceChildren();
   wrap.append(el('h1', { text: tab.title || 'Report' }));
   const params = tab.file?.startsWith('runs/')
     // A roadmap records a repo-relative path; the endpoint wants run + file.
@@ -607,13 +657,22 @@ async function refresh() {
   render();
 }
 
+// A run writing output can fire several file-change events a second; a
+// refresh per event would re-render that often. Coalesce a burst into one
+// refresh shortly after it quiets down instead.
+let refreshTimer = null;
+function scheduleRefresh() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(refresh, 350);
+}
+
 function connect() {
   if (state.sse) state.sse.close();
   const source = new EventSource(`/events?project=${encodeURIComponent(state.project)}`);
   source.onmessage = (message) => {
     try {
       const data = JSON.parse(message.data);
-      if (data.type === 'change') refresh();
+      if (data.type === 'change') scheduleRefresh();
     } catch { /* a malformed frame is not worth breaking the page over */ }
   };
   source.onerror = () => { /* EventSource retries on its own */ };
