@@ -96,7 +96,10 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
     const meta = readRunMeta(runPaths);
     const lock = readLock(runPaths);
     const verbs = readStatusLog(runPaths);
-    const verb = latestVerb(verbs);
+    // `note` is informational by definition. Letting it become the current verb
+    // would make every recorded aside look like a state change and re-raise
+    // events that were already handled.
+    const verb = latestVerb(verbs.filter((v) => v.verb !== 'note')) || latestVerb(verbs);
     let lastOutputAt = null;
     try { lastOutputAt = new Date(fs.statSync(runPaths.events).mtimeMs).toISOString(); } catch { /* no events yet */ }
 

@@ -36,7 +36,7 @@ function parseArgs(argv) {
     // Pool mode: identity and isolation for one worker among many.
     runId: null, worktree: null, branch: null, baseRef: null,
     briefFile: null, featureId: null, ticketId: null,
-    specsFile: null, changesFile: null, startAt: null,
+    specsFile: null, changesFile: null, startAt: null, planOnly: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -69,6 +69,7 @@ function parseArgs(argv) {
     else if (a === '--specs-file') args.specsFile = argv[++i];
     else if (a === '--changes-file') args.changesFile = argv[++i];
     else if (a === '--start-at') args.startAt = argv[++i];
+    else if (a === '--plan-only') args.planOnly = true;
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
@@ -363,7 +364,7 @@ if (args.continue) {
   const wantsWorktree = args.sandbox || !!args.worktree || !!args.runId;
   if (wantsWorktree) {
     const worktreePath = resolveWorktreePath();
-    const branch = args.branch || (args.runId ? `pipeline/${args.featureId || 'adhoc'}/${args.runId}` : 'tmp-pipeline-branch');
+    const branch = args.branch || (args.runId ? `pipeline/work/${args.featureId || 'adhoc'}/${args.runId}` : 'tmp-pipeline-branch');
     console.log(`[Orchestrator] Isolating workspace in git worktree ${path.relative(repoRoot, worktreePath) || worktreePath} (branch ${branch})...`);
     try {
       createRunWorktree({ repoRoot, runDir: paths.dir, worktreePath, branch, baseRef: args.baseRef || 'HEAD' });
@@ -1212,6 +1213,17 @@ async function freshRun() {
     return;
   }
   await runPlannerStage();
+  if (args.planOnly) {
+    // A planning run exists to produce the specification a feature's tickets are
+    // sliced from. It writes no code, so it finishes here rather than falling
+    // through to the Coder.
+    requireArtifact('planner', paths.specs);
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
+    status.overall = 'done';
+    finalize();
+    console.log('\n[Orchestrator] Planning complete. Specification: ' + path.relative(repoRoot, paths.specs));
+    haltAndExit(0);
+  }
   await continueAfterPlanner();
 }
 

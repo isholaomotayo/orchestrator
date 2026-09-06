@@ -273,3 +273,14 @@ test('a queued follow-up lands where the worker reads it', () => {
   assert.match(fs.readFileSync(path.join(rp.dir, 'followups', 'tester.txt'), 'utf8'), /empty case/);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
+
+test('an informational note does not become the run current verb', () => {
+  // Otherwise every aside the supervisor records ("committed abc123") reads as a
+  // state change and re-raises an event that was already handled.
+  const paths = tmpPool();
+  const rp = fakeRun(paths, 'r1', { overall: 'done', verb: 'done', pid: 0 });
+  fs.appendFileSync(rp.runStatusLog, `${new Date().toISOString()} note: committed abc123\n`);
+  const run = listRunStates(paths).find((r) => r.runId === 'r1');
+  assert.equal(run.verb, 'done');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});

@@ -47,30 +47,55 @@ export function branchExists(cwd, branch) {
  * @param {string} o.branch       new branch for this run's commits
  * @param {string} o.baseRef      commit or branch the work starts from
  */
-export function createRunWorktree({ repoRoot, runDir, worktreePath, branch, baseRef = 'HEAD' }) {
+export function createRunWorktree({ repoRoot, runDir, worktreePath, branch, baseRef = 'HEAD', reuseExisting = true }) {
   fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
   fs.mkdirSync(runDir, { recursive: true });
+
+  // Adopt a worktree that is already prepared and on the requested branch.
+  // The supervisor merges every ticket branch into the feature worktree before
+  // handing it to the integration worker; recreating it here would silently
+  // throw that merge away and review an empty feature.
+  if (reuseExisting && branch && worktreeIsOnBranch(worktreePath, branch)) {
+    linkRunPipeline({ repoRoot, runDir, worktreePath });
+    return { worktreePath, branch, baseRef, adopted: true };
+  }
+
   // Clear any remnant of a previous run with this id before reusing the path.
   git(repoRoot, ['worktree', 'remove', worktreePath, '--force'], { check: false });
   git(repoRoot, ['worktree', 'prune'], { check: false });
   if (branchExists(repoRoot, branch)) git(repoRoot, ['branch', '-D', branch], { check: false });
   git(repoRoot, ['worktree', 'add', worktreePath, '-b', branch, baseRef]);
+  linkRunPipeline({ repoRoot, runDir, worktreePath });
+  return { worktreePath, branch, baseRef, adopted: false };
+}
 
+// Is there already a worktree here, checked out on this branch?
+function worktreeIsOnBranch(worktreePath, branch) {
+  if (!fs.existsSync(path.join(worktreePath, '.git'))) return false;
+  const head = git(worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'], { check: false });
+  return head.status === 0 && head.stdout === branch;
+}
+
+// Point the worktree's `.pipeline` at this run, and keep git quiet about it.
+function linkRunPipeline({ repoRoot, runDir, worktreePath }) {
   hidePipelineFromGit(worktreePath);
 
   const linked = path.join(worktreePath, '.pipeline');
-  fs.rmSync(linked, { recursive: true, force: true });
-  fs.symlinkSync(path.resolve(runDir), linked, 'dir');
+  const alreadyLinked = fs.existsSync(linked) && fs.lstatSync(linked).isSymbolicLink()
+    && fs.realpathSync(linked) === fs.realpathSync(runDir);
+  if (!alreadyLinked) {
+    fs.rmSync(linked, { recursive: true, force: true });
+    fs.symlinkSync(path.resolve(runDir), linked, 'dir');
+  }
   // skip-worktree stops git tracking the files that used to be there, but the
-  // symlink we just put in their place is a brand-new untracked entry. Exclude
-  // it in this worktree only, so `git status` is genuinely clean and a dirty
-  // check before cleanup means what it says.
+  // symlink we put in their place is a brand-new untracked entry. Exclude it in
+  // this worktree only, so `git status` is genuinely clean and a dirty check
+  // before cleanup means what it says.
   excludeInWorktree(worktreePath, '/.pipeline');
 
   // Prompts and config are shared inputs, not run state: link them back out so
   // `.pipeline/prompts/...` resolves for an agent working inside the worktree.
   linkShared(runDir, path.join(repoRoot, '.pipeline'), ['prompts', 'config.json', 'ui.url', 'skills']);
-  return { worktreePath, branch, baseRef };
 }
 
 // Stop git comparing tracked .pipeline paths in THIS worktree, so replacing the

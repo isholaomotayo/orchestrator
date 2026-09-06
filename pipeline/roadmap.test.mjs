@@ -130,7 +130,7 @@ test('compileRoadmap produces a versioned document with queued features', () => 
   assert.equal(json.sourceSha256, 'abc');
   assert.equal(json.currentFeatureId, 'F1');
   assert.ok(json.features.every((f) => f.status === 'queued'));
-  assert.equal(json.features[0].branch, 'pipeline/F1');
+  assert.equal(json.features[0].branch, 'pipeline/feature/F1');
   assert.equal(json.features[0].pr, null);
 });
 

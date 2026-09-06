@@ -229,7 +229,7 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
       maxParallel: f.maxParallel,
       // State, carried across recompiles.
       status: before?.status ?? 'queued',
-      branch: before?.branch ?? `pipeline/${f.id}`,
+      branch: before?.branch ?? `pipeline/feature/${f.id}`,
       baseRef: before?.baseRef ?? null,
       specRunId: before?.specRunId ?? null,
       tickets: before?.tickets ?? [],
