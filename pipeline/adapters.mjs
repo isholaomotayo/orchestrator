@@ -20,6 +20,7 @@ export const CONTROL_PLANE_FILES = [
   '.pipeline/design.md',
   '.pipeline/test_history.json',
   '.pipeline/stage-handoff.json',
+  '.pipeline/reporter.md',
 ];
 
 // A stage always keeps write access to its OWN artifact (the Planner must be
@@ -32,6 +33,13 @@ export function pipelineWriteDeny(stage) {
     // persist into later stages and later runs.
     'Write(.pipeline/prompts/**)',
     'Edit(.pipeline/prompts/**)',
+    // Skill pins are the trust anchor for what gets injected into a prompt, and
+    // reports are compiled by the engine from artifacts. A stage that could
+    // write either could grade or describe its own work.
+    'Write(.pipeline/skills/**)',
+    'Edit(.pipeline/skills/**)',
+    'Write(.pipeline/reports/**)',
+    'Edit(.pipeline/reports/**)',
   ];
 }
 

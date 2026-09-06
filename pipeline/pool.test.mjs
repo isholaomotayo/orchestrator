@@ -133,7 +133,7 @@ test('the primary mirror keeps v1 guards truthful while a pool runs', () => {
   // A v1 reader parses this file and sees an active run.
   const onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8'));
   assert.equal(onDisk.overall, 'running');
-  assert.equal(onDisk.stages.length, 6);
+  assert.equal(onDisk.stages.length, 7);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 

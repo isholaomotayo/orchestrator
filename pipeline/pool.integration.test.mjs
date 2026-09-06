@@ -223,7 +223,7 @@ test('a roadmap runs features in order, tickets in parallel, and lands each one'
   assert.ok(snap.recentlyLanded.some((f) => f.featureId === 'F1'));
   const mirror = JSON.parse(fs.readFileSync(paths.status, 'utf8'));
   assert.ok(mirror.pool, 'the v1 status file reflects the pool');
-  assert.equal(mirror.stages.length, 6, 'and still parses as a v1 status');
+  assert.equal(mirror.stages.length, 7, 'and still parses as a v1 status');
 });
 
 test('a failing review is escalated instead of being merged', async (t) => {

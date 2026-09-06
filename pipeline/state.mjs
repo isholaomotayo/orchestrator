@@ -62,6 +62,7 @@ export function pipelinePaths(repoRoot, { runId = null } = {}) {
     reviewReport: path.join(dir, 'review_report.md'),
     design: path.join(dir, 'design.md'),
     handoffDoc: path.join(dir, 'handoff.md'),
+    reporterDoc: path.join(dir, 'reporter.md'),
     testHistory: path.join(dir, 'test_history.json'),
     diff: path.join(dir, 'diff.patch'),
     stageHandoff: path.join(dir, 'stage-handoff.json'),
@@ -141,6 +142,9 @@ export function loadConfig(paths) {
     approvePlan: false,
     designStage: false,
     handoffStage: false,
+    reportStage: false,
+    reports: { diagrams: true, archifyTimeoutMs: 120000 },
+    skills: [],
     reviewPanel: false, // CLI-only multi-lens review panel (see --review-panel)
     modelProfiles: DEFAULT_MODEL_PROFILES,
     stageEffort: DEFAULT_STAGE_EFFORT,
@@ -171,7 +175,7 @@ export function loadConfig(paths) {
   return merged;
 }
 
-export function newStatus(task, { design = false, handoff = false } = {}) {
+export function newStatus(task, { design = false, handoff = false, reporter = false } = {}) {
   return {
     task,
     startedAt: new Date().toISOString(),
@@ -191,7 +195,7 @@ export function newStatus(task, { design = false, handoff = false } = {}) {
     stages: STAGES.map((name) => ({
       name,
       // pending | running | passed | failed | blocked | skipped
-      status: (name === 'designer' && !design) || (name === 'handoff' && !handoff) ? 'skipped' : 'pending',
+      status: (name === 'designer' && !design) || (name === 'handoff' && !handoff) || (name === 'reporter' && !reporter) ? 'skipped' : 'pending',
       cycle: 0,
       maxCycles: name === 'coder' ? 5 : 1,
       startedAt: null,

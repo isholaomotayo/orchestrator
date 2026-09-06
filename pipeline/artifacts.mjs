@@ -53,6 +53,9 @@ const REQUIRED_MARKERS = {
   // APPROVED verdict cost something to write.
   review_report: ['verdict', 'spec coverage'],
   handoff: [],
+  // The reporter's narrative; everything measurable in the report is computed
+  // by the engine, so only the human summary is required of the agent.
+  reporter: ['summary'],
 };
 
 // Marker matching ignores case, punctuation and whitespace runs: prompts mandate
@@ -70,6 +73,7 @@ const ARTIFACT_KEYS = {
   tester: 'test_suite',
   reviewer: 'review_report',
   handoff: 'handoff',
+  reporter: 'reporter',
 };
 
 /**

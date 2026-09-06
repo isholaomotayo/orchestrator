@@ -55,18 +55,20 @@ test('pidAlive reports true for the current process and false for pid 0', () => 
   assert.equal(pidAlive(0), false);
 });
 
-test('newStatus builds six stages and marks optional ones skipped by default', () => {
+test('newStatus builds every stage and marks optional ones skipped by default', () => {
   const s = newStatus('t');
-  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff']);
+  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']);
   assert.equal(s.stages.find((x) => x.name === 'designer').status, 'skipped');
   assert.equal(s.stages.find((x) => x.name === 'handoff').status, 'skipped');
+  assert.equal(s.stages.find((x) => x.name === 'reporter').status, 'skipped');
   assert.equal(s.stages.find((x) => x.name === 'planner').status, 'pending');
 });
 
 test('newStatus enables optional stages via flags', () => {
-  const s = newStatus('t', { design: true, handoff: true });
+  const s = newStatus('t', { design: true, handoff: true, reporter: true });
   assert.equal(s.stages.find((x) => x.name === 'designer').status, 'pending');
   assert.equal(s.stages.find((x) => x.name === 'handoff').status, 'pending');
+  assert.equal(s.stages.find((x) => x.name === 'reporter').status, 'pending');
 });
 
 test('ensureStageEntries backfills a legacy 4-stage status as skipped, in canonical order', () => {

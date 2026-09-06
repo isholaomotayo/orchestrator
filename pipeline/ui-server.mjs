@@ -63,8 +63,8 @@ const IDLE_TIMEOUT_MS = process.env.PIPELINE_UI_IDLE_TIMEOUT_MS !== undefined
   : defaultConfig.uiIdleTimeoutMs;
 let lastActivityAt = Date.now();
 
-const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
-const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff'];
+const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'reporter.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
+const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
 const EVENTS_PER_STAGE = 250;
 
