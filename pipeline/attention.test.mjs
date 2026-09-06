@@ -53,6 +53,14 @@ test('a run parked at a gate is awaiting, not busy and not dead', () => {
   assert.equal(state, 'awaiting');
 });
 
+test('a pid-less host-runner run parked at a chat handoff is awaiting, never dead', () => {
+  const state = classifyRun({
+    status: { overall: 'awaiting_chat', awaitingStage: 'coder' }, pidAlive: false,
+    lastOutputAt: null, lastVerb: { verb: 'needs-decision' }, now,
+  }, T);
+  assert.equal(state, 'awaiting');
+});
+
 test('a busy run that has produced nothing for a long time is stale', () => {
   const state = classifyRun({
     status: { overall: 'running' }, pidAlive: true,
@@ -145,6 +153,32 @@ test('an unchanged escalated state does not re-escalate on every tick', () => {
   const awaiting = { state: 'awaiting', verb: 'needs-decision', detail: 'plan-approval', status: { overall: 'awaiting_plan_approval' } };
   const ev = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaiting, now }, T);
   assert.equal(ev, null);
+});
+
+test('a host-runner chat handoff is its own kind, distinct from a generic decision', () => {
+  const ev = classifyEvent({
+    ...base,
+    previous: { state: 'busy', verb: 'working' },
+    current: { state: 'awaiting', verb: 'needs-decision', detail: 'awaiting-chat: coder', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } },
+    now,
+  }, T);
+  assert.equal(ev.kind, 'claim-run');
+  assert.equal(ev.escalate, true);
+  assert.match(ev.summary, /coder/);
+  assert.match(ev.summary, /pool claim r1/);
+});
+
+test('an unchanged claim-run does not re-escalate on every tick', () => {
+  const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } };
+  const ev = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(1000), now }, T);
+  assert.equal(ev, null);
+});
+
+test('an unclaimed run resurfaces after the recheck window, same as a paused/held run', () => {
+  const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } };
+  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.pauseResurfaceMs + 1000), now }, T);
+  assert.equal(later.kind, 'claim-run');
+  assert.equal(later.escalate, true);
 });
 
 test('a declared pause resurfaces only after the recheck window', () => {

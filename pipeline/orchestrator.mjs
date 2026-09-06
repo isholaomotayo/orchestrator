@@ -564,7 +564,10 @@ function requestChatHandoff(stageName, chatResume) {
   }
   setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
   // Pool mode needs this on disk to know a host-runner run is waiting on a
-  // human, not dead — see attention.mjs's 'awaiting_chat' handling.
+  // human, not dead — see attention.mjs's 'awaiting_chat' handling. The verb
+  // gives the supervisor a timestamp to resurface an unclaimed run against
+  // (mirrors requestPlanApproval's own needs-decision verb, below).
+  appendRunVerb(paths, 'needs-decision', `awaiting-chat: ${stageName}`);
   writeRunMeta(paths, { phase: 'awaiting_chat' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);

@@ -83,6 +83,20 @@ export function classifyEvent({
 
   // Waiting on a person.
   if (current.state === 'awaiting') {
+    // A host-runner run parked at a stage handoff: this is not a decision to
+    // answer, it is an invitation to do the stage's work directly in chat —
+    // give it its own kind so the coordinator/dashboard can tell the two apart
+    // and print the exact command to pick it up.
+    if (current.status?.overall === 'awaiting_chat') {
+      const stage = current.status.awaitingStage || '?';
+      if (changed) {
+        return make('claim-run', true, `Ready for a human to complete the "${stage}" stage in chat — run \`pool claim ${runId}\`.`);
+      }
+      if (verbSince && now - Date.parse(verbSince) > thresholds.pauseResurfaceMs) {
+        return make('claim-run', true, `Still waiting to be claimed: "${stage}" — run \`pool claim ${runId}\`.`);
+      }
+      return null;
+    }
     const verb = current.verb;
     if (changed) {
       if (verb === 'needs-decision') {
