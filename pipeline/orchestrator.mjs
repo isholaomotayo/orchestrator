@@ -563,6 +563,9 @@ function requestChatHandoff(stageName, chatResume) {
     try { fs.unlinkSync(path.join(paths.rootDir, 'ui.url')); } catch {}
   }
   setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
+  // Pool mode needs this on disk to know a host-runner run is waiting on a
+  // human, not dead — see attention.mjs's 'awaiting_chat' handling.
+  writeRunMeta(paths, { phase: 'awaiting_chat' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
   console.log('  bash .pipeline/orchestrate.sh --continue');
