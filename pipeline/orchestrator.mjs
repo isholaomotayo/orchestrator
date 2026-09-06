@@ -122,7 +122,9 @@ if (args.taskFile) {
 }
 const rawUiPort = process.env.PIPELINE_UI_PORT;
 const uiPort = (rawUiPort === 'disabled') ? null : (rawUiPort || config.uiPort);
-const dashboardUrl = uiPort ? `http://localhost:${uiPort}` : null;
+// Must match what orchestrate.sh writes: one dashboard serves many projects, so
+// a url without ?project= opens whichever project the server started in.
+const dashboardUrl = uiPort ? `http://localhost:${uiPort}/?project=${encodeURIComponent(repoRoot)}` : null;
 const dashboardMsg = dashboardUrl ? `. Dashboard: ${dashboardUrl}` : '';
 
 if (args.resume) {
@@ -555,10 +557,10 @@ function requestChatHandoff(stageName, chatResume) {
   status.awaitingStage = stageName;
   if (dashboardUrl) {
     status.dashboardUrl = dashboardUrl;
-    try { fs.writeFileSync(path.join(paths.dir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
+    try { fs.writeFileSync(path.join(paths.rootDir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
   } else {
     status.dashboardUrl = null;
-    try { fs.unlinkSync(path.join(paths.dir, 'ui.url')); } catch {}
+    try { fs.unlinkSync(path.join(paths.rootDir, 'ui.url')); } catch {}
   }
   setStage(stageName, { status: 'awaiting_host', detail: 'Waiting for IDE chat agent to complete this stage' });
   finalize();

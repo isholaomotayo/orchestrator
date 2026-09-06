@@ -16,6 +16,8 @@ import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
 import { isOrchestratorSourceRepo } from './self-guard.mjs';
 import { resolveEngineEntry, readInstall, readCheck, gitHead, packageVersion } from './installer.mjs';
+import * as pool from './pool.mjs';
+import { skillStatuses } from './skills.mjs';
 
 // Dashboard-initiated runs must honor the same self-targeting guard as the CLI
 // entrypoints (the spawned engine would refuse anyway — this returns a friendly
@@ -438,6 +440,71 @@ function cancelRun(project) {
   catch (err) { return { error: err.message, code: 500 }; }
 }
 
+// Reports are HTML written by the engine and, for diagrams, by a verified
+// third-party renderer. They are served from the same origin as the dashboard's
+// API, so two independent things keep them harmless: a Content-Security-Policy
+// that denies them any network access at all, and the dashboard embedding them
+// in a sandbox without same-origin privileges.
+const REPORT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
+};
+const REPORT_CSP = [
+  "sandbox allow-scripts",
+  "default-src 'none'",
+  "script-src 'unsafe-inline'",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "font-src data:",
+  "connect-src 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'self'",
+  "base-uri 'none'",
+].join('; ');
+
+function serveReport(project, url, res) {
+  const rel = url.searchParams.get('file') || '';
+  const runId = url.searchParams.get('run');
+  const featureId = url.searchParams.get('feature');
+  // A traversal here would serve any file the server can read, so the path is
+  // both pattern-checked and resolved against its root before anything is read.
+  if (!/^[\w.\-/]+$/.test(rel) || rel.split('/').includes('..')) {
+    return json(res, { error: 'invalid file' }, 400);
+  }
+  let root = null;
+  if (runId && /^[\w.-]+$/.test(runId)) root = path.join(project.paths.runs, runId, 'reports');
+  else if (featureId && /^[\w.-]+$/.test(featureId)) root = path.join(project.paths.control, 'reports', featureId);
+  if (!root) return json(res, { error: 'expected run or feature' }, 400);
+
+  let resolved;
+  try {
+    resolved = fs.realpathSync(path.resolve(root, rel));
+    const rootReal = fs.realpathSync(root);
+    if (resolved !== rootReal && !resolved.startsWith(rootReal + path.sep)) throw new Error('outside');
+  } catch {
+    return json(res, { error: 'not found' }, 404);
+  }
+  const type = REPORT_TYPES[path.extname(resolved).toLowerCase()];
+  if (!type) return json(res, { error: 'unsupported file type' }, 415);
+  try {
+    const body = fs.readFileSync(resolved);
+    res.writeHead(200, {
+      'Content-Type': type,
+      'Content-Security-Policy': REPORT_CSP,
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Cache-Control': 'no-store',
+    });
+    res.end(body);
+  } catch {
+    json(res, { error: 'not found' }, 404);
+  }
+}
+
 function json(res, body, code = 200) {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(body));
@@ -460,15 +527,17 @@ function getProjectForRequest(req, url) {
   return getOrCreateProject(defaultRepoRoot);
 }
 
-// State-changing endpoints that must be protected from CSRF / DNS-rebinding.
-const GUARDED_POST_PATHS = new Set([
-  '/api/followup', '/api/orchestrate', '/api/run', '/api/cancel', '/api/extend', '/api/resume', '/api/continue', '/api/register'
-]);
+// Every state-changing endpoint is protected from CSRF and DNS-rebinding.
+// A prefix test rather than a list: a new POST route is guarded by default,
+// which is the safe direction to be wrong in.
+function isGuardedPost(pathname) {
+  return pathname.startsWith('/api/');
+}
 
 const server = http.createServer((req, res) => {
   lastActivityAt = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
-  if (req.method === 'POST' && GUARDED_POST_PATHS.has(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
+  if (req.method === 'POST' && isGuardedPost(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
   }
   if (req.method === 'POST' && url.pathname === '/api/register') {
@@ -588,6 +657,93 @@ const server = http.createServer((req, res) => {
     } catch {
       json(res, { name, content: '' });
     }
+  } else if (url.pathname === '/api/pool') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    if (!fs.existsSync(project.paths.control)) return json(res, { enabled: false });
+    try {
+      const snap = pool.snapshot(project.paths, { config: project.config });
+      snap.skills = skillStatuses(project.config, { repoRoot: project.repoRoot, paths: project.paths });
+      json(res, { enabled: true, snapshot: snap, roadmap: pool.readRoadmap(project.paths) });
+    } catch (err) {
+      json(res, { enabled: true, degraded: true, error: err.message }, 200);
+    }
+  } else if (url.pathname === '/api/decisions') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    const all = url.searchParams.get('status') === 'all';
+    json(res, { decisions: all ? pool.readDecisions(project.paths) : pool.openDecisions(project.paths) });
+  } else if (url.pathname === '/api/log') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    const stage = url.searchParams.get('stage');
+    const dir = runDir(project, url.searchParams.get('run'));
+    if (!AGENT_STAGES.includes(stage) || !dir) return json(res, { error: 'unknown stage' }, 400);
+    // Logs are unbounded; serve a bounded window so one enormous transcript
+    // cannot stall the dashboard or the server.
+    const file = path.join(dir, 'logs', `${stage}.log`);
+    try {
+      const size = fs.statSync(file).size;
+      const limit = Math.min(Number(url.searchParams.get('limit')) || 65536, 262144);
+      const offset = url.searchParams.has('offset')
+        ? Math.max(0, Math.min(Number(url.searchParams.get('offset')) || 0, size))
+        : Math.max(0, size - limit);
+      const fd = fs.openSync(file, 'r');
+      const length = Math.min(limit, size - offset);
+      const buf = Buffer.alloc(Math.max(0, length));
+      if (length > 0) fs.readSync(fd, buf, 0, length, offset);
+      fs.closeSync(fd);
+      json(res, { stage, offset, next: offset + length, size, text: buf.toString('utf8') });
+    } catch {
+      json(res, { stage, offset: 0, next: 0, size: 0, text: '' });
+    }
+  } else if (url.pathname === '/api/report') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    serveReport(project, url, res);
+  } else if (req.method === 'POST' && url.pathname === '/api/decisions/answer') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => {
+      if (!body?.decisionId || !body.answer) return json(res, { error: 'expected { decisionId, answer }' }, 400);
+      try {
+        json(res, { ok: true, decision: pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' }) });
+      } catch (err) {
+        json(res, { error: err.message }, 409);
+      }
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/merge/approve') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    const guard = selfGuardError(project);
+    if (guard) return json(res, { error: guard.error }, guard.code);
+    readBody(req, (body) => {
+      if (!body?.featureId) return json(res, { error: 'expected { featureId }' }, 400);
+      try {
+        json(res, { ok: true, ...pool.approveMerge(project.paths, body.featureId, { via: 'dashboard', note: body.note ?? null }) });
+      } catch (err) {
+        json(res, { error: err.message }, 409);
+      }
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/merge/request-changes') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => {
+      if (!body?.featureId || !body.text) return json(res, { error: 'expected { featureId, text }' }, 400);
+      try {
+        json(res, { ok: true, ...pool.requestChanges(project.paths, body.featureId, String(body.text), { via: 'dashboard' }) });
+      } catch (err) {
+        json(res, { error: err.message }, 409);
+      }
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/pool/pause') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => json(res, { ok: true, ...pool.pause(project.paths, body?.why ?? '') }));
+  } else if (req.method === 'POST' && url.pathname === '/api/pool/resume') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, () => json(res, { ok: true, ...pool.resume(project.paths) }));
   } else if (url.pathname === '/events') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
@@ -630,8 +786,21 @@ setInterval(() => {
 // after an idle shutdown (or any other exit) would make the next
 // orchestrate.sh invocation trust a stale ui.url until its health check fails.
 process.on('exit', () => {
-  try { fs.unlinkSync(path.join(defaultPaths.dir, 'ui-server.pid')); } catch {}
-  try { fs.unlinkSync(path.join(defaultPaths.dir, 'ui.url')); } catch {}
+  // Only clear the records this process actually wrote. A second dashboard on
+  // another port, or a restarted one, must not have its pid and url deleted by
+  // an unrelated exit — the next orchestrate.sh would then fail to find it.
+  for (const project of new Set([defaultPaths, ...[...projects.values()].map((p) => p.paths)])) {
+    try {
+      if (Number(fs.readFileSync(path.join(project.dir, 'ui-server.pid'), 'utf8').trim()) === process.pid) {
+        fs.unlinkSync(path.join(project.dir, 'ui-server.pid'));
+      }
+    } catch {}
+    try {
+      if (fs.readFileSync(path.join(project.dir, 'ui.url'), 'utf8').includes(`:${PORT}`)) {
+        fs.unlinkSync(path.join(project.dir, 'ui.url'));
+      }
+    } catch {}
+  }
 });
 
 server.on('error', (err) => {
