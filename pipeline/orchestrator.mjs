@@ -36,6 +36,7 @@ function parseArgs(argv) {
     // Pool mode: identity and isolation for one worker among many.
     runId: null, worktree: null, branch: null, baseRef: null,
     briefFile: null, featureId: null, ticketId: null,
+    specsFile: null, changesFile: null, startAt: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -65,15 +66,27 @@ function parseArgs(argv) {
     else if (a === '--brief-file') args.briefFile = argv[++i];
     else if (a === '--feature-id') args.featureId = argv[++i];
     else if (a === '--ticket-id') args.ticketId = argv[++i];
+    else if (a === '--specs-file') args.specsFile = argv[++i];
+    else if (a === '--changes-file') args.changesFile = argv[++i];
+    else if (a === '--start-at') args.startAt = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const args = parseArgs(process.argv.slice(2));
+const SEEDABLE_STAGES = ['tester'];
+if (args.startAt && !SEEDABLE_STAGES.includes(args.startAt)) {
+  console.error(`--start-at must be one of: ${SEEDABLE_STAGES.join(', ')}.`);
+  process.exit(2);
+}
+if (args.startAt && !args.specsFile) {
+  console.error('--start-at requires --specs-file: a seeded run still needs the specification it is judged against.');
+  process.exit(2);
+}
 if (args.runId && !isValidRunId(args.runId)) {
   console.error(`Invalid --run-id "${args.runId}": run ids may contain only letters, digits, dot, dash and underscore.`);
   process.exit(2);
@@ -111,6 +124,10 @@ if (args.resume) {
   if (args.extend !== null && (!Number.isInteger(args.extend) || args.extend < 1)) { console.error(USAGE); process.exit(2); }
 } else if (args.continue) {
   // no task required
+} else if (!args.task && args.specsFile) {
+  // A seeded run's task is the specification it was handed; the Planner that
+  // would otherwise author one is skipped.
+  args.task = `Deliver the work described in the accompanying specification (${path.basename(args.specsFile)}).`;
 } else if (!args.task) {
   console.error(USAGE); process.exit(2);
 }
@@ -1171,8 +1188,46 @@ async function chatContinueRun() {
 }
 
 async function freshRun() {
+  // A seeded run is handed work that already exists: a feature's specification
+  // (so parallel ticket workers share one spec) and, for an integration run,
+  // the merged tickets' changes. Re-deriving either would burn a model call to
+  // reproduce a file we already have.
+  if (args.specsFile) {
+    seedArtifact('planner', args.specsFile, paths.specs, 'specs.md');
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md', detail: 'Seeded from the feature specification' });
+    status.planApproved = true;
+  }
+  if (args.changesFile) {
+    seedArtifact('coder', args.changesFile, paths.changes, 'changes.md');
+    setStage('coder', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'changes.md', detail: 'Seeded from the merged ticket work' });
+  }
+  if (args.startAt === 'tester') {
+    // The work is already committed on the branch; what is unproven is whether
+    // it holds together, so the run starts at verification.
+    await dispatchResumeStep('tester');
+    return;
+  }
+  if (args.specsFile) {
+    await continueAfterPlanner();
+    return;
+  }
   await runPlannerStage();
   await continueAfterPlanner();
+}
+
+// Copy a pre-existing artifact into this run and hold it to the same contract
+// the stage that normally writes it must meet.
+function seedArtifact(stageName, sourceFile, destFile, label) {
+  let content;
+  try { content = fs.readFileSync(sourceFile, 'utf8'); }
+  catch (err) {
+    console.error(`[Orchestrator] Could not read seed file ${sourceFile}: ${err.message}`);
+    haltAndExit(2);
+  }
+  fs.mkdirSync(path.dirname(destFile), { recursive: true });
+  fs.writeFileSync(destFile, content);
+  requireArtifact(stageName, destFile);
+  appendEvent(paths, { stage: stageName, type: 'artifact_seeded', artifact: label, source: sourceFile });
 }
 
 function getResumePoint() {
