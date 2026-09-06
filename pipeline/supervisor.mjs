@@ -22,6 +22,7 @@ import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { resolvePoolRunner, checkRunnerAvailable } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
 import { setFeatureStatus, nextFeature } from './roadmap.mjs';
 import { classifyEvent, appendAttention, openDecision, openDecisions } from './attention.mjs';
@@ -52,13 +53,41 @@ export function createSupervisor({
   function roadmap() { return pool.readRoadmap(paths); }
   function saveRoadmap(next) { return pool.writeRoadmap(paths, next); }
 
-  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, extra = [] }) {
+  // First candidate that names an actual runner rather than deferring
+  // further — 'auto' and unset both mean "keep looking" — falling back to
+  // 'auto' itself once every candidate has deferred.
+  function pickRunner(...candidates) {
+    for (const c of candidates) if (c && c !== 'auto') return c;
+    return 'auto';
+  }
+
+  // A feature/ticket's runner may resolve to a real CLI (spawned headless, in
+  // the background, for genuine unattended parallel automation) or to 'host'
+  // (no subprocess at all — the run is left for a human to claim and complete
+  // in chat, exactly like single-run mode already works). Only the former
+  // needs an authenticated CLI on the machine; the latter is the zero-setup
+  // default a roadmap runs under with nothing authenticated anywhere.
+  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, runner, extra = [] }) {
     const runPaths = pipelinePaths(repoRoot, { runId });
     fs.mkdirSync(runPaths.dir, { recursive: true });
+
+    const avail = checkRunnerAvailable(runner, config);
+    if (!avail.ok) {
+      // Fails clean, as an attention item — not as a throw inside a detached
+      // child process nobody is watching.
+      appendAttention(paths, {
+        runId, featureId, ticketId, kind: 'runner-unavailable', escalate: true,
+        summary: `Resolved runner "${runner}" for ${featureId}${ticketId ? `/${ticketId}` : ''} is not usable: ${avail.reason}`,
+      });
+      log(`runner unavailable for ${runId}: ${avail.reason}`);
+      return { runId, pid: null, blocked: true };
+    }
+
     const args = [
       ENGINE,
       '--run-id', runId,
       '--mode', 'cli',
+      '--runner', runner,
       '--feature-id', featureId,
       ...(ticketId ? ['--ticket-id', ticketId] : []),
       ...(brief ? ['--brief-file', brief] : []),
@@ -69,6 +98,28 @@ export function createSupervisor({
     const outFile = path.join(runPaths.dir, 'orchestrator.out');
     fs.mkdirSync(path.dirname(outFile), { recursive: true });
     const out = fs.openSync(outFile, 'a');
+    const metaBase = {
+      runId, featureId, ticketId, kind, branch, baseRef, runner,
+      worktree: path.relative(repoRoot, runPaths.worktree),
+      brief: brief ? path.relative(repoRoot, brief) : null,
+    };
+
+    if (runner === 'host') {
+      // A host invocation always does setup, hands off exactly one stage, and
+      // exits — it never blocks (adapters.mjs's runAgent returns immediately
+      // for 'host') — so a bounded foreground call is safe here, and it
+      // reuses 100% of orchestrator.mjs's own setup logic (locking, worktree
+      // creation, run.json, status.json) instead of duplicating it.
+      writeRunMeta(runPaths, { ...metaBase, pid: null, phase: 'spawned', spawnedAt: new Date(now()).toISOString() });
+      appendRunVerb(runPaths, 'note', `spawned ${kind} run (host)`);
+      const result = spawnSync(process.execPath, args, {
+        cwd: repoRoot, env: { ...process.env }, stdio: ['ignore', out, out], timeout: 30_000,
+      });
+      if (result.error) log(`host spawn error for ${runId}: ${result.error.message}`);
+      log(`spawned ${kind} run ${runId} for ${featureId}${ticketId ? `/${ticketId}` : ''} — host runner, awaiting chat`);
+      return { runId, pid: null };
+    }
+
     const child = spawn(process.execPath, args, {
       cwd: repoRoot,
       env: { ...process.env },
@@ -76,13 +127,7 @@ export function createSupervisor({
       detached: true,
     });
     if (child.unref) child.unref();
-    writeRunMeta(runPaths, {
-      runId, featureId, ticketId, kind,
-      branch, baseRef, pid: child.pid ?? null,
-      worktree: path.relative(repoRoot, runPaths.worktree),
-      brief: brief ? path.relative(repoRoot, brief) : null,
-      phase: 'spawned', spawnedAt: new Date(now()).toISOString(),
-    });
+    writeRunMeta(runPaths, { ...metaBase, pid: child.pid ?? null, phase: 'spawned', spawnedAt: new Date(now()).toISOString() });
     appendRunVerb(runPaths, 'note', `spawned ${kind} run`);
     log(`spawned ${kind} run ${runId} for ${featureId}${ticketId ? `/${ticketId}` : ''} (pid ${child.pid})`);
     return { runId, pid: child.pid ?? null };
@@ -116,6 +161,7 @@ export function createSupervisor({
     spawnWorker({
       runId, featureId: feature.id, ticketId: null, kind: 'plan',
       brief, branch: `pipeline/work/${feature.id}/plan-${runId}`, baseRef,
+      runner: resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner)),
       extra: ['--plan-only', ...(poolCfg.featurePlanApproval ? ['--approve-plan'] : [])],
     });
     saveRoadmap(setFeatureStatus(rm, feature.id, 'planning', {
@@ -131,7 +177,7 @@ export function createSupervisor({
     if (!tickets.length) {
       // A feature small enough to need no decomposition still needs building:
       // treat the whole specification as a single ticket.
-      tickets.push({ id: 'T1', title: feature.title, files: [], dependsOn: [], body: feature.description, block: '' });
+      tickets.push({ id: 'T1', title: feature.title, files: [], dependsOn: [], runner: null, body: feature.description, block: '' });
     }
 
     const recorded = feature.tickets?.length ? feature.tickets : tickets.map((t) => ({ id: t.id, title: t.title, runId: null, status: 'queued' }));
@@ -162,6 +208,7 @@ export function createSupervisor({
       spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
         brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: feature.baseRef,
+        runner: resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner)),
         extra: [
           '--specs-file', sliceFile,
           ...(poolCfg.ticketFlags.reviewPanel ? ['--review-panel'] : []),
@@ -240,6 +287,7 @@ export function createSupervisor({
     spawnWorker({
       runId, featureId: feature.id, ticketId: null, kind: 'integration',
       brief, branch: null, baseRef: feature.baseRef,
+      runner: resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner)),
       extra: [
         '--worktree', path.relative(repoRoot, runPaths.worktree),
         '--specs-file', specRunPaths.specs,
@@ -474,7 +522,12 @@ export function createSupervisor({
       if (requests.extend && run.status?.overall === 'halted') {
         respawn(run, ['--resume', '--extend', String(requests.extend.cycles)]);
         clearRequests(run);
-      } else if (requests.resume && ['halted', 'awaiting_plan_approval', 'awaiting_chat'].includes(run.status?.overall)) {
+      } else if (requests.resume && ['halted', 'awaiting_plan_approval'].includes(run.status?.overall)) {
+        // Deliberately excludes 'awaiting_chat': that state is only ever
+        // advanced by a human's own --continue after claiming the run (see
+        // `pool claim`), never by the supervisor respawning it — and
+        // orchestrator.mjs's own --resume guard does not accept that state
+        // anyway.
         respawn(run, run.status.overall === 'awaiting_plan_approval' ? ['--continue'] : ['--resume']);
         clearRequests(run);
       }
@@ -570,9 +623,12 @@ export function createSupervisor({
 
   function respawn(run, extra) {
     const meta = run.meta || {};
+    // Reuse whatever runner this run was actually spawned with — never
+    // re-derive from the feature, which may have been edited since.
     spawnWorker({
       runId: run.runId, featureId: meta.featureId, ticketId: meta.ticketId,
       kind: meta.kind || 'ticket', brief: null, branch: null, baseRef: null,
+      runner: resolvePoolRunner(meta.runner),
       extra,
     });
   }

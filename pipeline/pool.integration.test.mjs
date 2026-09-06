@@ -130,6 +130,47 @@ function makeProject() {
   return root;
 }
 
+// Play the part of the human in an IDE chat: read the stage handoff a
+// host-runner run is parked at, produce exactly what the CLI fake runner
+// would have produced for that stage, and continue — repeating until the run
+// finishes. Every `--continue` here is the same command a real coordinator
+// would type after claiming the run with `pool claim`.
+function driveHostTicket(root, runId, which) {
+  const p = pipelinePaths(root, { runId });
+  for (let i = 0; i < 10; i++) {
+    const status = JSON.parse(fs.readFileSync(p.status, 'utf8'));
+    if (status.overall !== 'awaiting_chat') return status;
+    const handoff = JSON.parse(fs.readFileSync(p.stageHandoff, 'utf8'));
+    if (handoff.stage === 'coder') {
+      fs.writeFileSync(path.join(p.worktree, `${which}.mjs`), `export const ${which} = true;\n`);
+      fs.writeFileSync(p.changes, [
+        '# Changes', '', `Added ${which}.mjs as the ticket requires.`, '',
+        '## Self-Review', '', '| ID | Handled | Where |', '|---|---|---|',
+        `| E1 | yes | ${which}.mjs:1 |`, '', 'No known gaps.', '',
+      ].join('\n'));
+    } else if (handoff.stage === 'tester') {
+      fs.writeFileSync(path.join(p.worktree, `added-${which}.test.mjs`), `import test from 'node:test';\nimport assert from 'node:assert/strict';\ntest('${which}', () => { assert.equal(1, 1); });\n`);
+      fs.writeFileSync(p.testSuite, [
+        '# Tests', '', '## Coverage Map',
+        '| ID | Test | Location |', '|---|---|---|', `| E1 | ${which} | added-${which}.test.mjs:1 |`, '',
+        '## Uncovered / Deferred Coverage', 'Nothing deferred.', '',
+      ].join('\n'));
+    } else if (handoff.stage === 'reviewer') {
+      fs.writeFileSync(p.reviewReport, [
+        '## Verdict: APPROVED', '',
+        '## 1. Standards & Architecture Axis', 'Consistent with the surrounding code.', '',
+        '## 3. Spec Coverage Verification',
+        '| ID | Status | Evidence |', '|---|---|---|', '| E1 | covered | added.test.mjs:1 |', '',
+        '## 5. Summary', 'The work matches the specification and is covered by tests.', '',
+      ].join('\n'));
+    } else {
+      throw new Error(`driveHostTicket does not know stage "${handoff.stage}"`);
+    }
+    execFileSync(process.execPath, ['pipeline/orchestrator.mjs', '--continue', '--run-id', runId], { cwd: root, encoding: 'utf8' });
+  }
+  throw new Error(`host ticket ${runId} did not finish within the iteration cap`);
+}
+
 // Drive ticks until `predicate` holds, so the test follows real child processes
 // without sleeping for a fixed guess.
 async function until(sup, predicate, { limit = 400, gap = 60 } = {}) {
@@ -250,4 +291,70 @@ test('a failing review is escalated instead of being merged', async (t) => {
   assert.ok(!mainFiles.includes('alpha.mjs'), 'nothing reached the base branch');
   const pending = pool.pendingAttention(paths);
   assert.ok(pending.some((a) => /not approved|halted|review/i.test(a.summary)), 'the operator was told');
+});
+
+test('a feature whose configured runner is unusable never spawns; the supervisor raises runner-unavailable instead', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const cfgFile = path.join(root, '.pipeline', 'config.json');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  // Neither a known CLI name nor a declared custom runner: a misconfiguration,
+  // not a missing CLI auth — deterministic regardless of what happens to be
+  // authenticated on the machine running this test.
+  cfg.runner = 'not-configured';
+  fs.writeFileSync(cfgFile, JSON.stringify(cfg, null, 2));
+  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'misconfigure runner');
+
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+  const sup = createSupervisor({ repoRoot: root });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+
+  sup.tick();
+  const rm = pool.readRoadmap(paths);
+  assert.equal(rm.features[0].status, 'planning', 'the feature never advances past its unusable runner');
+  const specRunId = rm.features[0].specRunId;
+  assert.ok(specRunId, 'a run id was still allocated');
+  assert.ok(!fs.existsSync(pipelinePaths(root, { runId: specRunId }).runMeta), 'nothing was ever actually spawned for it');
+  const pending = pool.pendingAttention(paths);
+  assert.ok(pending.some((a) => a.kind === 'runner-unavailable' && /not-configured/.test(a.summary)), 'the operator was told exactly why');
+});
+
+test('a mixed feature runs one ticket on a CLI and the other on host, landing both', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  // The beta ticket is host-runner; the alpha ticket keeps the fake CLI.
+  const runner = fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8').replace(
+    "    '- **Dependencies:** None', '',\n  ].join('\\n'));",
+    "    '- **Dependencies:** None',\n    '- **Runner:** host', '',\n  ].join('\\n'));",
+  );
+  assert.notEqual(runner, fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8'), 'the runner bullet was actually inserted');
+  fs.writeFileSync(path.join(root, 'fake-runner.mjs'), runner);
+  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'beta ticket runs on host');
+
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+  const sup = createSupervisor({ repoRoot: root });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+
+  const executing = await until(sup, (rm) => rm.features[0].status === 'executing' && (rm.features[0].tickets || []).length >= 2);
+  const ticketMetas = executing.features[0].tickets.map((tk) => ({
+    ticket: tk, meta: JSON.parse(fs.readFileSync(pipelinePaths(root, { runId: tk.runId }).runMeta, 'utf8')),
+  }));
+  const hostTicket = ticketMetas.find((t) => t.meta.runner === 'host');
+  const cliTicket = ticketMetas.find((t) => t.meta.runner !== 'host');
+  assert.ok(hostTicket && cliTicket, 'exactly one ticket resolved to host, the other to the CLI runner');
+  assert.equal(hostTicket.meta.pid, null, 'a host-runner ticket never gets a process pid');
+
+  driveHostTicket(root, hostTicket.ticket.runId, 'beta');
+
+  await until(sup, (rm) => rm.features[0].status === 'awaiting_merge_approval');
+  pool.approveMerge(paths, 'F1', { by: 'test', via: 'cli' });
+  const landed = await until(sup, (rm) => ['landed', 'failed'].includes(rm.features[0].status), { limit: 500 });
+  assert.equal(landed.features[0].status, 'landed', 'the mixed feature landed');
+  const mainFiles = git(root, 'ls-tree', '-r', '--name-only', 'main').split('\n');
+  assert.ok(mainFiles.includes('alpha.mjs') && mainFiles.includes('beta.mjs'), 'both the CLI and host ticket work landed');
+  // The host ticket's process metadata never gained a pid at any point.
+  const finalMeta = JSON.parse(fs.readFileSync(pipelinePaths(root, { runId: hostTicket.ticket.runId }).runMeta, 'utf8'));
+  assert.equal(finalMeta.pid, null);
 });

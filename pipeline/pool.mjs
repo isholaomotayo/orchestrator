@@ -35,6 +35,13 @@ export function poolConfig(config) {
     autoResumeMax: raw.autoResumeMax ?? 2,
     serializeOnFileOverlap: raw.serializeOnFileOverlap !== false,
     featurePlanApproval: raw.featurePlanApproval !== false,
+    // The runner a feature/ticket falls back to when it declares none of its
+    // own. Inherits the pre-existing top-level `runner` setting when the
+    // operator has one (so an existing single-runner preference still
+    // applies in pool mode); otherwise 'auto', which prefers an
+    // authenticated CLI, else host — a roadmap runs end to end with zero CLI
+    // auth on the machine by default.
+    defaultRunner: raw.defaultRunner ?? (config.runner && config.runner !== 'auto' ? config.runner : 'auto'),
     ticketFlags: raw.ticketFlags || {},
     integrationFlags: raw.integrationFlags || { reviewPanel: true, report: true },
   };

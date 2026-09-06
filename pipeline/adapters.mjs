@@ -20,9 +20,11 @@ export function resolvePoolRunner(requested) {
 
 // Preflight a resolved (non-auto) runner before the supervisor spawns anything
 // for it, so an unusable runner is a clean attention item instead of a crash
-// inside a detached child process.
-export function checkRunnerAvailable(runner) {
+// inside a detached child process. A configured custom runner has no auth
+// concept to probe (same reasoning as detectRunner's own forced-runner path).
+export function checkRunnerAvailable(runner, config = {}) {
   if (runner === 'host') return { ok: true };
+  if (config.customRunners?.[runner]) return { ok: true };
   if (!RUNNER_BINS[runner]) return { ok: false, reason: `Unknown runner "${runner}".` };
   if (!binExists(RUNNER_BINS[runner])) return { ok: false, reason: `"${runner}" is not installed on PATH.` };
   if (!probeRunnerAuth(runner)) return { ok: false, reason: `"${runner}" is on PATH but not authenticated.` };

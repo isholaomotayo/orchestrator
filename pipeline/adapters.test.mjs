@@ -192,6 +192,11 @@ test('checkRunnerAvailable rejects an unknown runner name with a clear reason', 
   assert.match(result.reason, /Unknown runner/);
 });
 
+test('checkRunnerAvailable accepts a configured custom runner without an auth probe', () => {
+  const config = { customRunners: { fake: { command: 'node', args: ['agent.mjs'] } } };
+  assert.deepEqual(checkRunnerAvailable('fake', config), { ok: true });
+});
+
 test('an agent process never receives forge credentials', () => {
   const env = agentEnv({ PATH: '/usr/bin', GH_TOKEN: 'secret', GITHUB_TOKEN: 'secret', GITLAB_TOKEN: 'secret', HOME: '/home/x' });
   assert.equal(env.GH_TOKEN, undefined);

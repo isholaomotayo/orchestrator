@@ -445,7 +445,13 @@ if (args.continue) {
     branch: worktreeInfo?.branch ?? null, baseRef: args.baseRef ?? null,
     worktree: worktreeInfo?.worktree ?? null,
     brief: args.briefFile ? path.relative(repoRoot, path.resolve(args.briefFile)) : null,
-    runner, pid: process.pid, phase: 'running',
+    runner,
+    // A host invocation is this same short-lived process that is about to
+    // exit at its first stage handoff — recording its own transient pid would
+    // read as "still running" long after it is gone. There is never a
+    // process to point to for a host run, so it is always null.
+    pid: runner === 'host' ? null : process.pid,
+    phase: 'running',
   });
   // Capture the commit each repo starts from, before any agent runs, so the
   // review diff can be scoped to this run even after agents commit their work.
