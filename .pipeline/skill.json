@@ -1,7 +1,7 @@
 {
   "name": "orchestrate",
   "slash_command": "/orchestrate",
-  "description": "Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Invoke via /orchestrate or bash .pipeline/orchestrate.sh. Chat sessions must pass --mode chat --host-client <name> (claude|cursor|codex|gemini|antigravity) and never delegate stages to an external agent CLI. Refuses to target the orchestrator source repo (exit 3) unless --allow-self / ORCH_ALLOW_SELF=1.",
+  "description": "Runs a self-healing multi-agent pipeline for one task (Planner \u2192 optional Designer \u2192 Coder fix loop \u2192 Tester \u2192 Reviewer \u2192 optional Handoff \u2192 optional Reporter), or a whole roadmap of features as a pool of parallel workers with approval gates and a live control room. Invoke via /orchestrate or bash .pipeline/orchestrate.sh. Chat sessions pass --mode chat --host-client <name> for single runs and act as the coordinator in roadmap mode, never spawning workers themselves. Refuses to target the orchestrator source repo (exit 3) unless --allow-self / ORCH_ALLOW_SELF=1.",
   "command": "bash .pipeline/orchestrate.sh",
   "repository": "https://github.com/isholaomotayo/orchestrator",
   "arguments": {
@@ -18,6 +18,17 @@
     "validation": ".pipeline/test_suite.md",
     "final_review": ".pipeline/review_report.md",
     "handoff": ".pipeline/handoff.md",
-    "live_state": ".pipeline/status.json"
+    "live_state": ".pipeline/status.json",
+    "reporter_narrative": ".pipeline/reporter.md",
+    "work_done_report": ".pipeline/reports/work-done.html",
+    "roadmap_source": ".pipeline/roadmap.md",
+    "roadmap_state": ".pipeline/control/roadmap.json",
+    "pool_snapshot": ".pipeline/control/snapshot.json",
+    "decisions": ".pipeline/control/decisions.jsonl"
+  },
+  "commands": {
+    "single_run": "bash .pipeline/orchestrate.sh \"<task>\" --mode chat --host-client <name>",
+    "roadmap": "bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md",
+    "status": "bash .pipeline/orchestrate.sh pool digest"
   }
 }

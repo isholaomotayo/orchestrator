@@ -30,6 +30,9 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 - [How live updates work](#how-live-updates-work)
 - [CLI reference](#cli-reference)
 - [Configuration reference](#configuration-reference)
+- [Roadmap mode: a pool of workers](#roadmap-mode-a-pool-of-workers)
+- [Third-party skills](#third-party-skills)
+- [Work-done reports](#work-done-reports)
 - [Guardrails and safety](#guardrails-and-safety)
   - [Self-repo guard](#self-repo-guard)
 - [Run history and state files](#run-history-and-state-files)
@@ -571,6 +574,132 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 
 In **chat/host mode**, auto profiles are selected from the `--host-client` ecosystem (e.g. Antigravity → Gemini-family). When the host client is unknown or absent, every stage suggests the `current-chat` sentinel — "use whatever model this chat session is running" — rather than assuming Claude models exist. Manual `--models` still wins when you set `--model-profile manual`.
 
+## Roadmap mode: a pool of workers
+
+Everything above describes **one task, one run**. That is still the default and
+still works exactly as documented. Roadmap mode is the other shape: you hand the
+orchestrator a list of features and it works through them, building several
+parts of each feature at once.
+
+```bash
+bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md
+bash .pipeline/orchestrate.sh pool digest
+```
+
+### The roadmap
+
+`.pipeline/roadmap.md` is intent, written by you or drafted by an agent, and it
+is meant to be committed:
+
+```markdown
+---
+version: 1
+title: Billing v2
+base: main
+merge: pr          # pr | local-only
+---
+
+## F1: Invoice data model
+- depends_on: none
+- max_parallel: 3
+### Description
+Add the Invoice and LineItem tables plus repository functions.
+### Acceptance
+- [ ] `npm test` passes with new repository tests
+- [ ] The migration is reversible
+
+## F2: Invoice PDF export
+- depends_on: F1
+### Description
+Render an invoice as a PDF.
+```
+
+Status lives separately, in `.pipeline/control/roadmap.json`. That split is what
+makes the source editable at any time: fixing a typo in a description and
+recompiling merges progress by feature id, so a landed feature never resets.
+
+### What happens to a feature
+
+```
+plan ──▶ tickets (parallel, one worktree each) ──▶ combine ──▶ review ──▶ you approve ──▶ merge
+  │            │                                      │                        │
+  └ specs.md   └ each commits on its own branch       └ reviews the whole      └ live mergeability
+                                                        feature, not a slice      check, then merge
+```
+
+Features run **in order**; feature N+1 branches from whatever N actually merged.
+Tickets **within** a feature run in parallel, each in its own git worktree on its
+own branch, so concurrent workers never see each other's half-finished edits.
+A ticket whose declared files overlap a running one is held back rather than run
+into a predictable conflict.
+
+Nothing reaches your base branch without you: an approved review parks the
+feature at `awaiting_merge_approval`, and merging additionally re-reads the
+forge at merge time, because a branch can move between approval and merge.
+
+### Who does what
+
+| | |
+|---|---|
+| **You** | decide, approve, merge |
+| **Coordinator** (your chat session) | intake, answers decisions, approves on your say-so. Never does stage work, never spawns workers |
+| **Supervisor** (`pipeline/supervisor.mjs`) | a zero-LLM daemon: spawns workers, watches them, escalates only what needs a person |
+| **Workers** | ordinary pipeline runs, headless, one worktree each |
+
+The supervisor calls no model. Everything it decides is a deterministic reading
+of files on disk, which is what makes it cheap enough to sit in a loop and
+reproducible enough to test.
+
+### Steering a run
+
+```bash
+bash .pipeline/orchestrate.sh pool digest                       # four-section status
+bash .pipeline/orchestrate.sh pool decide <decisionId> "..."    # answer a question
+bash .pipeline/orchestrate.sh pool approve-plan <runId>
+bash .pipeline/orchestrate.sh pool approve-merge <featureId>
+bash .pipeline/orchestrate.sh pool request-changes <featureId> "..."
+bash .pipeline/orchestrate.sh pool extend <runId> <n>
+bash .pipeline/orchestrate.sh pool pause | resume
+bash .pipeline/orchestrate.sh roadmap compile | show | hold <id> | release <id> | skip <id>
+```
+
+Everything is also doable from the dashboard, and both write the same records.
+
+**Roadmap mode needs an authenticated agent CLI** (`claude`, `codex`, `cursor`
+or `gemini`) on the machine, because the supervisor spawns real worker
+processes. In an IDE chat with no CLI installed, use single-run mode, which is
+unchanged.
+
+## Third-party skills
+
+A stage can be given a capability the pipeline does not implement itself. Skills
+are declared in `.pipeline/config.json` and **pinned by content**:
+
+```bash
+node pipeline/skills.mjs pin archify     # after reviewing it
+node pipeline/skills.mjs list
+```
+
+A skill whose bytes no longer match its pin is refused for that run and
+reported, rather than silently changing what your agents are told — which
+matters most for a skill installed at user level that can update itself.
+
+Agents never run a renderer. They write a diagram *specification* into their own
+artifact, and the engine validates and renders it afterwards, so a read-only
+stage stays read-only and a diagram that will not draw is a note in the report
+rather than a failed run.
+
+## Work-done reports
+
+With `--report` (or `reportStage: true`), a run compiles
+`reports/work-done.html` — a standalone, theme-aware page describing what was
+built. The narrative comes from an agent; **every figure is measured by the
+engine** from the run's own diff and artifacts: files changed, specification
+coverage, the test trend, decisions taken, the verdict. A narrative that
+overstates what happened cannot change the numbers beside it.
+
+The markdown twin, `work-done.md`, is used as the pull request body.
+
 ## Guardrails and safety
 
 1. **Regression halt** — a fix cycle that passes _fewer_ tests than the previous one halts immediately (`REGRESSION_BLOCKED`) for human review; not resumable via extend, on purpose.
@@ -582,6 +711,8 @@ In **chat/host mode**, auto profiles are selected from the `--host-client` ecosy
 7. **Sandbox isolation** — `--sandbox` runs every agent inside a separate git worktree so half-finished edits are never visible to your editor, linters, or other tooling watching the main working tree.
 8. **Localhost-only dashboard** — binds to `127.0.0.1`; never exposed to your LAN.
 9. **Self-repo guard** — the pipeline refuses to run against the orchestrator _source_ repository (exit code 3). See below.
+10. **Merge gate** — in roadmap mode nothing reaches your base branch without an explicit approval AND a live mergeability read at merge time; recorded metadata is never the authority, because a branch can move between the two.
+11. **Fail-closed cleanup** — a worktree with uncommitted changes, or a branch holding commits not contained in the feature branch, is never removed. The refusal is recorded for a human instead of discarding work.
 
 ### Self-repo guard
 
@@ -647,7 +778,9 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 
 ## Limitations and known trade-offs
 
-- **One run per repo at a time.** By design — see [Multiple repos](#multiple-repos-on-one-machine). True cross-repo or cross-run parallelism would need a run registry and a hub server; deliberately out of scope to keep this a zero-infrastructure, drop-in skill.
+- **One run per repo at a time in single-run mode.** Roadmap mode lifts this: many workers run concurrently in one repo, each in its own worktree. Cross-*repo* parallelism is still out of scope.
+- **Roadmap mode needs an authenticated agent CLI.** The supervisor spawns real worker processes, so an IDE chat with no CLI installed can only use single-run mode.
+- **Ticket parallelism is a planner's estimate.** Files declared by a ticket are used to hold back likely conflicts; the fan-in merge is the ground truth, and a real conflict becomes a decision rather than a guess.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.
 - **The diff is scoped to the commit the run started from** (committed + uncommitted changes since then). Any edits you had already made _before_ the run started are part of that baseline and won't appear in the Reviewer's diff; conversely, if you had uncommitted edits at run start on a non-sandboxed run, they're included.
@@ -655,10 +788,10 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 
 ## Future improvements
 
-- A run registry + hub view for genuinely parallel, multi-repo/multi-task dashboards (the intentional fork-in-the-road noted above).
 - Pluggable checker parsers for more test runners (Go, Rust, JVM ecosystems).
 - Structured (not just best-effort regex) verdict and cost extraction for the Cursor/Codex/Gemini adapters, matching what Claude Code's `stream-json` already provides.
-- Optional PR-creation step after an `APPROVED` verdict.
+- Cross-repository roadmaps (today a pool is scoped to one repository).
+- A richer roadmap editor in the dashboard.
 
 ## Troubleshooting
 

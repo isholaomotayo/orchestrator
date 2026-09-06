@@ -252,3 +252,123 @@ Env heuristics are unreliable across IDEs (TTY checks misfire in IDE-integrated 
 | `.pipeline/skill.json` | `.cursorrules`, `AGENTS.md`, editor rules |
 
 Both use the name `orchestrate` and command `bash .pipeline/orchestrate.sh`.
+
+---
+
+# v2: roadmap mode, skills and reports
+
+## Roadmap and pool commands
+
+```bash
+bash .pipeline/orchestrate.sh --roadmap <file>       # compile and start the supervisor
+bash .pipeline/orchestrate.sh roadmap compile|show
+bash .pipeline/orchestrate.sh roadmap hold|release|skip <featureId>
+bash .pipeline/orchestrate.sh pool start|stop|pause|resume
+bash .pipeline/orchestrate.sh pool status [--json] | digest
+bash .pipeline/orchestrate.sh pool attention [--json] | ack <id>
+bash .pipeline/orchestrate.sh pool decisions [--json]
+bash .pipeline/orchestrate.sh pool decide <decisionId> "<answer>"
+bash .pipeline/orchestrate.sh pool approve-plan <runId>
+bash .pipeline/orchestrate.sh pool approve-merge <featureId> [--note "..."]
+bash .pipeline/orchestrate.sh pool request-changes <featureId> "<text>"
+bash .pipeline/orchestrate.sh pool extend <runId> <cycles>
+bash .pipeline/orchestrate.sh pool notes add "<text>" [--kind learning|decision|gotcha]
+```
+
+Exit codes: `0` ok, `1` error, `2` usage, `3` self-target guard, `4` no supervisor running.
+
+## Engine flags added in v2
+
+| Flag | Meaning |
+|---|---|
+| `--run-id <id>` | run state lives in `.pipeline/runs/<id>/` instead of `.pipeline/` |
+| `--worktree <path\|auto>` | isolate this run in its own git worktree (`--sandbox` is now sugar for `auto`) |
+| `--branch <name>` | branch for this run's commits |
+| `--base-ref <sha>` | what the review diff is scoped against (an integration run reviews a whole feature) |
+| `--feature-id`, `--ticket-id` | identity, recorded in `run.json` and the snapshot |
+| `--brief-file <path>` | task text from a brief; the machine header never enters the TASK block |
+| `--specs-file <path>` | start from an existing specification, skipping the Planner |
+| `--changes-file <path>` | seed the Coder artifact (used by integration runs) |
+| `--start-at tester` | begin at verification over work that is already committed |
+| `--plan-only` | run the Planner and stop, producing the specification tickets are sliced from |
+| `--report` | compile the work-done report after an approved review |
+
+## Feature and run state
+
+Feature statuses: `queued`, `planning`, `awaiting_plan_approval`, `executing`,
+`integrating`, `reviewing`, `awaiting_merge_approval`, `merge_approved`,
+`merging`, `landed`, `failed`, `held`, `skipped`.
+
+Run verbs (`.pipeline/runs/<id>/run.status`, append-only): `working`,
+`needs-decision`, `blocked`, `paused`, `held`, `resolved`, `done`, `failed`,
+`landed`, `note`.
+
+Contracts: `orchestrator-roadmap.v1`, `orchestrator-run-meta.v1`,
+`orchestrator-pool-snapshot.v1`.
+
+## Configuration added in v2
+
+```jsonc
+"pool": {
+  "maxParallel": 3,              // tickets running at once within a feature
+  "pollMs": 2000,
+  "heartbeatMs": 300000,
+  "staleAfterMs": 600000,        // quiet this long while "working" is suspicious
+  "staleEscalateMs": 240000,     // still quiet this long after that: tell someone
+  "pauseResurfaceMs": 3600000,   // how often a declared wait is put back in front of you
+  "autoResumeMax": 2,            // transient failures retried without asking
+  "serializeOnFileOverlap": true,
+  "featurePlanApproval": true,
+  "ticketFlags": { "reviewPanel": false },
+  "integrationFlags": { "reviewPanel": true, "report": true }
+},
+"merge": {
+  "mode": "pr",                  // pr | local-only
+  "remote": "origin",
+  "mergeMethod": "squash",
+  "requireMergeable": true,      // refuse while checks are outstanding
+  "autoMerge": false,            // still performs the live check
+  "cleanupOnMerge": true
+},
+"reportStage": false,
+"reports": { "diagrams": true, "archifyTimeoutMs": 120000 },
+"skills": [ /* see below */ ]
+```
+
+## Skills
+
+```jsonc
+"skills": [{
+  "name": "archify",
+  "source": { "type": "local", "path": "~/.claude/skills/archify" },
+  // or  { "type": "git", "repo": "...", "ref": "v2.16.0", "sha256": "<hash of the pin file>" }
+  "stages": ["reporter"],
+  "entry": "SKILL.md",
+  "maxPromptBytes": 32768,
+  "omitSections": ["## Update awareness", "## Setup and fallback"],
+  "tools": [{ "bash": "node {skillDir}/bin/archify.mjs validate" }],
+  "diagrams": {
+    "render":   "node {skillDir}/bin/archify.mjs deliver {type} {spec} {out} --quality showcase --json",
+    "validate": "node {skillDir}/bin/archify.mjs validate {type} {spec} --quality showcase --json",
+    "types": ["architecture", "workflow", "sequence", "dataflow", "lifecycle"],
+    "repoRootFlag": { "architecture": "--repo-root {repoRoot}" }
+  }
+}]
+```
+
+```bash
+node pipeline/skills.mjs list | verify [name] | pin <name>
+```
+
+`pin` records a sha256 of every file in the package. Review a skill before
+pinning it: its text becomes part of your agents' instructions.
+
+## Upgrading from v1
+
+1. Refresh the skill bundle, then `bash .agents/skills/orchestrate/scripts/bootstrap.sh --update`.
+2. `.gitignore` is not managed — copy the v2 block from this repository's
+   `.gitignore` by hand. Without it, worktrees show up as untracked files.
+3. `.pipeline_sandbox/` is legacy. Finish or discard any run using it, delete the
+   directory, and use `--worktree auto` (or nothing) instead of `--sandbox`.
+4. Existing runs, `--continue`, `--resume` and the single-run dashboard are
+   unchanged; a v1 `status.json` still resumes.
