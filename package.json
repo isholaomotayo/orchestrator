@@ -9,15 +9,18 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --test pipeline/*.test.mjs evals/*.test.mjs skills/orchestrate/scripts/*.test.mjs",
-    "typecheck": "for f in pipeline/*.mjs evals/*.mjs scripts/*.mjs skills/orchestrate/scripts/*.mjs; do node --check \"$f\" || exit 1; done",
+    "test": "node --test pipeline/*.test.mjs pipeline/ui/*.test.mjs evals/*.test.mjs skills/orchestrate/scripts/*.test.mjs",
+    "typecheck": "for f in pipeline/*.mjs pipeline/ui/*.mjs evals/*.mjs scripts/*.mjs skills/orchestrate/scripts/*.mjs; do node --check \"$f\" || exit 1; done",
     "release:manifest": "node scripts/gen-scaffold-manifest.mjs",
     "ui": "node pipeline/ui-server.mjs",
     "orchestrate": "bash .pipeline/orchestrate.sh",
     "pipeline": "bash .pipeline/orchestrate.sh",
     "demo:ui": "node scripts/seed-demo-ui.mjs completed && npm run ui",
     "screenshots": "node scripts/capture-screenshots.mjs",
-    "eval": "node evals/run.mjs"
+    "eval": "node evals/run.mjs",
+    "build:ui": "node scripts/build-dashboard.mjs",
+    "pool": "node pipeline/pool-cli.mjs",
+    "skills": "node pipeline/skills-cli.mjs"
   },
   "devDependencies": {
     "playwright": "1.55.1"
