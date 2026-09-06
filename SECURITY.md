@@ -124,6 +124,10 @@ directory, so neither traversal nor a symlink can reach another file.
 
 - **Only the supervisor spawns workers.** A chat session in pool mode is the
   coordinator: it records intent through `pool` verbs and never launches agents.
+  A `claim-run` item is not an exception — `pool claim` starts no process; it
+  hands a stage to whichever chat session is already attending, the same way
+  single-run mode already works. The supervisor spawns a real OS process only
+  for a feature/ticket whose resolved runner is an authenticated agent CLI.
 - **Isolation per worker.** Each run gets its own git worktree and branch, so
   concurrent workers cannot see or overwrite each other's partial work.
 - **Credentials are withheld from agents.** `GH_TOKEN`, `GITHUB_TOKEN` and

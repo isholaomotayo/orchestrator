@@ -642,9 +642,9 @@ forge at merge time, because a branch can move between approval and merge.
 | | |
 |---|---|
 | **You** | decide, approve, merge |
-| **Coordinator** (your chat session) | intake, answers decisions, approves on your say-so. Never does stage work, never spawns workers |
-| **Supervisor** (`pipeline/supervisor.mjs`) | a zero-LLM daemon: spawns workers, watches them, escalates only what needs a person |
-| **Workers** | ordinary pipeline runs, headless, one worktree each |
+| **Coordinator** (your chat session) | intake, answers decisions, approves on your say-so. Never spawns workers — except a `claim-run` item, which is an invitation to complete that one stage directly, exactly like single-run mode |
+| **Supervisor** (`pipeline/supervisor.mjs`) | a zero-LLM daemon: spawns workers whose runner is a real CLI, watches them, escalates only what needs a person |
+| **Workers** | ordinary pipeline runs — headless (a real CLI, one worktree each) or `host` (no process at all: parked for a chat session to claim) |
 
 The supervisor calls no model. Everything it decides is a deterministic reading
 of files on disk, which is what makes it cheap enough to sit in a loop and
@@ -654,6 +654,7 @@ reproducible enough to test.
 
 ```bash
 bash .pipeline/orchestrate.sh pool digest                       # four-section status
+bash .pipeline/orchestrate.sh pool claim <runId>                # pick up a run parked in chat
 bash .pipeline/orchestrate.sh pool decide <decisionId> "..."    # answer a question
 bash .pipeline/orchestrate.sh pool approve-plan <runId>
 bash .pipeline/orchestrate.sh pool approve-merge <featureId>
@@ -665,10 +666,16 @@ bash .pipeline/orchestrate.sh roadmap compile | show | hold <id> | release <id> 
 
 Everything is also doable from the dashboard, and both write the same records.
 
-**Roadmap mode needs an authenticated agent CLI** (`claude`, `codex`, `cursor`
-or `gemini`) on the machine, because the supervisor spawns real worker
-processes. In an IDE chat with no CLI installed, use single-run mode, which is
-unchanged.
+**Roadmap mode needs no authenticated agent CLI by default.** A feature/ticket's
+`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|gemini`,
+default `auto`) resolves to an authenticated CLI (`claude`, `codex`, `cursor` or
+`gemini`) when one exists, else falls back to `host` — no subprocess at all.
+The supervisor spawns a real worker process only for a CLI-resolved run; a
+`host` run is instead left `awaiting_chat` with a `claim-run` item in the
+digest, and any attending chat session picks it up with `pool claim <runId>`
+and completes that stage directly, exactly as single-run mode already works.
+Opt a feature into a real CLI only when you actually want it to run
+unattended in parallel.
 
 ## Third-party skills
 
@@ -779,7 +786,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 ## Limitations and known trade-offs
 
 - **One run per repo at a time in single-run mode.** Roadmap mode lifts this: many workers run concurrently in one repo, each in its own worktree. Cross-*repo* parallelism is still out of scope.
-- **Roadmap mode needs an authenticated agent CLI.** The supervisor spawns real worker processes, so an IDE chat with no CLI installed can only use single-run mode.
+- **A feature/ticket opted into a real CLI runner needs one authenticated.** That's opt-in per feature (`- runner:` in `roadmap.md`); the default (`auto`, falling back to `host`) needs nothing — an unattended, unauthenticated machine just accumulates `claim-run` items for whoever next attends the roadmap in chat, rather than failing.
 - **Ticket parallelism is a planner's estimate.** Files declared by a ticket are used to hold back likely conflicts; the fan-in merge is the ground truth, and a real conflict becomes a decision rather than a guess.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.

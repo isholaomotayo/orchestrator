@@ -26,7 +26,7 @@ Only invoke this pipeline when the user **explicitly** asks for it — they type
 
 ## Roadmap (pool) mode — v2
 
-**The coordinator never does stage work and never spawns workers.** In single-run chat mode YOU complete each stage from `stage-handoff.json` and run `--continue`. In roadmap (pool) mode the supervisor spawns workers via `bash .pipeline/orchestrate.sh pool start`; you do intake, answer decisions, and approve merges with `pool` verbs.
+**The coordinator never does stage work and never spawns workers — except a `claim-run` item, which is an invitation to do exactly that.** In single-run chat mode YOU complete each stage from `stage-handoff.json` and run `--continue`. In roadmap (pool) mode the supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with roadmap.md's `- runner: claude|cursor|codex|gemini` bullet, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere. When `pool digest`/`pool attention` shows a `claim-run` item, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that stage yourself exactly as in single-run mode, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Otherwise you do intake, answer decisions, and approve merges with `pool` verbs.
 
 **Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
 
@@ -37,6 +37,7 @@ Only invoke this pipeline when the user **explicitly** asks for it — they type
 ```
 bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md   # compile and start
 bash .pipeline/orchestrate.sh pool digest                      # four-section status
+bash .pipeline/orchestrate.sh pool claim <runId>               # pick up a run parked in chat
 bash .pipeline/orchestrate.sh pool decide <id> "<answer>"      # answer a question
 bash .pipeline/orchestrate.sh pool approve-merge <featureId>   # only after the human says so
 ```

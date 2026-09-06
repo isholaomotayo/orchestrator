@@ -267,6 +267,7 @@ bash .pipeline/orchestrate.sh pool start|stop|pause|resume
 bash .pipeline/orchestrate.sh pool status [--json] | digest
 bash .pipeline/orchestrate.sh pool attention [--json] | ack <id>
 bash .pipeline/orchestrate.sh pool decisions [--json]
+bash .pipeline/orchestrate.sh pool claim <runId>                    # pick up a run parked in chat (runner: host)
 bash .pipeline/orchestrate.sh pool decide <decisionId> "<answer>"
 bash .pipeline/orchestrate.sh pool approve-plan <runId>
 bash .pipeline/orchestrate.sh pool approve-merge <featureId> [--note "..."]
