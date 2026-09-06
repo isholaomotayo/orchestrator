@@ -61,6 +61,21 @@ test('parseTickets treats "none" dependencies case-insensitively', () => {
   assert.deepEqual(tickets[0].dependsOn, []);
 });
 
+test('a ticket has no runner override unless one is written into the spec', () => {
+  const tickets = parseTickets(SPEC);
+  assert.equal(tickets[0].runner, null);
+});
+
+test('a ticket can override the feature runner with a **Runner:** line', () => {
+  const withRunner = SPEC.replace(
+    '- **Dependencies:** None\n- **Signatures:** createInvoice(items)',
+    '- **Dependencies:** None\n- **Runner:** host\n- **Signatures:** createInvoice(items)',
+  );
+  const tickets = parseTickets(withRunner);
+  assert.equal(tickets[0].runner, 'host');
+  assert.equal(tickets[1].runner, null, 'the override is per-ticket, not global');
+});
+
 test('a ticket slice keeps the shared context and only its own ticket', () => {
   const slice = sliceSpecForTicket(SPEC, 'T2');
   assert.match(slice, /## 2\. Technical Specification/);

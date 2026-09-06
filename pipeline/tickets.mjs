@@ -51,6 +51,10 @@ export function parseTickets(specs) {
       dependsOn: /^\s*(none)?\s*$/i.test(deps)
         ? []
         : [...deps.matchAll(/ticket\s*(\d+)/gi)].map((m) => `T${m[1]}`),
+      // Optional per-ticket override of the feature's runner. Inert until a
+      // Planner or a human writes a "**Runner:**" line into specs.md — no
+      // prompt change required for it to take effect.
+      runner: fieldValue(body, 'Runner') || null,
       body,
       block: block.trim(),
     };

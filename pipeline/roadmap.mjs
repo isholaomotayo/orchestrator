@@ -14,7 +14,14 @@
 // number rather than a guess, because a misread roadmap silently builds the
 // wrong product.
 
+import { RUNNER_BINS } from './adapters.mjs';
+
 export const ROADMAP_CONTRACT = 'orchestrator-roadmap.v1';
+
+// 'auto' prefers an authenticated CLI for real unattended parallelism, but
+// falls back to 'host' — a feature/ticket never has to name a CLI to be
+// runnable; the roadmap works with zero CLI auth on the machine by default.
+export const POOL_RUNNERS = ['auto', ...Object.keys(RUNNER_BINS)];
 
 export const FEATURE_STATUSES = [
   'queued',
@@ -144,6 +151,10 @@ export function parseRoadmapMd(text) {
     if (maxParallelRaw && (!Number.isInteger(maxParallel) || maxParallel < 1)) {
       errors.push({ line: h.line, message: `Feature "${h.idRaw}" has invalid max_parallel "${maxParallelRaw}"; expected a positive integer.` });
     }
+    const runner = bulletValue(block, 'runner') || 'auto';
+    if (!POOL_RUNNERS.includes(runner)) {
+      errors.push({ line: h.line, message: `Feature "${h.idRaw}" has unknown runner "${runner}"; expected one of: ${POOL_RUNNERS.join(', ')}.` });
+    }
 
     features.push({
       id: h.idRaw,
@@ -156,6 +167,7 @@ export function parseRoadmapMd(text) {
       dependsOn,
       mode,
       maxParallel: Number.isInteger(maxParallel) && maxParallel > 0 ? maxParallel : null,
+      runner,
       line: h.line,
     });
   }
@@ -227,6 +239,7 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
       dependsOn: f.dependsOn,
       mode: f.mode,
       maxParallel: f.maxParallel,
+      runner: f.runner,
       // State, carried across recompiles.
       status: before?.status ?? 'queued',
       branch: before?.branch ?? `pipeline/feature/${f.id}`,

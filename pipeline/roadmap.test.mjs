@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseFrontmatter, parseRoadmapMd, compileRoadmap,
-  orderFeatures, nextFeature, setFeatureStatus, FEATURE_STATUSES,
+  orderFeatures, nextFeature, setFeatureStatus, FEATURE_STATUSES, POOL_RUNNERS,
 } from './roadmap.mjs';
 
 const ROADMAP = `---
@@ -72,6 +72,25 @@ test('parseRoadmapMd reads features, descriptions, acceptance and dependencies',
   assert.match(f1.description, /Invoice and LineItem tables/);
   assert.equal(f1.acceptance.length, 2);
   assert.deepEqual(f2.dependsOn, ['F1']);
+});
+
+test('a feature with no runner bullet defaults to auto', () => {
+  const { roadmap } = parseRoadmapMd(ROADMAP);
+  assert.equal(roadmap.features[0].runner, 'auto');
+});
+
+test('a feature can declare a runner, including host', () => {
+  const withRunner = ROADMAP.replace('- mode: build\n- max_parallel: 3', '- mode: build\n- max_parallel: 3\n- runner: host');
+  const { roadmap, errors } = parseRoadmapMd(withRunner);
+  assert.deepEqual(errors, []);
+  assert.equal(roadmap.features[0].runner, 'host');
+});
+
+test('an unknown runner is rejected with a line number', () => {
+  const bad = ROADMAP.replace('- mode: build\n- max_parallel: 3', '- mode: build\n- max_parallel: 3\n- runner: teleport');
+  const { errors } = parseRoadmapMd(bad);
+  assert.ok(errors.some((e) => /runner/i.test(e.message) && /teleport/.test(e.message)));
+  assert.ok(errors.every((e) => typeof e.line === 'number'));
 });
 
 test('a feature with no description is rejected with its line number', () => {
@@ -146,6 +165,16 @@ test('recompiling preserves progress instead of resetting it', () => {
   assert.equal(f1.landedSha, 'deadbeef');
   assert.equal(recompiled.features.find((f) => f.id === 'F2').description, 'Render an invoice as a tasteful PDF.');
   assert.equal(recompiled.currentFeatureId, 'F2');
+});
+
+test('a feature runner is live from source, not carried across recompiles', () => {
+  const withRunner = ROADMAP.replace('- mode: build\n- max_parallel: 3', '- mode: build\n- max_parallel: 3\n- runner: host');
+  let json = compileRoadmap(parseRoadmapMd(withRunner).roadmap, null);
+  assert.equal(json.features[0].runner, 'host');
+  // The operator adds CLI auth and edits the bullet to auto; recompiling picks it up.
+  const backToAuto = withRunner.replace('- runner: host', '- runner: auto');
+  json = compileRoadmap(parseRoadmapMd(backToAuto).roadmap, json);
+  assert.equal(json.features[0].runner, 'auto');
 });
 
 test('a feature removed from the source is retained as an orphan, never silently dropped', () => {
