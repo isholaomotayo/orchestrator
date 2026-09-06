@@ -100,6 +100,28 @@ test('the pool endpoint reports the roadmap and what needs a decision', withServ
   assert.equal(body.roadmap.features[0].id, 'F1');
 }));
 
+test('/api/runs lists an archived pool run and a live legacy run together', withServer(async ({ get, root }) => {
+  // makeProject() already has runs/r1 (done); a plain single-run project also
+  // keeps a live run at the project root, not under paths.runs — without
+  // surfacing it there, its state is servable (readState already handles no
+  // runId) but nothing in the sidebar ever opens it.
+  fs.writeFileSync(path.join(root, '.pipeline', 'status.json'), JSON.stringify({ task: 'Legacy task', overall: 'running', verdict: null }));
+  const body = await (await get('/api/runs')).json();
+  assert.equal(body.runs.length, 2);
+  assert.equal(body.runs[0].id, '', 'the live legacy run is listed first');
+  assert.equal(body.runs[0].task, 'Legacy task');
+  assert.equal(body.runs[0].live, true);
+  assert.ok(body.runs.some((r) => r.id === 'r1' && r.live === false));
+}));
+
+test('/api/runs never lists a legacy run once it has finished', withServer(async ({ get, root }) => {
+  fs.writeFileSync(path.join(root, '.pipeline', 'status.json'), JSON.stringify({ task: 'Legacy task', overall: 'halted', haltReason: 'MAX_CYCLES' }));
+  const body = await (await get('/api/runs')).json();
+  const primary = body.runs.find((r) => r.id === '');
+  assert.equal(primary.overall, 'halted');
+  assert.equal(primary.live, false, 'a halted run is history, not something to steer');
+}));
+
 test('a project with no pool reports it plainly rather than erroring', async (t) => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ui-bare-')));
   fs.mkdirSync(path.join(root, '.pipeline'), { recursive: true });

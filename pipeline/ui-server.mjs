@@ -288,11 +288,24 @@ function readState(project, runId) {
 function listRuns(project) {
   let ids = [];
   try { ids = fs.readdirSync(project.paths.runs).filter((n) => /^[\w.-]+$/.test(n)).sort().reverse(); } catch {}
-  return ids.map((id) => {
+  const runs = ids.map((id) => {
     let s = null;
     try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
-    return { id, task: s?.task || '(unknown)', overall: s?.overall, verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt };
+    return { id, task: s?.task || '(unknown)', overall: s?.overall, verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt, live: false };
   });
+  // A plain single-run project (no pool) keeps its live run at the project
+  // root, not under paths.runs — without this it has state to read
+  // (readState already serves it) but nothing in the sidebar ever opens it.
+  let primary = null;
+  try { primary = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {}
+  if (primary) {
+    runs.unshift({
+      id: '', task: primary.task || '(unknown)', overall: primary.overall,
+      verdict: primary.verdict, haltReason: primary.haltReason, startedAt: primary.startedAt,
+      live: primary.overall === 'running' || primary.overall === 'awaiting_chat' || primary.overall === 'awaiting_plan_approval',
+    });
+  }
+  return runs;
 }
 
 function positiveInt(v) {

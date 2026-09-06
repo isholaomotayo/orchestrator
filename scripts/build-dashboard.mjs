@@ -19,7 +19,7 @@ const OUT = path.join(ROOT, 'pipeline', 'dashboard.html');
 
 // Dependency order. Explicit rather than resolved, because the whole point is
 // that the output is predictable and reviewable in a diff.
-const ORDER = ['md.mjs', 'diff.mjs', 'tabs.mjs', 'pool-tree.mjs', 'api.mjs', 'main.mjs'];
+const ORDER = ['md.mjs', 'diff.mjs', 'tabs.mjs', 'pool-tree.mjs', 'api.mjs', 'stages.mjs', 'main.mjs'];
 
 const IMPORT_RE = /^\s*import\s[^;]*?from\s+['"]\.\/[^'"]+['"];?\s*$/gm;
 const EXPORT_RE = /^export\s+(?=(const|let|var|function|async function|class))/gm;

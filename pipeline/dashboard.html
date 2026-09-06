@@ -93,9 +93,13 @@
 
   .topbar { grid-area:1/1/2/3; display:flex; align-items:center; gap:14px;
     padding:0 16px; background:var(--panel); border-bottom:1px solid var(--border); }
-  .brand { display:flex; align-items:center; gap:8px; font-weight:650; letter-spacing:-.01em;
+  .brand { display:flex; align-items:center; gap:9px; font-weight:650; letter-spacing:-.01em;
     min-width:calc(var(--sidebar-w) - 32px); }
-  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--st-run); }
+  .appicon { width:24px; height:24px; border-radius:7px; background:var(--inverse); color:var(--on-inverse);
+    display:grid; place-items:center; flex-shrink:0; }
+  .appicon .ic { width:13px; height:13px; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; }
+  .brand .dot { width:8px; height:8px; border-radius:50%; background:var(--st-run); }
   .brand .dot.idle { background:var(--st-pending); }
   .brand .dot.halted { background:var(--st-fail); }
   .spacer { flex:1; }
@@ -133,6 +137,38 @@
   .node .label b { display:block; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .node .label span { display:block; font-size:11.5px; color:var(--muted); }
   .side-empty { font-size:12px; color:var(--faint); padding:2px 8px 6px; }
+
+  /* Current task card, above the pipeline rail in single-run mode. */
+  .task-box { padding:6px 8px 10px; }
+  .task-box .task-text { font-size:12.5px; line-height:1.5; display:-webkit-box;
+    -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .task-box .when { font-size:10.5px; color:var(--faint); margin-top:5px; }
+
+  /* Pipeline rail: one row per stage, in the sidebar, for the single live
+     run — identity, state and a share of wall-clock in one glance. */
+  .rail { display:flex; flex-direction:column; gap:2px; }
+  .rail-row { position:relative; display:flex; align-items:flex-start; gap:10px; width:100%;
+    text-align:left; padding:8px 10px 9px; border:1px solid transparent; border-radius:9px;
+    background:transparent; color:inherit; font:inherit; cursor:pointer; }
+  .rail-row:hover { background:var(--surface-hover); }
+  .rail-row.selected { background:var(--accent-row); border-color:var(--border); }
+  .rail-row .agent-ico { width:26px; height:26px; margin-top:1px; flex-shrink:0; }
+  .rail-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  .rail-top { display:flex; align-items:center; gap:7px; }
+  .rail-nm { font-weight:600; font-size:12.5px; line-height:1.3; flex:1; min-width:0; }
+  .rail-sub { font-size:10.5px; color:var(--muted); line-height:1.35;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rail-track { display:block; height:4px; margin-top:3px; background:var(--track);
+    border-radius:999px; overflow:hidden; }
+  .rail-bar { display:block; height:100%; width:0; border-radius:999px;
+    background-color:var(--st-pending); transition:width .45s cubic-bezier(.4,0,.2,1); }
+  .rail-row.is-passed .rail-bar { background-color:var(--st-done); width:100%; }
+  .rail-row.is-running .rail-bar { background-color:var(--st-run); width:60%; }
+  .rail-row.is-failed .rail-bar { background-color:var(--st-fail); width:100%; }
+  .rail-row.is-pending .rail-bar { width:0; }
+  .rail-row.is-skipped { opacity:.55; }
+  .rail-row.is-skipped .rail-track { height:2px; margin-top:4px; border-radius:0; background:none;
+    background-image:repeating-linear-gradient(90deg, var(--st-skip) 0 4px, transparent 4px 8px); }
   .side-foot { border-top:1px solid var(--border); padding:8px 10px; display:flex; gap:6px; flex-wrap:wrap; }
   .resize { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; }
 
@@ -184,18 +220,55 @@
   textarea { resize:vertical; min-height:74px; }
   .empty { color:var(--faint); padding:26px 0; text-align:center; }
 
-  .stagebar { display:flex; gap:4px; margin:0 0 16px; flex-wrap:wrap; }
-  .stagebtn { display:flex; gap:6px; align-items:center; border:1px solid var(--border);
-    background:var(--surface); border-radius:999px; padding:4px 11px; cursor:pointer; font-size:12.5px; }
-  .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; }
+  .stagebar { display:flex; gap:6px; margin:0 0 14px; flex-wrap:wrap; }
+  .stagebtn { display:flex; gap:7px; align-items:center; border:1px solid var(--border);
+    background:var(--surface); border-radius:999px; padding:4px 12px 4px 4px; cursor:pointer; font-size:12.5px; }
+  .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; background:var(--surface-hover); }
   .feed { display:flex; flex-direction:column; gap:9px; }
   .block { background:var(--panel); border:1px solid var(--border); border-radius:10px;
     padding:11px 13px; content-visibility:auto; contain-intrinsic-size:auto 60px; }
-  .block.sys { color:var(--muted); font-size:12.5px; }
+  .block.sys { color:var(--muted); font-size:12.5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   .block.err { border-color:var(--halt-border); color:var(--red-text); }
-  .divider { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11.5px;
-    text-transform:uppercase; letter-spacing:.05em; margin-top:6px; }
+  .divider { display:flex; align-items:center; gap:8px; color:var(--faint); font-size:10.5px;
+    text-transform:uppercase; letter-spacing:.07em; font-weight:700; margin-top:6px; }
   .divider::after { content:""; flex:1; height:1px; background:var(--border); }
+
+  /* Agent icon: the one visual identity every stage keeps, wherever it
+     appears — the stage bar, the header, the sidebar. */
+  .agent-ico { display:grid; place-items:center; flex-shrink:0; border-radius:7px; }
+  .agent-ico.planner  { background:var(--agent-planner-bg);  color:var(--agent-planner-fg); }
+  .agent-ico.designer { background:var(--agent-designer-bg); color:var(--agent-designer-fg); }
+  .agent-ico.coder    { background:var(--agent-coder-bg);    color:var(--agent-coder-fg); }
+  .agent-ico.tester   { background:var(--agent-tester-bg);   color:var(--agent-tester-fg); }
+  .agent-ico.reviewer { background:var(--agent-reviewer-bg); color:var(--agent-reviewer-fg); }
+  .agent-ico.handoff, .agent-ico.reporter { background:var(--agent-handoff-bg); color:var(--agent-handoff-fg); }
+  .agent-ico .ic { width:60%; height:60%; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; }
+  .stagebtn .agent-ico { width:20px; height:20px; }
+
+  /* Agent header: icon, name, one-line description, and the run's overall
+     state as a pill — the card every run tab opens with. */
+  .agent-header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .agent-header .agent-ico { width:34px; height:34px; }
+  .agent-header .nm { font-weight:700; font-size:14.5px; line-height:1.2; }
+  .agent-header .desc { font-size:12px; color:var(--muted); margin-top:1px; }
+  .agent-header .spacer { flex:1; }
+  .pill { font-size:10.5px; font-weight:600; padding:3px 10px 3px 20px; position:relative;
+    border-radius:999px; background:var(--surface-hover); color:var(--muted); white-space:nowrap; }
+  .pill::before { content:''; position:absolute; left:9px; top:50%; transform:translateY(-50%);
+    width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.5; }
+  .pill.running { background:var(--st-run-soft); color:var(--st-run-text); }
+  .pill.running::before { opacity:1; animation:pulse 1.4s infinite; }
+  .pill.done { background:var(--st-done-soft); color:var(--st-done-text); }
+  .pill.halted, .pill.failed { background:var(--st-fail-soft); color:var(--st-fail-text); }
+  .pill.stale { background:var(--amber-bg); color:var(--amber-text); }
+  .pill.awaiting, .pill.awaiting_chat, .pill.awaiting_plan_approval { background:var(--purple-bg); color:var(--purple-text); }
+
+  /* Artifact card: what a stage produced, set apart from ordinary prose. */
+  .sec-label { font-size:10.5px; font-weight:700; letter-spacing:.07em; color:var(--faint);
+    text-transform:uppercase; margin:18px 0 6px; }
+  .artifact-card { background:var(--code-bg); border:1px solid var(--border); border-radius:10px;
+    padding:2px 16px 12px; }
   pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
     padding:10px 12px; overflow-x:auto; margin:8px 0; }
   code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
@@ -239,7 +312,10 @@
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><span class="dot" id="live-dot"></span><span>Orchestrator</span></div>
+    <div class="brand">
+      <span class="appicon"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg></span>
+      <span class="dot" id="live-dot"></span><span>Orchestrator</span>
+    </div>
     <select id="project" aria-label="Project"></select>
     <span class="spacer"></span>
     <span class="chip" id="totals" hidden></span>
@@ -805,6 +881,48 @@ function createApi(projectRef) {
 }
 
 
+// ===== stages.mjs =====
+// Stage identity: one small SVG icon and a short description per agent, so a
+// run reads as a sequence of distinct specialists rather than a list of
+// strings. Ported from the pre-tabs dashboard, which drew every stage this
+// way — the icons and colors are the product's visual identity, not
+// decoration to be rebuilt from scratch every time the shell changes.
+
+function svg(inner) {
+  return `<svg class="ic" viewBox="0 0 24 24">${inner}</svg>`;
+}
+
+const ICONS = {
+  planner: svg('<circle cx="12" cy="12" r="9"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5" fill="currentColor" stroke="none"/>'),
+  designer: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="12"/>'),
+  coder: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
+  tester: svg('<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><polyline points="9 12 11 14 15 10"/>'),
+  reviewer: svg('<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16" y2="16"/>'),
+  handoff: svg('<path d="M4 12h11"/><polyline points="11,6 17,12 11,18"/><line x1="20" y1="5" x2="20" y2="19"/>'),
+  reporter: svg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'),
+};
+
+const AGENTS = {
+  planner: { sub: 'Spec writer', desc: 'Turns vague requests into precise specs' },
+  designer: { sub: 'Architecture', desc: 'Design-It-Twice: explores alternatives, locks contracts' },
+  coder: { sub: 'Implementation', desc: 'Implements the spec, self-heals until checks pass' },
+  tester: { sub: 'QA & coverage', desc: 'Writes rigorous tests for the implementation' },
+  reviewer: { sub: 'Code review', desc: 'Read-only security & architecture audit' },
+  handoff: { sub: 'Continuation doc', desc: 'Compiles the handoff document for the next session' },
+  reporter: { sub: 'Work-done report', desc: 'Compiles a measured summary of what changed' },
+};
+
+const STAGE_ORDER = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
+
+function stageIcon(name) {
+  return ICONS[name] || ICONS.coder;
+}
+
+function agentMeta(name) {
+  return AGENTS[name] || { sub: name, desc: '' };
+}
+
+
 // ===== main.mjs =====
 // The control room.
 //
@@ -824,7 +942,9 @@ function createApi(projectRef) {
 
 
 
+
 const $ = (id) => document.getElementById(id);
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const el = (tag, attrs = {}, children = []) => {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -844,6 +964,7 @@ const state = {
   projects: [],
   pool: null,
   runs: [],
+  primary: null, // full state of the live legacy run, for the sidebar rail
   status: null,
   sse: null,
   seq: 0,
@@ -881,21 +1002,92 @@ function renderSidebar() {
   const tree = buildTree(state.pool?.snapshot ?? null);
 
   if (!tree.enabled) {
-    // Single-run project: the runs list stands in for a roadmap.
-    side.append(sectionNode({
-      key: 'runs', title: 'Runs', count: state.runs.length, emptyText: 'No runs yet.',
-      items: state.runs.map((r) => ({
-        id: r.id, kind: 'run',
-        label: r.task ? String(r.task).slice(0, 60) : r.id,
-        sub: [r.overall, r.verdict].filter(Boolean).join(' · '),
-        dot: r.overall === 'done' ? 'done' : r.overall === 'halted' ? 'fail' : 'run',
-      })),
-    }));
+    // Single-run project: the live run gets the rich pipeline rail (this is
+    // the everyday view for a plain, non-roadmap project); anything archived
+    // falls back to a plain list underneath.
+    if (state.primary) side.append(...renderPrimaryRail(state.primary));
+    const archived = state.runs.filter((r) => r.id !== '');
+    if (archived.length || !state.primary) {
+      side.append(sectionNode({
+        key: 'runs', title: state.primary ? 'Previous runs' : 'Runs',
+        count: archived.length, emptyText: 'No runs yet.',
+        items: archived.map((r) => ({
+          id: r.id, kind: 'run',
+          label: r.task ? String(r.task).slice(0, 60) : r.id,
+          sub: [r.overall, r.verdict].filter(Boolean).join(' · '),
+          dot: r.overall === 'done' ? 'done' : r.overall === 'halted' ? 'fail' : 'run',
+        })),
+      }));
+    }
     return renderSideFoot(tree);
   }
 
   for (const section of tree.sections) side.append(sectionNode(section));
   renderSideFoot(tree);
+}
+
+// The pipeline rail: one row per stage of the live legacy run, in place of
+// the flat runs list — restores the pre-tabs single-run sidebar, which this
+// is still the everyday view for (a plain project with no roadmap).
+function renderPrimaryRail(data) {
+  const status = data.status || {};
+  const nodes = [];
+
+  if (status.task) {
+    nodes.push(el('div', { class: 'side-section' }, [
+      el('div', { class: 'side-title' }, el('span', { text: 'Current task' })),
+      el('div', { class: 'task-box' }, [
+        el('div', { class: 'task-text', text: status.task }),
+        status.startedAt ? el('div', { class: 'when', text: `Started ${agoText(status.startedAt)}` }) : null,
+      ]),
+    ]));
+  }
+
+  const stages = status.stages?.length ? status.stages : STAGE_ORDER.map((name) => ({ name, status: 'pending' }));
+  const activeTab = tabs.get(tabId({ kind: 'run', subject: '' }));
+  const isRunTabActive = !!activeTab && tabs.activeId() === activeTab.id;
+  const effectiveStage = activeTab?.stage
+    || stages.find((s) => s.status === 'running')?.name
+    || stages[stages.length - 1]?.name;
+  const rail = el('div', { class: 'rail' });
+  for (const stage of stages) {
+    const cls = stage.status === 'passed' ? 'is-passed'
+      : stage.status === 'running' ? 'is-running'
+        : stage.status === 'failed' ? 'is-failed'
+          : stage.status === 'skipped' ? 'is-skipped' : 'is-pending';
+    const selected = isRunTabActive && stage.name === effectiveStage;
+    rail.append(el('button', {
+      class: `rail-row ${cls}${selected ? ' selected' : ''}`,
+      onclick: () => {
+        open({ kind: 'run', subject: '', title: status.task || 'Current run' });
+        const tab = tabs.get(tabId({ kind: 'run', subject: '' }));
+        if (tab) { tab.stage = stage.name; render(); }
+      },
+    }, [
+      el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
+      el('div', { class: 'rail-main' }, [
+        el('div', { class: 'rail-top' }, el('span', { class: 'rail-nm', text: cap(stage.name) })),
+        el('div', { class: 'rail-sub', text: agentMeta(stage.name).sub }),
+        el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
+      ]),
+    ]));
+  }
+  nodes.push(el('div', { class: 'side-section' }, [
+    el('div', { class: 'side-title' }, el('span', { text: 'Pipeline' })),
+    rail,
+  ]));
+  return nodes;
+}
+
+function agoText(iso) {
+  const ms = Date.now() - Date.parse(iso);
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  const mins = Math.round(ms / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
 }
 
 function sectionNode(section) {
@@ -1133,30 +1325,71 @@ const STAGE_ARTIFACT = {
 };
 
 async function viewRun(wrap, tab) {
-  wrap.append(el('h1', { text: tab.title || tab.subject }));
   const sub = el('p', { class: 'sub', text: 'Loading…' });
   wrap.append(sub);
-  const bar = el('div', { class: 'stagebar' });
   const body = el('div');
-  wrap.append(bar, body);
+  wrap.append(body);
 
   let data;
   try { data = await api.state(tab.subject); } catch (err) { sub.textContent = err.message; return; }
   if (tabs.activeId() !== tab.id) return; // the reader moved on while we fetched
 
   const status = data.status || {};
-  sub.textContent = [status.overall, status.verdict, status.branch].filter(Boolean).join(' · ') || 'no state recorded';
+  sub.remove();
 
   const stages = (status.stages || []).filter((s) => s.status !== 'skipped');
   const active = tab.stage || stages.find((s) => s.status === 'running')?.name || stages[stages.length - 1]?.name || 'planner';
+  const meta = agentMeta(active);
+
+  // The header every run opens with: which specialist is at work, what it
+  // does, and the run's overall state as a pill — not a wall of plain text.
+  body.append(el('div', { class: 'agent-header' }, [
+    el('span', { class: `agent-ico ${active}`, html: stageIcon(active) }),
+    el('div', {}, [
+      el('div', { class: 'nm', text: (tab.title || tab.subject || active).toString() }),
+      el('div', { class: 'desc', text: meta.desc }),
+    ]),
+    el('span', { class: 'spacer' }),
+    el('span', { class: `pill ${status.overall || ''}`, text: (status.overall || 'no state recorded').replace(/_/g, ' ') }),
+  ]));
+
+  const bar = el('div', { class: 'stagebar' });
+  body.append(bar);
   for (const stage of stages) {
     bar.append(el('button', {
       class: 'stagebtn', 'aria-current': stage.name === active ? 'step' : null,
       onclick: () => { tab.stage = stage.name; render(); },
     }, [
-      el('span', { class: `dot ${stage.status === 'passed' ? 'done' : stage.status === 'running' ? 'run' : stage.status === 'failed' ? 'fail' : 'pending'}` }),
+      el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
       el('span', { text: stage.name }),
+      el('span', { class: `dot ${stage.status === 'passed' ? 'done' : stage.status === 'running' ? 'run' : stage.status === 'failed' ? 'fail' : 'pending'}` }),
     ]));
+  }
+
+  // Run controls: only the live run (no runId — the root .pipeline/ state)
+  // can be steered from here; an archived run is read-only history.
+  if (data.live && (data.canCancel || data.canResume || data.canExtend || data.canContinue)) {
+    const controls = el('div', { class: 'row', style: 'margin:2px 0 16px' });
+    if (data.canContinue) controls.append(el('button', {
+      class: 'btn', text: 'Continue',
+      onclick: async () => { try { await api.continueRun(); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
+    }));
+    if (data.canResume) controls.append(el('button', {
+      class: 'btn ghost', text: 'Resume',
+      onclick: async () => { try { await api.resumeRun(); toast('Asked the run to resume.'); refresh(); } catch (err) { toast(err.message); } },
+    }));
+    if (data.canExtend) {
+      const cycles = el('input', { type: 'text', value: '5', style: 'width:52px' });
+      controls.append(cycles, el('button', {
+        class: 'btn ghost', text: 'Extend',
+        onclick: async () => { try { await api.extendRun(cycles.value); toast('Extended.'); refresh(); } catch (err) { toast(err.message); } },
+      }));
+    }
+    if (data.canCancel) controls.append(el('button', {
+      class: 'btn danger', text: 'Stop run',
+      onclick: async () => { try { await api.cancelRun(); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
+    }));
+    body.append(controls);
   }
 
   if (status.haltReason) {
@@ -1178,8 +1411,8 @@ async function viewRun(wrap, tab) {
   // that exist and are non-empty; content is fetched separately.
   const wanted = STAGE_ARTIFACT[active];
   if (wanted && (data.artifacts || []).includes(wanted)) {
-    body.append(el('h3', { text: wanted }));
-    const card = el('div', { class: 'card', text: 'Loading…' });
+    body.append(el('div', { class: 'sec-label', text: `Output — ${wanted}` }));
+    const card = el('div', { class: 'artifact-card', text: 'Loading…' });
     body.append(card);
     api.artifact(wanted, tab.subject)
       .then((a) => { card.innerHTML = renderMd(a.content || ''); })
@@ -1321,6 +1554,11 @@ async function refresh() {
     ]);
     state.pool = pool.enabled ? pool : null;
     state.runs = runs.runs || [];
+    // The sidebar's pipeline rail needs per-stage detail that /api/runs does
+    // not carry — only fetch it when it will actually be shown (single-run
+    // mode with a live run), not on every poll of a pool project.
+    const live = !state.pool && state.runs.find((r) => r.id === '' && r.live);
+    state.primary = live ? await api.state('').catch(() => null) : null;
   } catch { /* keep the last good view rather than blanking the page */ }
 
   // Badge the tabs whose runs need someone, without stealing focus.

@@ -93,9 +93,13 @@
 
   .topbar { grid-area:1/1/2/3; display:flex; align-items:center; gap:14px;
     padding:0 16px; background:var(--panel); border-bottom:1px solid var(--border); }
-  .brand { display:flex; align-items:center; gap:8px; font-weight:650; letter-spacing:-.01em;
+  .brand { display:flex; align-items:center; gap:9px; font-weight:650; letter-spacing:-.01em;
     min-width:calc(var(--sidebar-w) - 32px); }
-  .brand .dot { width:9px; height:9px; border-radius:50%; background:var(--st-run); }
+  .appicon { width:24px; height:24px; border-radius:7px; background:var(--inverse); color:var(--on-inverse);
+    display:grid; place-items:center; flex-shrink:0; }
+  .appicon .ic { width:13px; height:13px; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; }
+  .brand .dot { width:8px; height:8px; border-radius:50%; background:var(--st-run); }
   .brand .dot.idle { background:var(--st-pending); }
   .brand .dot.halted { background:var(--st-fail); }
   .spacer { flex:1; }
@@ -133,6 +137,38 @@
   .node .label b { display:block; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .node .label span { display:block; font-size:11.5px; color:var(--muted); }
   .side-empty { font-size:12px; color:var(--faint); padding:2px 8px 6px; }
+
+  /* Current task card, above the pipeline rail in single-run mode. */
+  .task-box { padding:6px 8px 10px; }
+  .task-box .task-text { font-size:12.5px; line-height:1.5; display:-webkit-box;
+    -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
+  .task-box .when { font-size:10.5px; color:var(--faint); margin-top:5px; }
+
+  /* Pipeline rail: one row per stage, in the sidebar, for the single live
+     run — identity, state and a share of wall-clock in one glance. */
+  .rail { display:flex; flex-direction:column; gap:2px; }
+  .rail-row { position:relative; display:flex; align-items:flex-start; gap:10px; width:100%;
+    text-align:left; padding:8px 10px 9px; border:1px solid transparent; border-radius:9px;
+    background:transparent; color:inherit; font:inherit; cursor:pointer; }
+  .rail-row:hover { background:var(--surface-hover); }
+  .rail-row.selected { background:var(--accent-row); border-color:var(--border); }
+  .rail-row .agent-ico { width:26px; height:26px; margin-top:1px; flex-shrink:0; }
+  .rail-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+  .rail-top { display:flex; align-items:center; gap:7px; }
+  .rail-nm { font-weight:600; font-size:12.5px; line-height:1.3; flex:1; min-width:0; }
+  .rail-sub { font-size:10.5px; color:var(--muted); line-height:1.35;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rail-track { display:block; height:4px; margin-top:3px; background:var(--track);
+    border-radius:999px; overflow:hidden; }
+  .rail-bar { display:block; height:100%; width:0; border-radius:999px;
+    background-color:var(--st-pending); transition:width .45s cubic-bezier(.4,0,.2,1); }
+  .rail-row.is-passed .rail-bar { background-color:var(--st-done); width:100%; }
+  .rail-row.is-running .rail-bar { background-color:var(--st-run); width:60%; }
+  .rail-row.is-failed .rail-bar { background-color:var(--st-fail); width:100%; }
+  .rail-row.is-pending .rail-bar { width:0; }
+  .rail-row.is-skipped { opacity:.55; }
+  .rail-row.is-skipped .rail-track { height:2px; margin-top:4px; border-radius:0; background:none;
+    background-image:repeating-linear-gradient(90deg, var(--st-skip) 0 4px, transparent 4px 8px); }
   .side-foot { border-top:1px solid var(--border); padding:8px 10px; display:flex; gap:6px; flex-wrap:wrap; }
   .resize { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; }
 
@@ -184,18 +220,55 @@
   textarea { resize:vertical; min-height:74px; }
   .empty { color:var(--faint); padding:26px 0; text-align:center; }
 
-  .stagebar { display:flex; gap:4px; margin:0 0 16px; flex-wrap:wrap; }
-  .stagebtn { display:flex; gap:6px; align-items:center; border:1px solid var(--border);
-    background:var(--surface); border-radius:999px; padding:4px 11px; cursor:pointer; font-size:12.5px; }
-  .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; }
+  .stagebar { display:flex; gap:6px; margin:0 0 14px; flex-wrap:wrap; }
+  .stagebtn { display:flex; gap:7px; align-items:center; border:1px solid var(--border);
+    background:var(--surface); border-radius:999px; padding:4px 12px 4px 4px; cursor:pointer; font-size:12.5px; }
+  .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; background:var(--surface-hover); }
   .feed { display:flex; flex-direction:column; gap:9px; }
   .block { background:var(--panel); border:1px solid var(--border); border-radius:10px;
     padding:11px 13px; content-visibility:auto; contain-intrinsic-size:auto 60px; }
-  .block.sys { color:var(--muted); font-size:12.5px; }
+  .block.sys { color:var(--muted); font-size:12.5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   .block.err { border-color:var(--halt-border); color:var(--red-text); }
-  .divider { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:11.5px;
-    text-transform:uppercase; letter-spacing:.05em; margin-top:6px; }
+  .divider { display:flex; align-items:center; gap:8px; color:var(--faint); font-size:10.5px;
+    text-transform:uppercase; letter-spacing:.07em; font-weight:700; margin-top:6px; }
   .divider::after { content:""; flex:1; height:1px; background:var(--border); }
+
+  /* Agent icon: the one visual identity every stage keeps, wherever it
+     appears — the stage bar, the header, the sidebar. */
+  .agent-ico { display:grid; place-items:center; flex-shrink:0; border-radius:7px; }
+  .agent-ico.planner  { background:var(--agent-planner-bg);  color:var(--agent-planner-fg); }
+  .agent-ico.designer { background:var(--agent-designer-bg); color:var(--agent-designer-fg); }
+  .agent-ico.coder    { background:var(--agent-coder-bg);    color:var(--agent-coder-fg); }
+  .agent-ico.tester   { background:var(--agent-tester-bg);   color:var(--agent-tester-fg); }
+  .agent-ico.reviewer { background:var(--agent-reviewer-bg); color:var(--agent-reviewer-fg); }
+  .agent-ico.handoff, .agent-ico.reporter { background:var(--agent-handoff-bg); color:var(--agent-handoff-fg); }
+  .agent-ico .ic { width:60%; height:60%; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; }
+  .stagebtn .agent-ico { width:20px; height:20px; }
+
+  /* Agent header: icon, name, one-line description, and the run's overall
+     state as a pill — the card every run tab opens with. */
+  .agent-header { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+  .agent-header .agent-ico { width:34px; height:34px; }
+  .agent-header .nm { font-weight:700; font-size:14.5px; line-height:1.2; }
+  .agent-header .desc { font-size:12px; color:var(--muted); margin-top:1px; }
+  .agent-header .spacer { flex:1; }
+  .pill { font-size:10.5px; font-weight:600; padding:3px 10px 3px 20px; position:relative;
+    border-radius:999px; background:var(--surface-hover); color:var(--muted); white-space:nowrap; }
+  .pill::before { content:''; position:absolute; left:9px; top:50%; transform:translateY(-50%);
+    width:6px; height:6px; border-radius:50%; background:currentColor; opacity:.5; }
+  .pill.running { background:var(--st-run-soft); color:var(--st-run-text); }
+  .pill.running::before { opacity:1; animation:pulse 1.4s infinite; }
+  .pill.done { background:var(--st-done-soft); color:var(--st-done-text); }
+  .pill.halted, .pill.failed { background:var(--st-fail-soft); color:var(--st-fail-text); }
+  .pill.stale { background:var(--amber-bg); color:var(--amber-text); }
+  .pill.awaiting, .pill.awaiting_chat, .pill.awaiting_plan_approval { background:var(--purple-bg); color:var(--purple-text); }
+
+  /* Artifact card: what a stage produced, set apart from ordinary prose. */
+  .sec-label { font-size:10.5px; font-weight:700; letter-spacing:.07em; color:var(--faint);
+    text-transform:uppercase; margin:18px 0 6px; }
+  .artifact-card { background:var(--code-bg); border:1px solid var(--border); border-radius:10px;
+    padding:2px 16px 12px; }
   pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
     padding:10px 12px; overflow-x:auto; margin:8px 0; }
   code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
@@ -239,7 +312,10 @@
 <body>
 <div class="app">
   <header class="topbar">
-    <div class="brand"><span class="dot" id="live-dot"></span><span>Orchestrator</span></div>
+    <div class="brand">
+      <span class="appicon"><svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg></span>
+      <span class="dot" id="live-dot"></span><span>Orchestrator</span>
+    </div>
     <select id="project" aria-label="Project"></select>
     <span class="spacer"></span>
     <span class="chip" id="totals" hidden></span>
