@@ -1,10 +1,10 @@
 {
   "name": "agent-pipeline",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Portable unified agentic pipeline (Planner -> Coder self-healing loop -> Tester -> Reviewer) with a live zero-dependency dashboard.",
+  "description": "Portable multi-agent pipeline: run one task, or a whole roadmap as a pool of parallel workers, with a live browser control room.",
   "engines": {
     "node": ">=18"
   },

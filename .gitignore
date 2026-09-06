@@ -30,3 +30,31 @@ node_modules/
 
 # Eval run outputs (real-agent runs, machine-specific)
 evals/results/
+
+# --- v2 runtime state -------------------------------------------------------
+# Artifacts and run state are per-machine; intent and durable records are not.
+.pipeline/design.md
+.pipeline/handoff.md
+.pipeline/reporter.md
+.pipeline/review_correctness.md
+.pipeline/review_security.md
+.pipeline/review_architecture.md
+.pipeline/reports/
+.pipeline/runs/
+.pipeline/worktrees/
+.pipeline/skills-cache/
+.pipeline/control/snapshot.json
+.pipeline/control/attention.jsonl
+.pipeline/control/briefs/
+.pipeline/control/reports/
+.pipeline/control/supervisor.log
+.pipeline/control/supervisor.out
+.pipeline/control/supervisor.pid
+.pipeline/control/.lock
+.pipeline/control/paused
+.pipeline/control/hook-state.json
+
+# Deliberately tracked, so a roadmap and its record travel with the repo:
+#   .pipeline/roadmap.md, .pipeline/control/roadmap.json,
+#   .pipeline/control/decisions.jsonl, .pipeline/control/notes/,
+#   .pipeline/skills/*.sha256

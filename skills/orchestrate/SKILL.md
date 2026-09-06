@@ -1,15 +1,15 @@
 ---
 name: orchestrate
-description: Runs a self-healing multi-agent pipeline (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff) with an optional plan-approval gate and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or delegate to the multi-agent pipeline. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
+description: Runs a self-healing multi-agent pipeline for one task (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff → optional Reporter), or a whole roadmap of features as a pool of parallel workers, with approval gates and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or run a roadmap. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
 when_to_use: Trigger only on explicit phrases like "/orchestrate", "orchestrate this", "run the pipeline", "use the multi-agent pipeline", or when the user provides a task directly after /orchestrate. Do not trigger on generic build/implement/refactor requests, and never trigger while already completing a stage handoff for an active run.
-argument-hint: "[task] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--runner claude|cursor|codex|gemini] [--approve-plan] [--design] [--handoff] [--allow-self]"
+argument-hint: "[task] [--roadmap <file>] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--approve-plan] [--design] [--handoff] [--report] [--allow-self]"
 arguments:
   - task
   - model-profile
   - mode
   - runner
 disable-model-invocation: true
-allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt)
+allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool.mjs *) Bash(node pipeline/skills.mjs *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt) Write(.pipeline/roadmap.md)
 ---
 
 # Orchestrate
@@ -19,6 +19,8 @@ Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (
 ## Current environment
 
 !`[ -f .pipeline/.lock ] && cat .pipeline/.lock || echo "No active pipeline run"`
+
+!`[ -d .pipeline/control ] && node pipeline/pool.mjs status --json 2>/dev/null | head -40 || echo "No roadmap pool in this project"`
 
 !`[ -f .pipeline/status.json ] && cat .pipeline/status.json || echo "No status.json"`
 
@@ -36,12 +38,15 @@ If the user invoked this skill with arguments, extract them:
 
 If `$task` was not provided as an argument, extract it from the user's message (text after `/orchestrate`).
 
-**You are a chat session.** Always invoke with `--mode chat --host-client <your-client>` (`claude`, `cursor`, `codex`, `gemini`, or `antigravity`). Never pass `--runner`. Never spawn or delegate to another agent CLI — YOU complete each stage from `.pipeline/stage-handoff.json`, then run `--continue`.
+**Two shapes of work.**
+
+- **One task** → single-run mode. You are a chat session: invoke with `--mode chat --host-client <your-client>` (`claude`, `cursor`, `codex`, `gemini`, or `antigravity`), never pass `--runner`, and complete each stage yourself from `.pipeline/stage-handoff.json`, then run `--continue`.
+- **A roadmap of features** → pool mode. You are the **coordinator**: you do intake, answer decisions, and approve merges. You never do stage work and you never spawn workers — the supervisor does that, and it needs an authenticated agent CLI on the machine. If there is none, say so and offer single-run mode instead.
 
 ### 2. Pre-flight Check
 
 Before running anything:
-- **Self-invocation guard, check this first, no exceptions**: look at `status.json`'s `overall` field from the environment above. If it is `running`, `awaiting_chat`, or `awaiting_plan_approval`, a pipeline run is already active — do NOT invoke `bash .pipeline/orchestrate.sh` with a new task. The lock file is not a reliable signal here: a chat-mode handoff releases `.pipeline/.lock` the instant control returns to this session, so the lock can be absent for the entire time a stage is being worked on while the run is still active. If you are the one currently completing that stage (`.pipeline/stage-handoff.json` exists) — including when the assigned stage is itself "build a feature" — that is not a new orchestrate request; go straight to the **Chat Handoff Loop** (step 6) instead of re-running step 4. Invoking the script again here would archive the in-progress run as if it had already finished and silently start a new one on top of it.
+- **Self-invocation guard, check this first, no exceptions**: look at `status.json`'s `overall` field AND the pool status from the environment above. If a supervisor is alive or any run is active, work is already in flight — drain it (`/digest`) rather than starting anything. If `status.json` has a `pool` field, this project is running a roadmap: add work with `roadmap add`, never with a fresh `--task`. If it is `running`, `awaiting_chat`, or `awaiting_plan_approval`, a pipeline run is already active — do NOT invoke `bash .pipeline/orchestrate.sh` with a new task. The lock file is not a reliable signal here: a chat-mode handoff releases `.pipeline/.lock` the instant control returns to this session, so the lock can be absent for the entire time a stage is being worked on while the run is still active. If you are the one currently completing that stage (`.pipeline/stage-handoff.json` exists) — including when the assigned stage is itself "build a feature" — that is not a new orchestrate request; go straight to the **Chat Handoff Loop** (step 6) instead of re-running step 4. Invoking the script again here would archive the in-progress run as if it had already finished and silently start a new one on top of it.
 - If the environment above shows an active lock file with status **not** `awaiting_chat`, stop and inform the user a pipeline run is active.
 - If `.pipeline/orchestrate.sh` is missing, bootstrap the scaffold:
   ```bash
@@ -101,6 +106,31 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 6. Repeat until the pipeline finishes or halts.
 
 When status is `awaiting_plan_approval` (only when `--approve-plan` is set): present `.pipeline/specs.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
+
+### 6b. Roadmap (pool) mode
+
+When the user hands you a roadmap, or a body of work too large for one run:
+
+1. Write `.pipeline/roadmap.md` — flat frontmatter (`title`, `base`, `merge: pr|local-only`), then one `## <ID>: <title>` per feature with `- depends_on:`, a `### Description` and a `### Acceptance` list. Features run in order; tickets inside a feature run in parallel.
+2. Compile and show it, so validation errors surface before anything runs:
+   ```bash
+   bash .pipeline/orchestrate.sh roadmap compile
+   ```
+3. Confirm the feature list with the user, ask the one model-profile question, then start:
+   ```bash
+   bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md
+   ```
+4. From then on you are the coordinator. Each turn: `bash .pipeline/orchestrate.sh pool digest`, then act on what is waiting with exactly one verb:
+
+   | Waiting on | Verb |
+   |---|---|
+   | a plan gate | `pool approve-plan <runId>` |
+   | a question | `pool decide <decisionId> "<answer>"` |
+   | a cycle budget | `pool extend <runId> <n>` |
+   | a feature ready to merge | `pool approve-merge <featureId>` (ask the user first) |
+   | changes needed | `pool request-changes <featureId> "<text>"` |
+
+   Never merge without the user saying so. Never edit files under `.pipeline/worktrees/` — workers own them.
 
 ### 7. Post-Run Audit
 

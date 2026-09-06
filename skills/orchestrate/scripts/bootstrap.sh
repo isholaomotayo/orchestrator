@@ -8,7 +8,7 @@ ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-https://github.com/isholaomotayo/orchest
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v1.0.1}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v2.0.0}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from
@@ -133,6 +133,22 @@ if [ -d "$TMP/skills/orchestrate" ]; then
     echo "[orchestrate] Agents-standard skill installed → .agents/skills/orchestrate/"
   fi
 fi
+
+# The coordinator's own skills: how a chat session reads and steers a roadmap
+# run. Installed only if absent, so a team's own wording is never overwritten.
+for SIBLING in digest catchup unattended notes; do
+  if [ -d "$TMP/skills/$SIBLING" ]; then
+    mkdir -p "$REPO_ROOT/.agents/skills/$SIBLING"
+    if [ ! -f "$REPO_ROOT/.agents/skills/$SIBLING/SKILL.md" ]; then
+      cp -R "$TMP/skills/$SIBLING/." "$REPO_ROOT/.agents/skills/$SIBLING/"
+      echo "[orchestrate] Skill installed → .agents/skills/$SIBLING/"
+    fi
+    mkdir -p "$REPO_ROOT/.gemini/skills/$SIBLING"
+    if [ ! -f "$REPO_ROOT/.gemini/skills/$SIBLING/SKILL.md" ]; then
+      cp "$TMP/skills/$SIBLING/SKILL.md" "$REPO_ROOT/.gemini/skills/$SIBLING/"
+    fi
+  fi
+done
 
 # Antigravity workflow (registers /orchestrate in Antigravity chat)
 if [ -f "$TMP/.agents/workflows/orchestrate.md" ]; then

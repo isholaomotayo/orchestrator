@@ -331,3 +331,19 @@ test('the manifest and verifier are engine-class, so a local edit can never pres
     assert.equal(entry.cls, 'engine', `${rel} must always be overwritten, not preserved as a user edit`);
   }
 });
+
+test('the coordinator skills are delivered to consumers, never at the source path', () => {
+  // skills/orchestrate/SKILL.md is a self-target guard marker: writing any
+  // skill to the source path would make a consumer look like this repository.
+  const repoRoot = path.dirname(new URL('.', import.meta.url).pathname);
+  const dests = listManaged(repoRoot).map((m) => m.dest);
+  for (const name of ['digest', 'catchup', 'unattended', 'notes']) {
+    assert.ok(dests.includes(`.agents/skills/${name}/SKILL.md`), `${name} is not delivered`);
+    assert.ok(dests.includes(`.gemini/skills/${name}/SKILL.md`), `${name} is not delivered to gemini`);
+  }
+  assert.ok(!dests.some((d) => d.startsWith('skills/')), 'nothing may be written to the source skills path');
+});
+
+test('the pinned release ref matches the version being shipped', () => {
+  assert.equal(DEFAULT_REF, 'v2.0.0');
+});

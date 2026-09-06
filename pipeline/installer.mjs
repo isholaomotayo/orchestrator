@@ -35,7 +35,7 @@ export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git
 // installed skill before any of it is copied or executed — see
 // skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
 // travel out-of-band from the clone.
-export const DEFAULT_REF = 'v1.0.1';
+export const DEFAULT_REF = 'v2.0.0';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
@@ -78,6 +78,16 @@ export const MANAGED = [
   { src: 'skills/orchestrate/scripts/scaffold.sha256', dest: '.agents/skills/orchestrate/scripts/scaffold.sha256', cls: 'engine' },
   { src: 'skills/orchestrate', dest: '.agents/skills/orchestrate', cls: 'tunable', tree: true },
   { src: 'skills/orchestrate', dest: '.gemini/skills/orchestrate', cls: 'tunable', tree: true, only: ['SKILL.md', 'REFERENCE.md'] },
+  // The coordinator's own skills: how a chat session reads and steers a roadmap
+  // run. Tunable, because a team will want to phrase them their own way.
+  { src: 'skills/digest', dest: '.agents/skills/digest', cls: 'tunable', tree: true },
+  { src: 'skills/catchup', dest: '.agents/skills/catchup', cls: 'tunable', tree: true },
+  { src: 'skills/unattended', dest: '.agents/skills/unattended', cls: 'tunable', tree: true },
+  { src: 'skills/notes', dest: '.agents/skills/notes', cls: 'tunable', tree: true },
+  { src: 'skills/digest', dest: '.gemini/skills/digest', cls: 'tunable', tree: true, only: ['SKILL.md'] },
+  { src: 'skills/catchup', dest: '.gemini/skills/catchup', cls: 'tunable', tree: true, only: ['SKILL.md'] },
+  { src: 'skills/unattended', dest: '.gemini/skills/unattended', cls: 'tunable', tree: true, only: ['SKILL.md'] },
+  { src: 'skills/notes', dest: '.gemini/skills/notes', cls: 'tunable', tree: true, only: ['SKILL.md'] },
   { src: '.agents/workflows/orchestrate.md', dest: '.agents/workflows/orchestrate.md', cls: 'tunable' },
   { src: '.agent/rules/orchestrate.md', dest: '.agent/rules/orchestrate.md', cls: 'tunable' },
   { src: '.cursor/commands/orchestrate.md', dest: '.cursor/commands/orchestrate.md', cls: 'tunable' },
