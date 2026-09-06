@@ -52,7 +52,11 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
     if (invocationMode === 'chat') {
       console.log(`[Orchestrator] Notice: runner forced to "${forced}" while invoked from chat — stages will run in an external agent CLI, not this chat session. Drop --runner to keep this chat as the driver.`);
     }
-    if (invocationMode === 'cli' && forced !== 'host' && !probeRunnerAuth(forced)) {
+    // Only the built-in agent CLIs have an auth concept to probe. A custom
+    // runner is a command the user configured explicitly; there is nothing to
+    // log in to, and probing it would always "fail" and refuse a valid runner.
+    const isBuiltIn = Object.prototype.hasOwnProperty.call(RUNNER_BINS, forced);
+    if (invocationMode === 'cli' && forced !== 'host' && isBuiltIn && !probeRunnerAuth(forced)) {
       throw new Error(`Runner "${forced}" is on PATH but not authenticated. Log in to that CLI or use --mode chat from your IDE.`);
     }
     return forced;

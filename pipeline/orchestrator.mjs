@@ -18,11 +18,13 @@ import { detectInvocationMode, detectHostClient, normalizeHostClient } from './i
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
-import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES } from './integrity.mjs';
+import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES, ORCHESTRATOR_OWNED_FILES } from './integrity.mjs';
 import { parseVerdict, validateArtifactFile, detectTestWeakening, compactChangelog } from './artifacts.mjs';
 import { classifyFailure, backoffMs, sleep } from './retry.mjs';
 import { discoverRepos, captureBaseRefs, buildDiffArtifact } from './repos.mjs';
 import { LENSES, aggregatePanel } from './review-panel.mjs';
+import { isValidRunId, parseBrief, appendRunVerb, writeRunMeta } from './run-registry.mjs';
+import { createRunWorktree } from './worktrees.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -31,6 +33,9 @@ function parseArgs(argv) {
     modelProfile: 'auto', models: null,
     approvePlan: false, design: false, handoff: false, reviewPanel: false,
     allowSelf: false, hostClient: null,
+    // Pool mode: identity and isolation for one worker among many.
+    runId: null, worktree: null, branch: null, baseRef: null,
+    briefFile: null, featureId: null, ticketId: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -53,6 +58,13 @@ function parseArgs(argv) {
     else if (a === '--review-panel') args.reviewPanel = true;
     else if (a === '--allow-self') args.allowSelf = true;
     else if (a === '--host-client') args.hostClient = argv[++i];
+    else if (a === '--run-id') args.runId = argv[++i];
+    else if (a === '--worktree') args.worktree = argv[++i];
+    else if (a === '--branch') args.branch = argv[++i];
+    else if (a === '--base-ref') args.baseRef = argv[++i];
+    else if (a === '--brief-file') args.briefFile = argv[++i];
+    else if (a === '--feature-id') args.featureId = argv[++i];
+    else if (a === '--ticket-id') args.ticketId = argv[++i];
     else if (!args.task && !a.startsWith('--')) args.task = a;
   }
   return args;
@@ -61,9 +73,29 @@ function parseArgs(argv) {
 const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
-const paths = pipelinePaths(repoRoot);
-const config = loadConfig(paths);
 const args = parseArgs(process.argv.slice(2));
+if (args.runId && !isValidRunId(args.runId)) {
+  console.error(`Invalid --run-id "${args.runId}": run ids may contain only letters, digits, dot, dash and underscore.`);
+  process.exit(2);
+}
+// With --run-id every artifact, log and lock moves under .pipeline/runs/<id>/,
+// so many workers can run at once. Without it the layout is exactly v1's.
+const paths = pipelinePaths(repoRoot, { runId: args.runId });
+const config = loadConfig(paths);
+// A brief carries a worker's task plus a machine header. Only the body becomes
+// the task text; the header's ids never enter the agent's TASK block.
+if (args.briefFile) {
+  if (args.task || args.taskFile) { console.error('Pass only one of --task, --task-file or --brief-file.'); process.exit(2); }
+  try {
+    const parsed = parseBrief(fs.readFileSync(args.briefFile, 'utf8'), { expectRunId: args.runId });
+    args.task = parsed.body;
+    args.featureId = args.featureId || parsed.header.feature || null;
+    args.ticketId = args.ticketId || parsed.header.ticket || null;
+    args.branch = args.branch || parsed.header.branch || null;
+    args.baseRef = args.baseRef || parsed.header.base || null;
+  } catch (err) { console.error(`Could not read --brief-file ${args.briefFile}: ${err.message}`); process.exit(2); }
+  if (!args.task) { console.error(`--brief-file ${args.briefFile} has an empty body.`); process.exit(2); }
+}
 if (args.taskFile) {
   if (args.task) { console.error('Pass either --task or --task-file, not both.'); process.exit(2); }
   try { args.task = fs.readFileSync(args.taskFile, 'utf8').trim(); }
@@ -122,6 +154,17 @@ acquireLock();
 
 let status, history, workCwd, runner, models;
 let planApprovalPending = false;
+let worktreeInfo = null;
+let lastVerbLine = null;
+
+// Where this run's worktree lives. A pooled run gets its own directory keyed by
+// run id; a bare --sandbox run keeps the historical single path so existing
+// scripts and docs stay correct.
+function resolveWorktreePath() {
+  if (args.worktree && args.worktree !== 'auto') return path.resolve(repoRoot, args.worktree);
+  if (args.runId) return paths.worktree;
+  return path.join(repoRoot, '.pipeline_sandbox');
+}
 
 function resolveModelsForRun(runnerName) {
   if (args.modelProfile !== 'auto' && args.modelProfile !== 'manual') {
@@ -147,14 +190,18 @@ function resolveModelsForRun(runnerName) {
 
 function loadWorkCwdFromStatus() {
   workCwd = repoRoot;
-  if (status.sandbox) {
-    const sandbox = path.join(repoRoot, '.pipeline_sandbox');
-    if (!fs.existsSync(sandbox)) {
-      console.error(`[Orchestrator] Sandbox worktree ${sandbox} no longer exists.`);
-      haltAndExit(1);
-    }
-    workCwd = sandbox;
+  // v2 runs record their worktree explicitly; v1 runs only recorded a boolean
+  // and always used the one fixed path. Resume must honour both, or a run
+  // started before this change can never be continued.
+  const worktree = status.worktree
+    ? path.resolve(repoRoot, status.worktree)
+    : (status.sandbox ? path.join(repoRoot, '.pipeline_sandbox') : null);
+  if (!worktree) return;
+  if (!fs.existsSync(worktree)) {
+    console.error(`[Orchestrator] Isolated worktree ${worktree} no longer exists.`);
+    haltAndExit(1);
   }
+  workCwd = worktree;
 }
 
 function loadHistory() {
@@ -292,32 +339,38 @@ if (args.continue) {
     }
   }
 
-  // ---- Guardrail 1: sandbox worktree ------------------------------------------
+  // ---- Guardrail 1: isolate the workspace in a git worktree --------------------
+  // One worktree per run, so concurrent workers never see each other's
+  // half-finished edits — and neither does the editor you have open.
   workCwd = repoRoot;
-  if (args.sandbox) {
-    const sandbox = path.join(repoRoot, '.pipeline_sandbox');
-    console.log('[Orchestrator] Isolating workspace in git worktree sandbox...');
-    try { execSync(`git worktree remove "${sandbox}" --force`, { cwd: repoRoot, stdio: 'ignore' }); } catch {}
-    try { execSync('git branch -D tmp-pipeline-branch', { cwd: repoRoot, stdio: 'ignore' }); } catch {}
-    execSync(`git worktree add "${sandbox}" -b tmp-pipeline-branch`, { cwd: repoRoot, stdio: 'inherit' });
-    // Point the sandbox's .pipeline at the main one so all artifacts/logs land
-    // in a single place the UI server is watching.
-    const sandboxPipeline = path.join(sandbox, '.pipeline');
-    fs.rmSync(sandboxPipeline, { recursive: true, force: true });
-    fs.symlinkSync(paths.dir, sandboxPipeline, 'dir');
-    workCwd = sandbox;
+  const wantsWorktree = args.sandbox || !!args.worktree || !!args.runId;
+  if (wantsWorktree) {
+    const worktreePath = resolveWorktreePath();
+    const branch = args.branch || (args.runId ? `pipeline/${args.featureId || 'adhoc'}/${args.runId}` : 'tmp-pipeline-branch');
+    console.log(`[Orchestrator] Isolating workspace in git worktree ${path.relative(repoRoot, worktreePath) || worktreePath} (branch ${branch})...`);
+    try {
+      createRunWorktree({ repoRoot, runDir: paths.dir, worktreePath, branch, baseRef: args.baseRef || 'HEAD' });
+    } catch (err) {
+      console.error(`[Orchestrator] Could not create the run worktree: ${err.message}`);
+      haltAndExit(1);
+    }
+    workCwd = worktreePath;
+    worktreeInfo = { worktree: path.relative(repoRoot, worktreePath), branch };
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
   const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.testHistory, paths.diff, paths.stageHandoff];
-  if (fs.existsSync(paths.status)) {
-    let runId = 'run';
-    try { runId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
-    const dest = path.join(paths.runs, runId);
+  // Archiving only makes sense for the v1 layout, where every run reuses one
+  // directory. A pooled run already owns a private directory keyed by run id,
+  // so there is nothing to move aside — and moving would destroy a sibling.
+  if (!args.runId && fs.existsSync(paths.status)) {
+    let archiveId = 'run';
+    try { archiveId = (JSON.parse(fs.readFileSync(paths.status, 'utf8')).startedAt || new Date().toISOString()).replace(/[:]/g, '-').replace(/\..*$/, ''); } catch {}
+    const dest = path.join(paths.runs, archiveId);
     fs.mkdirSync(dest, { recursive: true });
     for (const f of RUN_FILES) { try { fs.renameSync(f, path.join(dest, path.basename(f))); } catch {} }
     try { fs.renameSync(paths.logs, path.join(dest, 'logs')); } catch {}
-    console.log(`[Orchestrator] Archived previous run to .pipeline/runs/${runId}`);
+    console.log(`[Orchestrator] Archived previous run to .pipeline/runs/${archiveId}`);
   }
   for (const f of RUN_FILES) { try { fs.unlinkSync(f); } catch {} }
   fs.rmSync(paths.logs, { recursive: true, force: true });
@@ -355,12 +408,29 @@ if (args.continue) {
   status.hostClient = runner === 'host' ? hostClient : null;
   status.models = models;
   status.sandbox = args.sandbox;
+  status.runId = args.runId;
+  status.featureId = args.featureId;
+  status.ticketId = args.ticketId;
+  status.worktree = worktreeInfo?.worktree ?? null;
+  status.branch = worktreeInfo?.branch ?? null;
+  // The supervisor reads run.json to know what this worker is and where its
+  // work lives; it is a no-op outside pool mode.
+  writeRunMeta(paths, {
+    runId: args.runId, featureId: args.featureId, ticketId: args.ticketId,
+    branch: worktreeInfo?.branch ?? null, baseRef: args.baseRef ?? null,
+    worktree: worktreeInfo?.worktree ?? null,
+    brief: args.briefFile ? path.relative(repoRoot, path.resolve(args.briefFile)) : null,
+    runner, pid: process.pid, phase: 'running',
+  });
   // Capture the commit each repo starts from, before any agent runs, so the
   // review diff can be scoped to this run even after agents commit their work.
   // Plural because the run root may be a container folder of sibling clones, or
   // a repo with nested clones — see repos.mjs.
   {
     status.repos = captureBaseRefs(discoverRepos(workCwd, { maxDepth: config.repoScanDepth }));
+    // An integration run reviews a whole feature, so its diff must be scoped to
+    // where the FEATURE started, not to the branch head it was just built from.
+    if (args.baseRef && status.repos[0]) status.repos[0].baseRef = args.baseRef;
     // Primary repo, kept as a scalar for the halt handoff and legacy consumers.
     status.baseRef = status.repos[0]?.baseRef ?? null;
     if (status.repos.length > 1) {
@@ -390,11 +460,31 @@ function setStage(name, patch) {
   Object.assign(stage(name), patch);
   writeStatus(paths, status);
   appendEvent(paths, { stage: name, type: 'stage_update', ...patch });
+  // The verb log is the supervisor's cheap, tail-able view of progress: it never
+  // has to parse status.json to know this run is alive and what it is doing.
+  if (patch.status === 'running') {
+    const cycle = stage(name).cycle;
+    const detail = `${name}${cycle > 1 ? ` cycle ${cycle}` : ''}`;
+    // One line per actual transition: a stage can be re-marked running within a
+    // cycle, and a log that repeats itself makes the supervisor's staleness
+    // reading noisier without adding information.
+    if (lastVerbLine !== `working:${detail}`) {
+      appendRunVerb(paths, 'working', detail);
+      lastVerbLine = `working:${detail}`;
+    }
+  }
 }
 function finalize() {
   status.endedAt = new Date().toISOString();
   writeStatus(paths, status);
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_end', overall: status.overall, verdict: status.verdict, haltReason: status.haltReason });
+  if (status.overall === 'done') {
+    appendRunVerb(paths, 'done', status.verdict || 'finished');
+    writeRunMeta(paths, { phase: 'done' });
+  } else if (status.overall === 'halted') {
+    appendRunVerb(paths, 'failed', status.haltReason || 'halted');
+    writeRunMeta(paths, { phase: 'failed' });
+  }
 }
 function halt(stageName, reason, detail) {
   console.error(`\n[HALT] ${reason}: ${detail}`);
@@ -470,6 +560,10 @@ function requestPlanApproval() {
   status.awaitingStage = 'planner';
   status.resumePoint = { step: 'plan_approval', context: {} };
   setStage('planner', { detail: 'Awaiting human plan approval' });
+  // A gate is an open item for a human, not a stage in progress: say so in the
+  // verb log so the supervisor escalates instead of waiting for work to resume.
+  appendRunVerb(paths, 'needs-decision', 'plan-approval');
+  writeRunMeta(paths, { phase: 'awaiting' });
   finalize();
   console.log('\n[Orchestrator] Plan approval gate — review .pipeline/specs.md.');
   console.log('  Approve & continue:  bash .pipeline/orchestrate.sh --continue');
@@ -562,7 +656,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   }
   setStage(name, { detail: null });
   status.integrity = null;
-  enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore });
+  enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore, exclude: ORCHESTRATOR_OWNED_FILES });
   return res;
 }
 
@@ -906,7 +1000,7 @@ async function runReviewPanel(pass) {
     return { lens, content, ok: res.ok && !!content.trim() };
   }));
 
-  enforceStageIntegrity('reviewer', { readOnly: true, cpBefore, treeBefore });
+  enforceStageIntegrity('reviewer', { readOnly: true, cpBefore, treeBefore, exclude: ORCHESTRATOR_OWNED_FILES });
 
   const { verdict, report, lensVerdicts, unusable } = aggregatePanel(results, { task: status.task });
   fs.writeFileSync(paths.reviewReport, report);

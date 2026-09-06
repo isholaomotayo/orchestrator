@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildInvocation, runAgent } from './adapters.mjs';
+import { buildInvocation, runAgent, detectRunner } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
 const base = { systemPrompt: 'sys', task: 'do it', config: {}, model: null };
@@ -143,4 +143,13 @@ test('host handoff records the requested effort for the chat session', async () 
   const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
   assert.equal(handoff.effort, 'high');
   assert.match(handoff.modelNote, /effort: high/i);
+});
+
+test('a configured custom runner is accepted in cli mode without an auth probe', () => {
+  const config = { runner: 'fake', customRunners: { fake: { command: 'node', args: ['agent.mjs'] } } };
+  assert.equal(detectRunner(config, { invocationMode: 'cli' }), 'fake');
+});
+
+test('an unknown runner with no custom definition is still rejected', () => {
+  assert.throws(() => detectRunner({ runner: 'nope' }, { invocationMode: 'cli' }), /Unknown runner/);
 });
