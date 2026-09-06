@@ -25,13 +25,16 @@ import { discoverRepos, captureBaseRefs, buildDiffArtifact } from './repos.mjs';
 import { LENSES, aggregatePanel } from './review-panel.mjs';
 import { isValidRunId, parseBrief, appendRunVerb, writeRunMeta } from './run-registry.mjs';
 import { createRunWorktree } from './worktrees.mjs';
+import { resolveSkills, renderSkillsPromptSection, skillToolAllowances, extractDiagramSpecs, stripDiagramSpecs, renderDiagrams } from './skills.mjs';
+import { writeWorkDoneReport } from './report.mjs';
+import { readDecisions } from './attention.mjs';
 
 function parseArgs(argv) {
   const args = {
     task: null, taskFile: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
-    approvePlan: false, design: false, handoff: false, reviewPanel: false,
+    approvePlan: false, design: false, handoff: false, report: false, reviewPanel: false,
     allowSelf: false, hostClient: null,
     // Pool mode: identity and isolation for one worker among many.
     runId: null, worktree: null, branch: null, baseRef: null,
@@ -56,6 +59,7 @@ function parseArgs(argv) {
     else if (a === '--approve-plan') args.approvePlan = true;
     else if (a === '--design') args.design = true;
     else if (a === '--handoff') args.handoff = true;
+    else if (a === '--report') args.report = true;
     else if (a === '--review-panel') args.reviewPanel = true;
     else if (a === '--allow-self') args.allowSelf = true;
     else if (a === '--host-client') args.hostClient = argv[++i];
@@ -75,7 +79,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--report] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const args = parseArgs(process.argv.slice(2));
@@ -230,7 +234,7 @@ function loadHistory() {
 // on-disk status.json won't have, before --continue/--resume touches it.
 // Idempotent — safe to call more than once on the same status object.
 function ensureRunDefaults(status) {
-  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false };
+  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false, report: false };
   if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
   if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
@@ -377,7 +381,7 @@ if (args.continue) {
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
-  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.testHistory, paths.diff, paths.stageHandoff];
+  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.reporterDoc, paths.testHistory, paths.diff, paths.stageHandoff];
   // Archiving only makes sense for the v1 layout, where every run reuses one
   // directory. A pooled run already owns a private directory keyed by run id,
   // so there is nothing to move aside — and moving would destroy a sibling.
@@ -414,11 +418,12 @@ if (args.continue) {
     handoff: args.handoff || config.handoffStage === true,
     approvePlan: args.approvePlan || config.approvePlan === true,
     reviewPanel: args.reviewPanel || config.reviewPanel === true,
+    report: args.report || config.reportStage === true,
   };
   if (runFlags.reviewPanel && invocationMode === 'chat') {
     console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
   }
-  status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff });
+  status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff, reporter: runFlags.report });
   status.flags = runFlags;
   status.planApproved = false;
   status.invocationMode = invocationMode;
@@ -470,7 +475,7 @@ if (args.continue) {
     ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
     : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}@${models.effort?.[s] || '-'}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff})${dashboardMsg}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff}, report=${runFlags.report})${dashboardMsg}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -636,6 +641,25 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   setStage(name, { model: stageModel, effort: stageEffort });
   // Integrity baseline: taken before the agent starts so the comparison covers
   // everything it did, regardless of whether its runner can enforce anything.
+  // Only verified skills are attached; a rejected one is recorded so the run
+  // explains why a capability it might have used was not available.
+  const { active: activeSkills, rejected: rejectedSkills } = resolveSkills(config, { repoRoot, paths, stage: name });
+  for (const r of rejectedSkills) {
+    appendEvent(paths, { stage: name, type: 'skill_rejected', skill: r.name, reason: r.reason, detail: r.detail });
+    console.warn(`[Stage] ${name} — skill "${r.name}" not attached (${r.reason}): ${r.detail}`);
+  }
+  const skills = activeSkills.length
+    ? {
+      active: activeSkills,
+      promptSection: renderSkillsPromptSection(activeSkills),
+      allowances: skillToolAllowances(activeSkills, { runner }),
+    }
+    : null;
+  if (activeSkills.length) {
+    appendEvent(paths, { stage: name, type: 'skill_attached', skills: activeSkills.map((a) => a.skill.name) });
+    setStage(name, { skills: activeSkills.map((a) => a.skill.name) });
+  }
+
   const cpBefore = snapshotControlPlane(paths);
   const treeBefore = readOnly ? workingTreeFingerprint(workCwd) : null;
   // In chat mode the stage's work happens in ANOTHER process, between this
@@ -653,6 +677,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
       effort: stageEffort,
       modelSelection: models?.selection,
       hostClient: status.hostClient || null,
+      skills,
     });
     if (res.hostHandoff) {
       if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
@@ -1078,6 +1103,7 @@ async function afterReviewerAudit() {
 
   if (approved) {
     await runHandoffStage(); // no-op unless --handoff; hands off & exits in chat mode
+    await runReporterStage(); // no-op unless --report
     return finishApproved();
   }
 
@@ -1098,6 +1124,92 @@ async function afterReviewerAudit() {
   appendEvent(paths, { stage: 'reviewer', type: 'review_fix_start', pass: status.reviewPass, verdict: prevVerdict });
   console.log(`[Orchestrator] Verdict ${prevVerdict} — starting automatic review fix pass ${status.reviewPass}/${status.limits.reviewMax}.`);
   await runReviewFixPass(status.reviewPass);
+}
+
+/**
+ * Compile the work-done report: an agent narrative plus figures the engine
+ * measures itself. Soft by design — a run that produced reviewed, tested code
+ * must never fail because a report or a diagram would not render.
+ */
+async function runReporterStage() {
+  const st = stage('reporter');
+  if (!st || st.status === 'skipped' || st.status === 'passed') return;
+  status.resumePoint = { step: 'reporter', context: {} };
+  setStage('reporter', { status: 'running', startedAt: st.startedAt || new Date().toISOString(), cycle: 1 });
+  console.log('[Stage] Reporter (work-done report, read-only)...');
+  const res = await runStageAgent('reporter', `Write the human-facing narrative for this completed work:\n\n${taskBlock(status.task)}\n\nRead the run's artifacts and write .pipeline/reporter.md in the mandated section order. The orchestrator compiles the final report from your narrative plus figures it measures itself.`, {
+    readOnly: true,
+    soft: true,
+    chatResume: { step: 'after_reporter', context: {} },
+  });
+  status.resumePoint = { step: 'after_reporter', context: {} };
+  writeStatus(paths, status);
+  finishReporterStage(res.ok);
+}
+
+function finishReporterStage(agentOk) {
+  const narrativeRaw = readArtifact(paths.reporterDoc);
+  const valid = narrativeRaw && validateArtifactFile('reporter', paths.reporterDoc).ok;
+  if (!valid) {
+    console.warn('[Stage] Reporter — no usable narrative; compiling the report from measured data alone.');
+  }
+
+  // Diagrams: the agent wrote specifications, trusted code renders them.
+  let diagrams = [];
+  const { active } = resolveSkills(config, { repoRoot, paths, stage: 'reporter' });
+  const diagramSkill = active.find((a) => a.skill.diagrams);
+  if (diagramSkill && config.reports?.diagrams !== false && narrativeRaw) {
+    const specs = extractDiagramSpecs(narrativeRaw, { types: diagramSkill.skill.diagrams.types });
+    if (specs.length) {
+      diagrams = renderDiagrams(specs, {
+        skill: diagramSkill.skill,
+        dir: diagramSkill.dir,
+        outDir: path.join(paths.reports, 'diagrams'),
+        repoRoot: workCwd,
+        timeoutMs: config.reports?.archifyTimeoutMs ?? 120000,
+      });
+      for (const d of diagrams.filter((x) => !x.ok)) {
+        appendEvent(paths, { stage: 'reporter', type: 'diagram_failed', id: d.id, error: d.error });
+        console.warn(`[Stage] Reporter — diagram "${d.id}" omitted: ${d.error}`);
+      }
+    }
+  }
+
+  const written = writeWorkDoneReport(paths, {
+    title: `Work Done — ${status.featureId ? `${status.featureId}: ` : ''}${firstLine(status.task)}`,
+    status,
+    runId: status.runId,
+    feature: status.featureId ? { id: status.featureId, title: firstLine(status.task) } : null,
+    narrative: valid ? stripDiagramSpecs(narrativeRaw) : '',
+    specs: readArtifact(paths.specs),
+    review: readArtifact(paths.reviewReport),
+    testSuite: readArtifact(paths.testSuite),
+    diff: readArtifact(paths.diff),
+    history,
+    decisions: readDecisions(paths).filter((d) => d.status === 'resolved' && d.runId === status.runId),
+    pr: status.pr ?? null,
+    diagrams,
+  });
+
+  setStage('reporter', {
+    status: agentOk && valid ? 'passed' : 'failed',
+    endedAt: new Date().toISOString(),
+    artifact: valid ? 'reporter.md' : null,
+    report: written.ok ? path.relative(paths.dir, path.join(paths.reports, 'work-done.html')) : null,
+    detail: written.ok ? null : `report could not be written: ${written.error}`,
+  });
+  if (written.ok) {
+    appendEvent(paths, { stage: 'reporter', type: 'report_written', report: written.htmlRel, diagrams: diagrams.filter((d) => d.ok).length });
+    console.log(`[Stage] Reporter — report: ${written.htmlRel}`);
+  }
+}
+
+function readArtifact(file) {
+  try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
+}
+
+function firstLine(text) {
+  return String(text || '').split('\n')[0].slice(0, 80).trim() || 'this task';
 }
 
 function finishApproved() {
@@ -1436,8 +1548,10 @@ async function dispatchResumeStep(step, context = {}) {
     return;
   }
 
-  if (step === 'handoff') { await runHandoffStage(); finishApproved(); return; }
-  if (step === 'after_handoff') { finishHandoffStage(true); finishApproved(); return; }
+  if (step === 'handoff') { await runHandoffStage(); await runReporterStage(); finishApproved(); return; }
+  if (step === 'after_handoff') { finishHandoffStage(true); await runReporterStage(); finishApproved(); return; }
+  if (step === 'reporter') { await runReporterStage(); finishApproved(); return; }
+  if (step === 'after_reporter') { finishReporterStage(true); finishApproved(); return; }
 
   halt('orchestrator', 'AGENT_ERROR', `Unknown resume step "${step}".`);
 }

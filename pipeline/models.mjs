@@ -166,6 +166,8 @@ export const DEFAULT_STAGE_EFFORT = {
   tester: 'medium',
   reviewer: 'high',
   handoff: 'low',
+  reporter: 'low',
+  reporter: 'low',
 };
 
 // Cost-aware defaults. Frontier models on the stages whose output every later
@@ -179,6 +181,7 @@ const ANTHROPIC_AUTO = {
   tester: 'sonnet-5',
   reviewer: 'opus-5',
   handoff: 'haiku-4.5',
+  reporter: 'haiku-4.5',
 };
 
 const OPENAI_AUTO = {
@@ -188,6 +191,7 @@ const OPENAI_AUTO = {
   tester: 'gpt-5.5',
   reviewer: 'gpt-5.6-sol',
   handoff: 'gpt-5.4-mini',
+  reporter: 'gpt-5.4-mini',
 };
 
 const GOOGLE_AUTO = {
@@ -197,6 +201,7 @@ const GOOGLE_AUTO = {
   tester: 'gemini-3.6-flash',
   reviewer: 'gemini-3.1-pro',
   handoff: 'gemini-3.5-flash',
+  reporter: 'gemini-3.5-flash',
 };
 
 export const DEFAULT_MODEL_PROFILES = {

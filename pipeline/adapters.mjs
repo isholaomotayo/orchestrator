@@ -43,6 +43,15 @@ export function pipelineWriteDeny(stage) {
   ];
 }
 
+// An agent never needs forge credentials: it does not open or merge pull
+// requests, the supervisor does. Withholding them means a compromised or
+// confused stage cannot push, merge, or exfiltrate a token.
+export function agentEnv(base = process.env) {
+  const env = { ...base, FORCE_COLOR: '0' };
+  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITLAB_TOKEN']) delete env[key];
+  return env;
+}
+
 export function binExists(bin) {
   const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { encoding: 'utf8' });
   return res.status === 0;
@@ -94,7 +103,13 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 // hard-guarantee read-only at the process level. When it cannot, we drop the
 // auto-approve/write flags (--force / --full-auto / --yolo) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
-export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null }) {
+export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null }) {
+  // Verified skill instructions sit AFTER the stage prompt (so the trust
+  // boundary is read first) and are still system prompt, never task input.
+  const promptWithSkills = skills?.promptSection
+    ? `${systemPrompt}\n\n${skills.promptSection}`
+    : systemPrompt;
+  systemPrompt = promptWithSkills;
   const combined = `${systemPrompt}\n\n---\nTASK:\n${task}`;
   // Model families are pipeline-internal; each CLI gets the identifier it
   // actually accepts. cursor encodes effort in the id, so it is resolved here too.
@@ -117,7 +132,10 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         // Headless mode denies anything not allowlisted: a read-only stage may
         // read, run git diff/log, and write ONLY its own artifact file.
         const artifact = artifactOverride || `.pipeline/${STAGE_ARTIFACT_FILES[stage] || 'review_report.md'}`;
-        args.push('--allowedTools', `Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(${artifact})`);
+        // A skill may add read-only commands (a validator, a lookup) — never a
+        // renderer or anything that writes, which the engine runs itself.
+        const skillTools = (skills?.allowances || []).join(',');
+        args.push('--allowedTools', `Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git status:*),Write(${artifact})${skillTools ? `,${skillTools}` : ''}`);
         return { bin: 'claude', args, parse: 'claude-stream-json', readOnlyEnforced: true };
       }
       args.push('--permission-mode', 'acceptEdits', '--allowedTools', 'Bash,Edit,Write,Read,Glob,Grep,WebFetch');
@@ -170,7 +188,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null }) {
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null }) {
   const handoff = {
     stage,
     cycle: cycle || 1,
@@ -186,6 +204,11 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     handoff.modelNote = modelNote(model, normalizeEffort(effort));
   }
   if (normalizeEffort(effort)) handoff.effort = normalizeEffort(effort);
+  if (skills?.active?.length) {
+    // A chat host reads the same verified instructions a CLI runner would.
+    handoff.skills = skills.active.map((a) => ({ name: a.skill.name, dir: a.dir, entry: a.skill.entry }));
+    handoff.skillsPromptSection = skills.promptSection;
+  }
   if (hostClient) {
     handoff.hostClient = hostClient;
     handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
@@ -247,7 +270,7 @@ function blockToLogLine(b) {
   return b.text;
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null }) {
+export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -255,13 +278,13 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     const hostLabel = hostClient ? ` (IDE chat: ${hostClient})` : ' (IDE chat)';
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
     appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, effort: normalizeEffort(effort) || undefined, hostClient: hostClient || undefined });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills });
     appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);

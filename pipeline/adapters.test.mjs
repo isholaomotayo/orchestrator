@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildInvocation, runAgent, detectRunner } from './adapters.mjs';
+import { buildInvocation, runAgent, detectRunner, agentEnv } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
 const base = { systemPrompt: 'sys', task: 'do it', config: {}, model: null };
@@ -152,4 +152,28 @@ test('a configured custom runner is accepted in cli mode without an auth probe',
 
 test('an unknown runner with no custom definition is still rejected', () => {
   assert.throws(() => detectRunner({ runner: 'nope' }, { invocationMode: 'cli' }), /Unknown runner/);
+});
+
+test('verified skill instructions are appended after the stage prompt, never before it', () => {
+  const skills = { promptSection: '===== AVAILABLE SKILLS =====\nuse the thing', allowances: [], active: [] };
+  const inv = buildInvocation({ ...base, runner: 'claude', readOnly: true, skills });
+  const prompt = inv.args[inv.args.indexOf('--append-system-prompt') + 1];
+  assert.ok(prompt.indexOf('sys') < prompt.indexOf('AVAILABLE SKILLS'), 'the trust boundary is read first');
+});
+
+test('a read-only stage gains only the skill read-only commands it declared', () => {
+  const skills = { promptSection: 'x', allowances: ['Bash(node /skills/archify/bin/archify.mjs validate:*)'], active: [] };
+  const allow = buildInvocation({ ...base, runner: 'claude', readOnly: true, skills }).args.join(' ');
+  assert.match(allow, /archify\.mjs validate/);
+  assert.doesNotMatch(allow, /deliver/);
+  // Still no general write access.
+  assert.doesNotMatch(allow, /acceptEdits/);
+});
+
+test('an agent process never receives forge credentials', () => {
+  const env = agentEnv({ PATH: '/usr/bin', GH_TOKEN: 'secret', GITHUB_TOKEN: 'secret', GITLAB_TOKEN: 'secret', HOME: '/home/x' });
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.GITLAB_TOKEN, undefined);
+  assert.equal(env.PATH, '/usr/bin', 'the rest of the environment survives');
 });
