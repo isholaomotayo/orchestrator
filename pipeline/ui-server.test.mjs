@@ -109,9 +109,10 @@ test('/api/runs lists an archived pool run and a live legacy run together', with
   const body = await (await get('/api/runs')).json();
   assert.equal(body.runs.length, 2);
   assert.equal(body.runs[0].id, '', 'the live legacy run is listed first');
+  assert.equal(body.runs[0].kind, 'single');
   assert.equal(body.runs[0].task, 'Legacy task');
   assert.equal(body.runs[0].live, true);
-  assert.ok(body.runs.some((r) => r.id === 'r1' && r.live === false));
+  assert.ok(body.runs.some((r) => r.id === 'r1' && r.kind === 'pool' && r.live === false));
 }));
 
 test('/api/runs never lists a legacy run once it has finished', withServer(async ({ get, root }) => {

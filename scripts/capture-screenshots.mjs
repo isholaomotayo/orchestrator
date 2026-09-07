@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Capture dashboard screenshots for README using Playwright.
+// Capture dashboard screenshots for README using Playwright (v2 control room).
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,23 +8,29 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const outDir = path.join(repoRoot, 'docs', 'screenshots');
-const port = Number(process.env.PIPELINE_UI_PORT || 4600);
+// Prefer 4650 so a casual dashboard on 4600 is not overwritten or contested.
+const port = Number(process.env.PIPELINE_UI_PORT || 4650);
 const url = `http://127.0.0.1:${port}`;
+const projectQ = `project=${encodeURIComponent(repoRoot)}`;
 const pidFile = path.join(repoRoot, '.pipeline', 'ui-server.pid');
+let uiPid = null;
 
 const shots = [
-  { mode: 'idle', file: '01-dashboard-idle.png', action: null },
-  { mode: 'running', file: '02-dashboard-running.png', action: null },
-  { mode: 'completed', file: '03-dashboard-completed.png', action: null },
-  { mode: 'halted', file: '04-dashboard-halted.png', action: null },
-  { mode: 'idle', file: '05-new-run-modal.png', action: 'modal' },
+  { mode: 'idle', file: '01-dashboard-idle.png', hash: 'tabs=home&active=0', wait: 'h1' },
+  { mode: 'running', file: '02-dashboard-running.png', hash: 'tabs=run.coder&active=0', wait: '.agent-header' },
+  { mode: 'completed', file: '03-dashboard-completed.png', hash: 'tabs=run.reviewer&active=0', wait: '.agent-header' },
+  { mode: 'halted', file: '04-dashboard-halted.png', hash: 'tabs=run.coder&active=0', wait: '.banner.fail, .agent-header' },
+  { mode: 'idle', file: '05-dashboard-decisions.png', hash: 'tabs=decisions&active=0', wait: 'h1' },
 ];
 
 function stopUi() {
-  try {
-    const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
-    if (pid) process.kill(pid, 'SIGTERM');
-  } catch {}
+  const pid = uiPid || (() => {
+    try { return Number(fs.readFileSync(pidFile, 'utf8').trim()); } catch { return 0; }
+  })();
+  if (pid) {
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  }
+  uiPid = null;
   try { fs.unlinkSync(pidFile); } catch {}
 }
 
@@ -32,11 +38,12 @@ function startUi() {
   stopUi();
   const child = spawn(process.execPath, ['pipeline/ui-server.mjs'], {
     cwd: repoRoot,
-    env: { ...process.env, PIPELINE_UI_PORT: String(port) },
+    env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0' },
     stdio: 'ignore',
     detached: true,
   });
   child.unref();
+  uiPid = child.pid;
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });
   fs.writeFileSync(pidFile, String(child.pid));
 }
@@ -54,9 +61,15 @@ async function waitForServer() {
       if (health.repoRoot && path.resolve(health.repoRoot) !== repoRoot) {
         throw new Error(
           `Port ${port} is serving a different project (${health.repoRoot}).\n` +
-          `Re-run on a free port, e.g. PIPELINE_UI_PORT=4650 npm run screenshots`
+          `Re-run on a free port, e.g. PIPELINE_UI_PORT=4660 npm run screenshots`
         );
       }
+      // Ensure this repo is registered even if the server was already up.
+      spawnSync('curl', [
+        '-sf', '-H', 'Content-Type: application/json',
+        '-d', JSON.stringify({ repoRoot }),
+        `${url}/api/register`,
+      ], { encoding: 'utf8' });
       return;
     }
     await new Promise((r) => setTimeout(r, 150));
@@ -85,12 +98,14 @@ async function main() {
 
   for (const shot of shots) {
     seed(shot.mode);
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    // Bust the query so Playwright does a full reload — a hash-only change
+    // reuses the previous document and never re-runs boot()/tabs.restore().
+    const bust = `t=${Date.now()}`;
+    await page.goto(`${url}/?${projectQ}&${bust}#${shot.hash}`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.app', { timeout: 10000 });
-    if (shot.action === 'modal') {
-      await page.click('#newrun-btn');
-      await page.waitForTimeout(300);
-    }
+    await page.waitForSelector(shot.wait, { timeout: 10000 });
+    // Let sidebar Runs list + SSE refresh settle after seed.
+    await page.waitForTimeout(400);
     await page.screenshot({ path: path.join(outDir, shot.file), fullPage: false });
     console.log(`[capture-screenshots] ${shot.file}`);
   }
@@ -98,6 +113,10 @@ async function main() {
   await browser.close();
   seed('idle');
   stopUi();
+
+  // Drop the old v1 modal shot if it is still around.
+  const legacyModal = path.join(outDir, '05-new-run-modal.png');
+  try { fs.unlinkSync(legacyModal); } catch {}
 }
 
 main().catch((err) => {

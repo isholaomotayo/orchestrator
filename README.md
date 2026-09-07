@@ -232,7 +232,7 @@ mismatch aborts. See [Supply-chain integrity](skills/orchestrate/REFERENCE.md#su
 
 ## Dashboard walkthrough
 
-The dashboard (URL in `.pipeline/ui.url`, usually starting at **http://localhost:4600**) is the control surface for every run. You can start from the CLI, from `/orchestrate` in your agent, or from the UI itself.
+The dashboard (URL in `.pipeline/ui.url`, usually starting at **http://localhost:4600**) is the control room for every run — and, when you use roadmap mode, for a whole pool of workers. Start work from `/orchestrate` in your agent or from the CLI; open the dashboard to watch stages, open artifacts, and answer decisions.
 
 ### Step 1 — Open the workspace
 
@@ -244,7 +244,7 @@ node pipeline/ui-server.mjs
 bash .pipeline/orchestrate.sh "your task"
 ```
 
-On a fresh install you see the idle workspace with agent sidebar, progress stepper, and **New run**:
+On a fresh install you see the v2 control room: a **Runs** sidebar (empty until the first run), an Overview tab, and a Decisions entry in the footer:
 
 ![Idle dashboard before the first run](docs/screenshots/01-dashboard-idle.png)
 
@@ -262,25 +262,25 @@ On a fresh install you see the idle workspace with agent sidebar, progress stepp
 bash .pipeline/orchestrate.sh "Add rate limiting to the auth API" --runner claude
 ```
 
-**Option C — Dashboard modal** (task, runner, cycle limits, sandbox):
+Once a run exists, it appears under **Runs**. Open it from the sidebar (or leave Overview open for a project with no roadmap — Decisions stays empty until something needs you):
 
-![New run modal in the dashboard](docs/screenshots/05-new-run-modal.png)
+![Decisions inbox when nothing is waiting](docs/screenshots/05-dashboard-decisions.png)
 
 ### Step 3 — Watch agents work
 
-The sidebar shows each agent's status. During the Coder fix loop you see the active cycle, checker pass/fail counts, and a live activity feed:
+Open the live run from the sidebar. The run tab shows every stage as a rail, the active specialist’s activity feed, and artifacts for the stage you select. During the Coder fix loop that is usually the running coder stage:
 
 ![Dashboard while the Coder self-healing loop is running](docs/screenshots/02-dashboard-running.png)
 
 ### Step 4 — Review the verdict
 
-When all stages finish, the header shows `completed — APPROVED` (or another verdict). Select **Reviewer** to read `review_report.md` and the colorized `diff.patch`:
+When all stages finish, the run pill shows `done` (and the verdict in the sidebar). Select **Reviewer** on the stage rail to read `review_report.md` and the colorized `diff.patch`:
 
 ![Completed run with review report and diff](docs/screenshots/03-dashboard-completed.png)
 
 ### Step 5 — Extend if cycles are exhausted
 
-If the Coder hits `MAX_CYCLES`, the dashboard halts with an **Extend & continue** banner (same as `bash .pipeline/orchestrate.sh --resume --extend 5`):
+If the Coder hits `MAX_CYCLES`, the run tab shows a halt banner; use **Extend** on the live run (same as `bash .pipeline/orchestrate.sh --resume --extend 5`):
 
 ![Halted run with extend banner after MAX_CYCLES](docs/screenshots/04-dashboard-halted.png)
 
@@ -851,7 +851,7 @@ node pipeline/ui-server.mjs
 
 ```bash
 pnpm exec playwright install chromium   # first time only
-pnpm run screenshots
+pnpm run screenshots                    # defaults to port 4650; override with PIPELINE_UI_PORT
 ```
 
 Fixture data: [`docs/screenshots/fixtures/`](docs/screenshots/fixtures/).

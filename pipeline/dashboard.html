@@ -1067,7 +1067,9 @@ function nodeButton(item, child = false) {
 }
 
 function openFor(item) {
-  if (item.kind === 'run') return open({ kind: 'run', subject: item.id, title: item.label });
+  // Empty id is the live single-run (root .pipeline/); keep it falsy so
+  // api.state omits ?run= and the server serves the project-root status.
+  if (item.kind === 'run') return open({ kind: 'run', subject: item.id || '', title: item.label });
   if (item.kind === 'decision') {
     if (item.featureId && item.level === 'merge') return open({ kind: 'review', subject: item.runId || item.featureId, feature: item.featureId, title: `Review ${item.featureId}` });
     return open({ kind: 'decisions', title: 'Decisions' });
