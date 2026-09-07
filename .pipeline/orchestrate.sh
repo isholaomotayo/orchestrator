@@ -2,7 +2,7 @@
 # Portable entrypoint for the unified agent pipeline (/orchestrate).
 #
 # Start a new run:
-#   bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini] \
+#   bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|antigravity] \
 #     [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] \
 #     [--review-panel] [--sandbox] [--max-cycles n] [--max-post-tester-cycles n] \
 #     [--max-review-cycles n] [--no-ui]
@@ -31,7 +31,7 @@ fi
 # literal. The rest of this file already follows that convention.
 BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1]+'/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}" "$PIPELINE_DIR")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --task-file <path> [same flags as above]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]

@@ -57,6 +57,7 @@ test('normalizeHostClient trims, lowercases, and maps aliases', () => {
   assert.equal(normalizeHostClient('claude-code'), 'claude');
   assert.equal(normalizeHostClient('cursor-agent'), 'cursor');
   assert.equal(normalizeHostClient('Antigravity'), 'antigravity');
+  assert.equal(normalizeHostClient('gemini'), 'antigravity');
   assert.equal(normalizeHostClient(''), null);
   assert.equal(normalizeHostClient(null), null);
 });
@@ -68,7 +69,7 @@ test('detectHostClient precedence: flag > env var > env signals', () => {
   assert.equal(detectHostClient({ env: { CURSOR_TRACE_ID: 'abc' }, argv: [] }), 'cursor');
   assert.equal(detectHostClient({ env: { CLAUDECODE: '1' }, argv: [] }), 'claude');
   assert.equal(detectHostClient({ env: { CODEX_IN_IDE: '1' }, argv: [] }), 'codex');
-  assert.equal(detectHostClient({ env: { GEMINI_CLI_IDE: '1' }, argv: [] }), 'gemini');
+  assert.equal(detectHostClient({ env: { GEMINI_CLI_IDE: '1' }, argv: [] }), 'antigravity');
   assert.equal(detectHostClient({ env: { VSCODE_PID: '123' }, argv: [] }), 'vscode');
   assert.equal(detectHostClient({ env: {}, argv: [] }), null);
 });

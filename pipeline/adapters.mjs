@@ -1,5 +1,6 @@
-// Agent CLI adapters: invoke claude / cursor-agent / codex / gemini headlessly,
-// or hand off to the IDE chat session (host runner) when in chat mode.
+// Agent CLI adapters: invoke claude / cursor-agent / codex / agy (Antigravity)
+// headlessly, or hand off to the IDE chat session (host runner) in chat mode.
+// `gemini` remains a deprecated alias for the Antigravity CLI (`agy`).
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -7,7 +8,37 @@ import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
 import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
 
-export const RUNNER_BINS = { claude: 'claude', cursor: 'cursor-agent', codex: 'codex', gemini: 'gemini', host: null };
+export const RUNNER_BINS = {
+  claude: 'claude',
+  cursor: 'cursor-agent',
+  codex: 'codex',
+  antigravity: 'agy',
+  // Deprecated alias: Gemini CLI was replaced by Antigravity (`agy`).
+  gemini: 'agy',
+  host: null,
+};
+
+const GOOGLE_CLI_BIN = 'agy';
+const GOOGLE_CLI_RUNNERS = new Set(['antigravity', 'gemini']);
+
+/** agy accepts only low|medium|high; collapse our higher tiers. */
+function googleCliEffort(level) {
+  if (!level) return null;
+  if (level === 'low' || level === 'medium' || level === 'high') return level;
+  if (level === 'xhigh' || level === 'max') return 'high';
+  return null;
+}
+
+function buildGoogleCliInvocation({ combined, readOnly, modelId, level }) {
+  // agy has no hard read-only flag; withhold --dangerously-skip-permissions
+  // so it cannot auto-run mutating actions during a read-only audit (best-effort).
+  const args = ['-p', combined, '--output-format', 'text'];
+  if (!readOnly) args.push('--dangerously-skip-permissions');
+  if (modelId) args.push('--model', modelId);
+  const effort = googleCliEffort(level);
+  if (effort) args.push('--effort', effort);
+  return { bin: GOOGLE_CLI_BIN, args, parse: 'text', readOnlyEnforced: false };
+}
 
 // Resolve a pool feature/ticket's declared runner ('auto'/null/a name) to the
 // runner the supervisor should actually use. 'auto' prefers an authenticated
@@ -113,7 +144,7 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
     if (name === 'host' || !bin) continue;
     if (binExists(bin)) return name;
   }
-  throw new Error('No agent CLI found on PATH (looked for: claude, cursor-agent, codex, gemini). Set "runner" in .pipeline/config.json, pass --runner, or invoke from an IDE chat for host mode.');
+  throw new Error('No agent CLI found on PATH (looked for: claude, cursor-agent, codex, agy). Set "runner" in .pipeline/config.json, pass --runner, or invoke from an IDE chat for host mode.');
 }
 
 // Build argv for each supported CLI. Every adapter runs non-interactively with
@@ -123,7 +154,7 @@ export function detectRunner(config, { invocationMode = 'cli' } = {}) {
 // just claude — otherwise the "read-only" review stage could mutate the repo or
 // weaken tests. Each branch sets `readOnlyEnforced` to signal whether the CLI can
 // hard-guarantee read-only at the process level. When it cannot, we drop the
-// auto-approve/write flags (--force / --full-auto / --yolo) so the agent cannot
+// auto-approve/write flags (--force / --full-auto / --dangerously-skip-permissions) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
 export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null }) {
   // Verified skill instructions sit AFTER the stage prompt (so the trust
@@ -188,14 +219,9 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       args.push(combined);
       return { bin: 'codex', args, parse: 'jsonl-or-text', readOnlyEnforced: !!readOnly };
     }
-    case 'gemini': {
-      // gemini has no read-only flag; withhold --yolo so it cannot auto-run
-      // mutating actions during a read-only audit (best-effort).
-      const args = ['-p', combined];
-      if (!readOnly) args.push('--yolo');
-      if (modelId) args.push('--model', modelId);
-      return { bin: 'gemini', args, parse: 'text', readOnlyEnforced: false };
-    }
+    case 'antigravity':
+    case 'gemini':
+      return buildGoogleCliInvocation({ combined, readOnly, modelId, level });
     default: {
       const custom = config.customRunners?.[runner];
       if (!custom) throw new Error(`Unknown runner "${runner}"`);
@@ -373,7 +399,7 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
     return Promise.reject(new Error(`Runner "${runner}" has no executable binary.`));
   }
   let args = [];
-  if (runner === 'claude' || runner === 'cursor' || runner === 'gemini') {
+  if (runner === 'claude' || runner === 'cursor' || GOOGLE_CLI_RUNNERS.has(runner)) {
     args = ['-p', prompt];
     if (model) args.push('--model', model);
   } else if (runner === 'codex') {

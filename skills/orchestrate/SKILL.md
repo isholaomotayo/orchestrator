@@ -34,14 +34,14 @@ If the user invoked this skill with arguments, extract them:
 - **`$task`** — The feature or task description to implement (e.g. "implement JWT auth")
 - **`$model-profile`** — `auto` or `manual` (if not provided, ask)
 - **`$mode`** — `chat` or `cli` override (optional; auto-detected from environment)
-- **`$runner`** — `claude`, `cursor`, `codex`, `gemini`, or `host` (optional)
+- **`$runner`** — `claude`, `cursor`, `codex`, `antigravity`, or `host` (optional; `gemini` is a deprecated alias for `antigravity`)
 
 If `$task` was not provided as an argument, extract it from the user's message (text after `/orchestrate`).
 
 **Two shapes of work.**
 
-- **One task** → single-run mode. You are a chat session: invoke with `--mode chat --host-client <your-client>` (`claude`, `cursor`, `codex`, `gemini`, or `antigravity`), never pass `--runner`, and complete each stage yourself from `.pipeline/stage-handoff.json`, then run `--continue`.
-- **A roadmap of features** → pool mode. You are the **coordinator**: you do intake, answer decisions, and approve merges. The supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with a `- runner: claude|cursor|codex|gemini` bullet in `roadmap.md`, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere — the supervisor instead raises a `claim-run` item, and you (or whoever is attending chat) complete that one stage directly, exactly as in single-run mode above, via `pool claim <runId>` (see step 6b).
+- **One task** → single-run mode. You are a chat session: invoke with `--mode chat --host-client <your-client>` (`claude`, `cursor`, `codex`, or `antigravity`), never pass `--runner`, and complete each stage yourself from `.pipeline/stage-handoff.json`, then run `--continue`.
+- **A roadmap of features** → pool mode. You are the **coordinator**: you do intake, answer decisions, and approve merges. The supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with a `- runner: claude|cursor|codex|antigravity` bullet in `roadmap.md`, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere — the supervisor instead raises a `claim-run` item, and you (or whoever is attending chat) complete that one stage directly, exactly as in single-run mode above, via `pool claim <runId>` (see step 6b).
 
 ### 2. Pre-flight Check
 
@@ -111,7 +111,7 @@ When status is `awaiting_plan_approval` (only when `--approve-plan` is set): pre
 
 When the user hands you a roadmap, or a body of work too large for one run:
 
-1. Write `.pipeline/roadmap.md` — flat frontmatter (`title`, `base`, `merge: pr|local-only`), then one `## <ID>: <title>` per feature with `- depends_on:`, a `### Description` and a `### Acceptance` list. Features run in order; tickets inside a feature run in parallel. A feature may also declare `- runner: auto|host|claude|cursor|codex|gemini` (default `auto`: prefer an authenticated CLI, else `host`) — leave it unset unless the user specifically wants that feature to run unattended on a real CLI.
+1. Write `.pipeline/roadmap.md` — flat frontmatter (`title`, `base`, `merge: pr|local-only`, optional `review: feature|end`), then one `## <ID>: <title>` per feature with `- depends_on:`, a `### Description` and a `### Acceptance` list. Features run in order; tickets inside a feature run in parallel. A feature may also declare `- runner: auto|host|claude|cursor|codex|antigravity` (default `auto`: prefer an authenticated CLI, else `host`) — leave it unset unless the user specifically wants that feature to run unattended on a real CLI. If the user wants a whole product / long list to run start to finish with one review at the end, set `review: end` and prefer an authenticated CLI runner.
 2. Compile and show it, so validation errors surface before anything runs:
    ```bash
    bash .pipeline/orchestrate.sh roadmap compile
@@ -128,7 +128,9 @@ When the user hands you a roadmap, or a body of work too large for one run:
    | a plan gate | `pool approve-plan <runId>` |
    | a question | `pool decide <decisionId> "<answer>"` |
    | a cycle budget | `pool extend <runId> <n>` |
-   | a feature ready to merge | `pool approve-merge <featureId>` (ask the user first) |
+   | a failed feature | `pool retry <featureId>` (or skip) |
+   | a feature ready to merge (`review: feature`) | `pool approve-merge <featureId>` (ask the user first) |
+   | a `review: end` roadmap ready to land | `pool land-roadmap` (ask the user first) |
    | changes needed | `pool request-changes <featureId> "<text>"` |
 
    Never merge without the user saying so. Never edit files under `.pipeline/worktrees/` — workers own them.

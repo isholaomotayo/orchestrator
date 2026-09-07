@@ -1,4 +1,6 @@
-# Gemini CLI Instructions
+# Antigravity / Gemini Instructions
+
+Google Antigravity (the `agy` CLI and IDE) still reads this file. The Gemini CLI has been deprecated; use `--host-client antigravity` and runner `antigravity`.
 
 This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → optional Handoff, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift).
 
@@ -12,9 +14,9 @@ Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestra
    - **Automatic** → pass `--model-profile auto`
    - **Manual** → collect four model IDs, then pass `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
    This is the **only** pre-run question.
-3. **Invoke** (you are a chat session — always pass `--mode chat --host-client gemini`; never pass `--runner` and never delegate stages to another agent CLI; exit code 3 means this is the orchestrator SOURCE repo, which must not be targeted):
+3. **Invoke** (you are a chat session — always pass `--mode chat --host-client antigravity`; never pass `--runner` and never delegate stages to another agent CLI; exit code 3 means this is the orchestrator SOURCE repo, which must not be targeted):
    ```bash
-   bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client gemini --model-profile auto
+   bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client antigravity --model-profile auto
    ```
    Additional optional flags: `--approve-plan`, `--design`, `--handoff`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`.
 4. **Tell the user** to open the live dashboard URL from `.pipeline/ui.url` (do not hardcode 4600).
@@ -29,7 +31,7 @@ Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestra
 
 ## Roadmap (pool) mode — v2
 
-**The coordinator never does stage work and never spawns workers — except a `claim-run` item, which is an invitation to do exactly that.** In single-run chat mode YOU complete each stage from `stage-handoff.json` and run `--continue`. In roadmap (pool) mode the supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with roadmap.md's `- runner: claude|cursor|codex|gemini` bullet, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere. When `pool digest`/`pool attention` shows a `claim-run` item, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that stage yourself exactly as in single-run mode, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Otherwise you do intake, answer decisions, and approve merges with `pool` verbs.
+**The coordinator never does stage work and never spawns workers — except a `claim-run` item, which is an invitation to do exactly that.** In single-run chat mode YOU complete each stage from `stage-handoff.json` and run `--continue`. In roadmap (pool) mode the supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with roadmap.md's `- runner: claude|cursor|codex|antigravity` bullet, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere. When `pool digest`/`pool attention` shows a `claim-run` item, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that stage yourself exactly as in single-run mode, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Otherwise you do intake, answer decisions, and approve merges with `pool` verbs.
 
 **Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
 

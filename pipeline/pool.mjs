@@ -14,8 +14,9 @@ import {
 } from './state.mjs';
 import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
 import {
-  parseRoadmapMd, compileRoadmap, setFeatureStatus, nextFeature, FEATURE_STATUSES,
+  parseRoadmapMd, compileRoadmap, setFeatureStatus, setRoadmapStatus, nextFeature, FEATURE_STATUSES,
 } from './roadmap.mjs';
+import { binExists } from './adapters.mjs';
 import {
   classifyRun, DEFAULT_THRESHOLDS,
   appendAttention, pendingAttention, ackAttention,
@@ -86,7 +87,16 @@ export function compile(paths, { now = new Date() } = {}) {
   const sourceSha256 = crypto.createHash('sha256').update(source).digest('hex');
   const compiled = compileRoadmap(roadmap, readRoadmap(paths), { sourceSha256, now });
   writeRoadmap(paths, compiled);
-  return { ok: true, roadmap: compiled, errors: [] };
+  const warnings = [];
+  if (compiled.review === 'end') {
+    const hasCli = ['claude', 'cursor-agent', 'codex', 'agy'].some((bin) => binExists(bin));
+    if (!hasCli) {
+      warnings.push({
+        message: 'review: end will run as attended claim-run items until a CLI (claude, cursor, codex, or antigravity/`agy`) is installed and authenticated.',
+      });
+    }
+  }
+  return { ok: true, roadmap: compiled, errors: [], warnings };
 }
 
 // ---- run inventory ---------------------------------------------------------
@@ -218,11 +228,13 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   }
   ensureStageEntries(status);
 
-  const allDone = roadmap?.features?.every((f) => ['landed', 'skipped'].includes(f.status));
+  const featuresSettled = roadmap?.features?.every((f) => ['landed', 'skipped'].includes(f.status));
+  const allDone = featuresSettled && (roadmap?.review !== 'end' || roadmap?.roadmapStatus === 'landed');
+  const awaitingFinal = roadmap?.review === 'end' && roadmap?.roadmapStatus === 'awaiting_final_review';
   if (!snap.supervisor.alive) status.overall = 'halted', status.haltReason = 'POOL_STOPPED';
   else if (snap.supervisor.paused) status.overall = 'halted', status.haltReason = 'POOL_PAUSED';
   else if (allDone) status.overall = 'done';
-  else if (snap.needsDecision.length && !snap.counts.inProgress) status.overall = 'awaiting_plan_approval';
+  else if (awaitingFinal || (snap.needsDecision.length && !snap.counts.inProgress)) status.overall = 'awaiting_plan_approval';
   else status.overall = 'running';
 
   status.pool = {
@@ -254,6 +266,9 @@ export function queueFollowup(paths, runId, stage, text) {
 export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli' } = {}) {
   const decision = readDecisions(paths).find((d) => d.decisionId === decisionId);
   if (!decision) throw new Error(`Unknown decision "${decisionId}".`);
+  if (decision.kind === 'roadmap-merge' && /^approve$/i.test(String(answer).trim())) {
+    return approveRoadmapMerge(paths, { by, via, note: answer });
+  }
   const resolved = resolveDecision(paths, decisionId, { decision: answer, by, via });
   if (decision.runId && decision.stage) {
     queueFollowup(paths, decision.runId, decision.stage, `Decision from the operator: ${answer}`);
@@ -296,12 +311,18 @@ export function approvePlan(paths, runId, { by = 'operator', via = 'cli' } = {})
 }
 
 /**
- * Approve merging a feature. This records consent only — the supervisor still
+ * Approve merging a feature, or — when `review: end` is waiting — landing the
+ * whole working branch onto `base`. Passing no feature id (or "roadmap") is
+ * the final irreversible step. This records consent only; the supervisor still
  * performs a live mergeability read before anything is merged.
  */
 export function approveMerge(paths, featureId, { by = 'operator', via = 'cli', note = null } = {}) {
   const roadmap = readRoadmap(paths);
-  const feature = roadmap?.features?.find((f) => f.id === featureId);
+  if (!roadmap) throw new Error('No compiled roadmap.');
+  if (!featureId || featureId === 'roadmap') {
+    return approveRoadmapMerge(paths, { by, via, note });
+  }
+  const feature = roadmap.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
   if (feature.status !== 'awaiting_merge_approval') {
     throw new Error(`Feature "${featureId}" is ${feature.status}, not awaiting merge approval.`);
@@ -312,6 +333,50 @@ export function approveMerge(paths, featureId, { by = 'operator', via = 'cli', n
     mergeApproval: { by, via, at: new Date().toISOString(), note },
   }));
   return { featureId, approved: true };
+}
+
+export function landRoadmap(paths, opts = {}) {
+  return approveRoadmapMerge(paths, opts);
+}
+
+export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note = null } = {}) {
+  const roadmap = readRoadmap(paths);
+  if (!roadmap) throw new Error('No compiled roadmap.');
+  if (roadmap.review !== 'end') {
+    throw new Error('This roadmap reviews per feature; pass a feature id to `approve-merge`.');
+  }
+  if (roadmap.roadmapStatus !== 'awaiting_final_review') {
+    throw new Error(`Roadmap is ${roadmap.roadmapStatus || 'running'}, not awaiting a final review.`);
+  }
+  const open = openDecisions(paths).find((d) => d.kind === 'roadmap-merge');
+  if (open) resolveDecision(paths, open.decisionId, { decision: 'approve', note, by, via });
+  writeRoadmap(paths, setRoadmapStatus(roadmap, 'merge_approved', {
+    mergeApproval: { by, via, at: new Date().toISOString(), note },
+  }));
+  return { roadmap: true, approved: true, workingBranch: roadmap.workingBranch ?? null };
+}
+
+/**
+ * Reset a failed feature so the supervisor will plan it again from the same
+ * baseRef. Tickets and runs are discarded; landed work on earlier features is
+ * not touched.
+ */
+export function retryFeature(paths, featureId) {
+  const roadmap = readRoadmap(paths);
+  const feature = roadmap?.features?.find((f) => f.id === featureId);
+  if (!feature) throw new Error(`Unknown feature "${featureId}".`);
+  if (feature.status !== 'failed') {
+    throw new Error(`Feature "${featureId}" is ${feature.status}, not failed.`);
+  }
+  writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'queued', {
+    tickets: [],
+    specRunId: null,
+    integrationRunId: null,
+    conflict: null,
+    mergeState: null,
+    startedAt: null,
+  }));
+  return { featureId, status: 'queued' };
 }
 
 export function requestChanges(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
@@ -402,4 +467,4 @@ export function resume(paths) {
   return { paused: false };
 }
 
-export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES };
+export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };

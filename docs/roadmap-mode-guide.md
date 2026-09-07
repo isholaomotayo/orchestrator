@@ -21,6 +21,40 @@ chat, the same way a single task already works. So a roadmap now runs from
 start to finish with no CLI signed in anywhere. You do the work, one stage
 at a time, and tell it to continue.
 
+## Building a whole product
+
+To have a long list of features run start to finish — plan, build, test,
+accept, next — and review once at the end, set `review: end` in the
+frontmatter:
+
+```markdown
+---
+title: Acme platform
+base: main
+merge: pr
+review: end
+---
+```
+
+Each feature still goes through Planner → Coder → Tester → Reviewer. When a
+feature is `APPROVED`, it is accepted onto a working branch
+(`pipeline/roadmap/<slug>`) and the next feature starts from that commit. The
+base branch does not move. When the list is done, the digest asks you to land
+the working branch:
+
+```bash
+bash .pipeline/orchestrate.sh pool land-roadmap
+# or: bash .pipeline/orchestrate.sh pool approve-merge
+```
+
+That is the one irreversible step. Walk-away unattended runs need an
+authenticated CLI (`- runner: claude` / `cursor` / `codex` / `antigravity` on a
+feature, or one on PATH with `auto`). Without one, `review: end` still works
+as attended `claim-run` items.
+
+Default `review: feature` is unchanged: every feature waits for
+`pool approve-merge <featureId>` before the next one starts.
+
 ## The four words you need
 
 - **Roadmap** — the list of features, written in `roadmap.md`.
@@ -65,7 +99,7 @@ Render an invoice as a PDF.
 ```
 
 - `runner: host` — no CLI needed. You do the work, in this chat.
-- `runner: claude` (or `cursor`, `codex`, `gemini`) — runs unattended, on a
+- `runner: claude` (or `cursor`, `codex`, `antigravity`) — runs unattended, on a
   signed-in CLI, in the background. Use this when you want a feature to
   build itself while you do something else.
 
@@ -100,13 +134,18 @@ Repeat until the run is done. Each ticket may ask for a few stages in turn
 | Answer a question | `pool decide <decisionId> "<answer>"` |
 | Approve a plan | `pool approve-plan <runId>` |
 | Approve a merge | `pool approve-merge <featureId>` |
+| Land a `review: end` roadmap | `pool land-roadmap` (or `pool approve-merge` with no feature id) |
+| Retry a failed feature | `pool retry <featureId>` |
 | Ask for changes | `pool request-changes <featureId> "<text>"` |
 | Give a run more cycles | `pool extend <runId> <n>` |
 
 Prefix each with `bash .pipeline/orchestrate.sh`.
 
 Nothing reaches your base branch without your approval. A merge always
-waits for `pool approve-merge`, even after a review passes.
+waits for `pool approve-merge`, even after a review passes — unless you set
+`review: end`, in which case per-feature merges are deferred and only the
+final `pool land-roadmap` (or `pool approve-merge` with no feature id)
+lands onto `base`.
 
 ## If you have no CLI signed in
 

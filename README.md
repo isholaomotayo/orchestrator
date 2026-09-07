@@ -190,7 +190,7 @@ After install + bootstrap, your **existing** project gains:
 | `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` | Agent rules (bootstrapped if missing)                                                 |
 | `.cursorrules`                          | Cursor always-on rulebook (bootstrapped if missing)                                   |
 | `.cursor/commands/orchestrate.md`       | Cursor `/orchestrate` command (bootstrapped if missing)                               |
-| `.gemini/skills/orchestrate/`           | Gemini CLI skill copy (bootstrapped if missing)                                       |
+| `.gemini/skills/orchestrate/`           | Antigravity / Gemini-era skill copy (bootstrapped if missing)                         |
 
 Your application code, dependencies, and structure stay as they are. The pipeline runs **your** `test` / `lint` / `typecheck` commands from `.pipeline/config.json` against **your** codebase.
 
@@ -292,8 +292,8 @@ Invoking `/orchestrate` from **any IDE chat** (Cursor, Claude Code, Codex, Gemin
 
 | Mode     | When                                                                                                                                  | How stages run                                                                                                                                                                                                                                                                                                                                                |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Chat** | `/orchestrate` in an IDE chat — always pass `--mode chat --host-client <name>` (`claude`, `cursor`, `codex`, `gemini`, `antigravity`) | **Host runner** — _this_ chat session completes each stage. Orchestrator writes `.pipeline/stage-handoff.json` and exits; you finish the stage in chat, then `bash .pipeline/orchestrate.sh --continue`. Never pass `--runner` and never spawn `claude` / `cursor-agent` / `codex` / `gemini` from the chat. Checker/tests still run in Node (deterministic). |
-| **CLI**  | Interactive terminal, CI, or an explicit `--mode cli`                                                                                 | Subprocess via first **authenticated** CLI on PATH (`claude`, `cursor-agent`, `codex`, `gemini`).                                                                                                                                                                                                                                                             |
+| **Chat** | `/orchestrate` in an IDE chat — always pass `--mode chat --host-client <name>` (`claude`, `cursor`, `codex`, `antigravity`) | **Host runner** — _this_ chat session completes each stage. Orchestrator writes `.pipeline/stage-handoff.json` and exits; you finish the stage in chat, then `bash .pipeline/orchestrate.sh --continue`. Never pass `--runner` and never spawn `claude` / `cursor-agent` / `codex` / `agy` from the chat. Checker/tests still run in Node (deterministic). |
+| **CLI**  | Interactive terminal, CI, or an explicit `--mode cli`                                                                                 | Subprocess via first **authenticated** CLI on PATH (`claude`, `cursor-agent`, `codex`, `agy`).                                                                                                                                                                                                                                                             |
 
 ```bash
 # Chat mode (typical from /orchestrate in Cursor / Antigravity / …)
@@ -315,7 +315,7 @@ The pipeline auto-detects whichever **CLI** runner is authenticated on your `PAT
 | `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code)                            | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
 | `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`)                                 | see Cursor docs                            | Headless `-p` mode with `--output-format stream-json`.                                                                                                                                                                        |
 | `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --full-auto`.                                                                                                                                                                                     |
-| `gemini` | [Gemini CLI](https://github.com/google-gemini/gemini-cli) (also used for Antigravity) | `npm install -g @google/gemini-cli`        | Headless `-p --yolo` mode.                                                                                                                                                                                                    |
+| `antigravity` | [Antigravity CLI](https://antigravity.google/docs/cli/headless/) (`agy`) | Install Antigravity, then authenticate with an interactive `agy` session | Headless `agy -p` with `--dangerously-skip-permissions` when writing. `gemini` is a deprecated alias for this runner. |
 
 You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, an internal tool, a stub for testing) via `customRunners` in `.pipeline/config.json` — see [Configuration reference](#configuration-reference).
 
@@ -420,9 +420,9 @@ Archived run views (selected from the run-history dropdown) intentionally **stop
 ```
 # Start a new run
 node pipeline/orchestrator.mjs --task "description" \
-  [--runner claude|cursor|codex|gemini|host|<customRunner>] \
+  [--runner claude|cursor|codex|antigravity|host|<customRunner>] \
   [--mode chat|cli] \
-  [--host-client claude|cursor|codex|gemini|antigravity] \
+  [--host-client claude|cursor|codex|antigravity] \
   [--model-profile auto|manual] \
   [--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'] \
   [--approve-plan] [--design] [--handoff] \
@@ -452,7 +452,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 | ------------------------------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--runner <name>`              | both                       | Force a specific agent CLI instead of auto-detecting. From a chat session, omit this — the host runner is the default driver.                                                                                                                                    |
 | `--mode chat\|cli`             | both                       | Override invocation detection. Chat sessions should always pass `chat`.                                                                                                                                                                                          |
-| `--host-client <name>`         | both                       | Names the IDE hosting the run (`claude`, `cursor`, `codex`, `gemini`, `antigravity`; aliases `agy`, `claude-code`, `cursor-agent`). Implies chat mode; drives dashboard attribution and environment-aware auto models. Also settable via `PIPELINE_HOST_CLIENT`. |
+| `--host-client <name>`         | both                       | Names the IDE hosting the run (`claude`, `cursor`, `codex`, `antigravity`; aliases `agy`, `gemini`, `claude-code`, `cursor-agent`). Implies chat mode; drives dashboard attribution and environment-aware auto models. Also settable via `PIPELINE_HOST_CLIENT`. |
 | `--model-profile auto\|manual` | new run                    | Auto = cost-optimized per-stage defaults (adapted to `--host-client` in chat mode); manual requires `--models`.                                                                                                                                                  |
 | `--models <json>`              | new run                    | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`.                                                                                                                                                                             |
 | `--approve-plan`               | new run                    | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`.                                                                                                         |
@@ -482,7 +482,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 
 ```jsonc
 {
-  "runner": "auto", // "auto" | claude | cursor | codex | gemini | <customRunner key>
+  "runner": "auto", // "auto" | claude | cursor | codex | antigravity | <customRunner key>
   "maxCoderCycles": 5, // default cycle budget for the initial Coder fix loop
   "maxPostTesterCycles": 2, // default cycle budget for the post-Tester fix loop
   "uiPort": 4600, // dashboard port (auto-increments if occupied by another repo)
@@ -667,9 +667,9 @@ bash .pipeline/orchestrate.sh roadmap compile | show | hold <id> | release <id> 
 Everything is also doable from the dashboard, and both write the same records.
 
 **Roadmap mode needs no authenticated agent CLI by default.** A feature/ticket's
-`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|gemini`,
+`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|antigravity`,
 default `auto`) resolves to an authenticated CLI (`claude`, `codex`, `cursor` or
-`gemini`) when one exists, else falls back to `host` — no subprocess at all.
+`antigravity`) when one exists, else falls back to `host` — no subprocess at all.
 The supervisor spawns a real worker process only for a CLI-resolved run; a
 `host` run is instead left `awaiting_chat` with a `claim-run` item in the
 digest, and any attending chat session picks it up with `pool claim <runId>`
@@ -767,9 +767,9 @@ After bootstrap, agents in your project are steered toward `/orchestrate` via:
 | `.cursor/commands/orchestrate.md`     | Cursor slash command (bootstrapped if missing)                                       |
 | `.cursorrules`                        | Cursor always-on rulebook (bootstrapped if missing)                                  |
 | `CLAUDE.md`                           | Claude Code (copied if missing)                                                      |
-| `GEMINI.md`                           | Gemini CLI (copied if missing)                                                       |
+| `GEMINI.md`                           | Antigravity / Gemini-era instruction file (copied if missing)                        |
 | `AGENTS.md`                           | Codex, Antigravity, other `AGENTS.md`-aware tools (copied if missing)                |
-| `.gemini/skills/orchestrate/`         | Gemini CLI skill copy                                                                |
+| `.gemini/skills/orchestrate/`         | Antigravity / Gemini-era skill copy                                                  |
 | `.pipeline/skill.json`                | Workspace manifest — command is `bash .pipeline/orchestrate.sh`                      |
 
 All paths route to the same entrypoint and enforce isolation: treat `.pipeline/` and `.pipeline_sandbox/` as read-only unless you are the orchestrator; respect `.pipeline/.lock`. Chat sessions must pass `--mode chat --host-client <your-client>` and must not spawn an external agent CLI.
@@ -814,7 +814,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 | `.pipeline/orchestrate.sh` not found                                       | Skill installed but scaffold not bootstrapped                                                | `bash .agents/skills/orchestrate/scripts/bootstrap.sh`                                                                                                                                    |
 | `Pipeline execution is locked by a running orchestrator (pid N)`           | A run is genuinely active                                                                    | Wait, watch the dashboard, or `Stop run` from the UI                                                                                                                                      |
 | Dashboard shows **stale — process gone**                                   | The orchestrator process died without exiting cleanly                                        | Start a new run — the halted state is preserved in run history                                                                                                                            |
-| `No agent CLI found on PATH`                                               | None of `claude`/`cursor-agent`/`codex`/`gemini` are installed                               | Install one (see [Chat mode vs CLI mode](#chat-mode-vs-cli-mode)), use chat/host mode from an IDE, or set `runner` in `config.json` to a `customRunners` entry                            |
+| `No agent CLI found on PATH`                                               | None of `claude`/`cursor-agent`/`codex`/`agy` are installed                               | Install one (see [Chat mode vs CLI mode](#chat-mode-vs-cli-mode)), use chat/host mode from an IDE, or set `runner` in `config.json` to a `customRunners` entry                            |
 | Extend button doesn't appear                                               | The halt reason wasn't `MAX_CYCLES` (e.g. it was `REGRESSION_BLOCKED` or `MISSING_ARTIFACT`) | These require a human fix, not more cycles — inspect `checker_report.md` / `review_report.md` directly                                                                                    |
 | `Cannot resume: sandbox worktree ... no longer exists`                     | You manually removed `.pipeline_sandbox/` between runs                                       | Start a fresh run instead of extending                                                                                                                                                    |
 | Two repos fighting over port 4600                                          | Rare — should auto-resolve                                                                   | `orchestrate.sh` walks ports `uiPort..uiPort+20`; check `.pipeline/config.json`'s `uiPort` if you have >20 pipeline repos open at once. Always read the live URL from `.pipeline/ui.url`. |

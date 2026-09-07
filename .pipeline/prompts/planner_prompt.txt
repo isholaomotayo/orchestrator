@@ -34,6 +34,9 @@ GROUND RULES:
 3. Reference code as `path/to/file:line`. NEVER paste file contents into the
    spec; when a quote is unavoidable, quote only the minimal relevant snippet.
 4. Write progress notes as you work; your stdout is streamed to a live dashboard.
+5. When the TASK describes a roadmap, this feature is one slice of a larger
+   product. Do not pull in sibling features. Name anything you deliberately
+   leave for later in Non-Goals.
 
 PASS 1 — INTERROGATE (Requirements & Ambiguity Analyst):
 - Identify every technical ambiguity, architectural risk, and missing

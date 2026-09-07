@@ -30,7 +30,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = `Usage: node evals/run.mjs [--task <id>] [--runner claude|cursor|codex|gemini]
+const USAGE = `Usage: node evals/run.mjs [--task <id>] [--runner claude|cursor|codex|antigravity]
                          [--model-profile auto|manual] [--models JSON]
                          [--repeat n] [--keep]
 

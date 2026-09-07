@@ -41,6 +41,21 @@ export function buildSnapshot({
     }));
 
   const covered = new Set(needsDecision.map((d) => d.featureId).filter(Boolean));
+  if (roadmap?.review === 'end' && roadmap.roadmapStatus === 'awaiting_final_review'
+    && !needsDecision.some((d) => d.kind === 'roadmap-merge')) {
+    needsDecision.push({
+      decisionId: null,
+      kind: 'roadmap-merge',
+      runId: null,
+      featureId: null,
+      featureTitle: roadmap.title,
+      question: `All features of "${roadmap.title}" are tested and accepted onto ${roadmap.workingBranch}. Land them into ${roadmap.base}?`,
+      options: ['approve', 'request-changes'],
+      recommended: 'approve',
+      artifacts: [roadmap.workingBranch, roadmap.base].filter(Boolean),
+      since: null,
+    });
+  }
   for (const feature of features) {
     if (!['failed', 'held'].includes(feature.status) || covered.has(feature.id)) continue;
     needsDecision.push({
@@ -133,6 +148,9 @@ export function buildSnapshot({
     roadmap: roadmap
       ? {
         title: roadmap.title, base: roadmap.base, merge: roadmap.merge,
+        review: roadmap.review || 'feature',
+        workingBranch: roadmap.workingBranch ?? null,
+        roadmapStatus: roadmap.roadmapStatus || 'running',
         currentFeatureId: roadmap.currentFeatureId ?? null,
         features: features.map((f) => ({
           id: f.id, title: f.title, status: f.status, dependsOn: f.dependsOn || [],
@@ -184,12 +202,14 @@ export function renderDigest(snapshot) {
     const how = d.decisionId
       ? ` — answer with \`pool decide ${d.decisionId} "<answer>"\``
       : d.kind === 'feature-failed'
-        ? ` — read \`pool status\`, then \`roadmap skip ${d.featureId}\` or fix and re-run`
+        ? ` — retry with \`pool retry ${d.featureId}\`, or skip with \`roadmap skip ${d.featureId}\``
         : d.kind === 'held'
           ? ` — release with \`roadmap release ${d.featureId}\``
           : d.kind === 'claim-run'
             ? ` — pick it up with \`pool claim ${d.runId}\``
-            : '';
+            : d.kind === 'roadmap-merge'
+              ? ' — land with `pool approve-merge` or `pool land-roadmap`'
+              : '';
     return `- **${d.question}** (${where})${how}.${options}${recommended}`;
   }), 'Nothing needs your decision right now.'));
 

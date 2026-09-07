@@ -37,12 +37,13 @@ test('[P0-3] https loopback origin on default 443 is rejected against port 4600'
 const base = { systemPrompt: 's', task: 't', config: {}, model: null };
 
 test('[P0-2] no read-only invocation contains an auto-approve/write flag', () => {
-  for (const runner of ['claude', 'cursor', 'codex', 'gemini']) {
+  for (const runner of ['claude', 'cursor', 'codex', 'antigravity', 'gemini']) {
     const inv = buildInvocation({ ...base, runner, readOnly: true });
     const joined = inv.args.join(' ');
     assert.ok(!joined.includes('--force'), `${runner} leaked --force`);
     assert.ok(!joined.includes('--full-auto'), `${runner} leaked --full-auto`);
     assert.ok(!joined.includes('--yolo'), `${runner} leaked --yolo`);
+    assert.ok(!joined.includes('--dangerously-skip-permissions'), `${runner} leaked --dangerously-skip-permissions`);
     assert.ok(!joined.includes('acceptEdits'), `${runner} leaked acceptEdits`);
   }
 });

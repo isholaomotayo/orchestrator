@@ -106,7 +106,7 @@ the agent constructs.
 | `--approve-plan` | `approvePlan` | `false` | After the Planner produces `specs.md`, halt with status `awaiting_plan_approval` until a human approves (or queues a revision note in `.pipeline/followups/planner.txt`) and resumes with `--continue`. |
 | `--design` | `designStage` | `false` | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`. |
 | `--handoff` | `handoffStage` | `false` | After an `APPROVED` review, run an optional Handoff stage producing `.pipeline/handoff.md`. |
-| `--host-client <name>` | env `PIPELINE_HOST_CLIENT` | auto-detected | Names the IDE chat client hosting the run (`claude`, `cursor`, `codex`, `gemini`, `antigravity`; aliases `agy`, `claude-code`, `cursor-agent`). Implies `--mode chat`, drives dashboard/log attribution (`status.hostClient`, `stage-handoff.json.hostClient`/`hostNote`), and selects environment-aware auto models. |
+| `--host-client <name>` | env `PIPELINE_HOST_CLIENT` | auto-detected | Names the IDE chat client hosting the run (`claude`, `cursor`, `codex`, `antigravity`; aliases `agy`, `gemini`, `claude-code`, `cursor-agent`). Implies `--mode chat`, drives dashboard/log attribution (`status.hostClient`, `stage-handoff.json.hostClient`/`hostNote`), and selects environment-aware auto models. |
 | `--review-panel` | `reviewPanel` | `false` | Replace the single Reviewer with three concurrent read-only lenses (spec/correctness, security, architecture). Verdict is the **strictest** of the three, so a lone security finding cannot be outvoted; per-lens reports land in `.pipeline/review_{correctness,security,architecture}.md`. CLI mode only — a chat host runs one stage at a time. |
 | — | `agentRetries` | `2` | Bounded retries for **transient** agent failures (429/5xx/overloaded/network/timeout) with exponential backoff. Auth, quota, and bad-model failures are fatal and never retried. Set `0` to disable. |
 | — | `stageEffort` | see below | Per-stage reasoning effort. |
@@ -145,7 +145,7 @@ Each pipeline stage (Planner, Designer, Coder, Tester, Reviewer, Handoff) can us
 
 **Chat mode:** resolved models are written to `stage-handoff.json` (`model`, `modelNote`). Switch IDE model before each stage (or use your active model, updating `"actualModel"` in `stage-handoff.json` before running `--continue`).
 
-**CLI mode:** `--model` is passed to `claude`, `cursor-agent`, `codex`, and `gemini` subprocesses.
+**CLI mode:** `--model` is passed to `claude`, `cursor-agent`, `codex`, and `agy` (Antigravity) subprocesses. (`gemini` is a deprecated runner alias for `antigravity`.)
 
 Slash command (`/orchestrate`): the IDE agent must ask the model-selection question before calling `orchestrate.sh` — this is the only pre-run user prompt.
 
@@ -156,7 +156,7 @@ Default auto profiles (override in `.pipeline/config.json`):
 | claude | opus-5 | sonnet-5 | opus-5 | haiku-4.5 |
 | cursor | opus-5 | sonnet-5 | opus-5 | haiku-4.5 |
 | codex | gpt-5.6-sol | gpt-5.5 | gpt-5.6-sol | gpt-5.4-mini |
-| gemini / antigravity | gemini-3.1-pro | gemini-3.6-flash | gemini-3.1-pro | gemini-3.5-flash |
+| antigravity (`gemini` alias) | gemini-3.1-pro | gemini-3.6-flash | gemini-3.1-pro | gemini-3.5-flash |
 
 The Reviewer sits on the frontier tier deliberately: its verdict gates the whole
 run, it is read-only, and it runs few times. The Handoff stage is pure
@@ -187,7 +187,7 @@ the identifier it actually accepts, resolved in `pipeline/models.mjs`:
 | `haiku-4.5` | `haiku` | — |
 
 Short aliases are used for `claude` so an auto profile always tracks the newest
-model in that family. `codex` and `gemini` receive the family id unchanged.
+model in that family. `codex` and `antigravity` (`agy`) receive the family id unchanged.
 
 ### Reasoning effort
 
@@ -201,7 +201,7 @@ configurable under `stageEffort` in `.pipeline/config.json`:
 | reviewer | `high` | its verdict gates the run |
 | handoff | `low` | summarisation of existing artifacts |
 
-Effort is delivered per runner: `claude --effort <level>`, `codex -c model_reasoning_effort=<level>`, and — because `cursor-agent` has no effort flag — by selecting the effort-tiered cursor model id (`claude-opus-5-thinking-high`). Chat/host stages receive it as a target in `stage-handoff.json.effort`.
+Effort is delivered per runner: `claude --effort <level>`, `agy --effort <low|medium|high>` (higher tiers collapse to `high`), `codex -c model_reasoning_effort=<level>`, and — because `cursor-agent` has no effort flag — by selecting the effort-tiered cursor model id (`claude-opus-5-thinking-high`). Chat/host stages receive it as a target in `stage-handoff.json.effort`.
 
 ## Integrity guarantees
 
@@ -214,7 +214,7 @@ Two checks run around every stage, independent of which runner executed it:
   the run as `INTEGRITY_VIOLATION`. Without this, the Coder could write its own
   `## Verdict: APPROVED`.
 - **Read-only proof.** Read-only stages have the working tree fingerprinted
-  before and after. `cursor-agent` and `gemini` cannot hard-enforce read-only, so
+  before and after. `cursor-agent` and `agy` cannot hard-enforce read-only, so
   this catches after the fact what their CLIs cannot prevent.
 
 Artifacts are also content-validated rather than size-checked: a review report
@@ -270,7 +270,9 @@ bash .pipeline/orchestrate.sh pool decisions [--json]
 bash .pipeline/orchestrate.sh pool claim <runId>                    # pick up a run parked in chat (runner: host)
 bash .pipeline/orchestrate.sh pool decide <decisionId> "<answer>"
 bash .pipeline/orchestrate.sh pool approve-plan <runId>
-bash .pipeline/orchestrate.sh pool approve-merge <featureId> [--note "..."]
+bash .pipeline/orchestrate.sh pool approve-merge [featureId] [--note "..."]
+bash .pipeline/orchestrate.sh pool land-roadmap [--note "..."]   # review: end — land the working branch onto base
+bash .pipeline/orchestrate.sh pool retry <featureId>
 bash .pipeline/orchestrate.sh pool request-changes <featureId> "<text>"
 bash .pipeline/orchestrate.sh pool extend <runId> <cycles>
 bash .pipeline/orchestrate.sh pool notes add "<text>" [--kind learning|decision|gotcha]
@@ -299,6 +301,11 @@ Exit codes: `0` ok, `1` error, `2` usage, `3` self-target guard, `4` no supervis
 Feature statuses: `queued`, `planning`, `awaiting_plan_approval`, `executing`,
 `integrating`, `reviewing`, `awaiting_merge_approval`, `merge_approved`,
 `merging`, `landed`, `failed`, `held`, `skipped`.
+
+Roadmap frontmatter: `title`, `base`, `merge: pr|local-only`, `review: feature|end`
+(default `feature`). `review: end` accepts each approved feature onto
+`pipeline/roadmap/<slug>` and asks once, at the end, to land that branch onto
+`base` via `pool land-roadmap`.
 
 Run verbs (`.pipeline/runs/<id>/run.status`, append-only): `working`,
 `needs-decision`, `blocked`, `paused`, `held`, `resolved`, `done`, `failed`,

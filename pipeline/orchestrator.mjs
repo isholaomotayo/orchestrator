@@ -79,7 +79,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|gemini|host] [--mode chat|cli] [--host-client claude|cursor|codex|gemini|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--report] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--report] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const args = parseArgs(process.argv.slice(2));
@@ -629,7 +629,8 @@ function agentAuthHint(runnerName) {
     cursor: "Run `agent login` or set CURSOR_API_KEY.",
     claude: 'Run `claude auth login`.',
     codex: 'Run `codex login`.',
-    gemini: 'Run `gemini auth login` (see Gemini CLI docs).',
+    antigravity: 'Run `agy` interactively and complete sign-in (Antigravity CLI).',
+    gemini: 'Runner "gemini" now invokes the Antigravity CLI (`agy`). Run `agy` interactively and complete sign-in.',
   };
   return hints[runnerName] || 'Log in to the agent CLI or invoke from IDE chat (host mode).';
 }

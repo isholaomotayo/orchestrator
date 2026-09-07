@@ -28,8 +28,11 @@ something else:
 **Always wait for the operator** — things that are hard to undo, or where being
 wrong is expensive:
 
-- **any merge**, even an approved-looking one. Merging is the one irreversible
-  step, and `merge.autoMerge` exists for operators who have explicitly chosen it;
+- **any merge onto the base branch**, even an approved-looking one. Merging is
+  the one irreversible step. Per-feature `merge.autoMerge` exists for operators
+  who have explicitly chosen it. Under `review: end`, accepting a feature onto
+  the working branch may proceed without asking; **landing the working branch
+  onto `base`** (`pool land-roadmap`) still waits.
 - anything touching authentication, payments, data deletion, or schema
   migrations;
 - a `BLOCK` verdict, or a review that was not approved;

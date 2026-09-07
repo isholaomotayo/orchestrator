@@ -139,6 +139,24 @@ test('a failed feature appears as something needing the operator, not silence', 
   assert.doesNotMatch(text, /pool decide null/);
 });
 
+test('a failed feature tells the operator how to retry it', () => {
+  const failed = { ...roadmap, features: [{ ...roadmap.features[1], status: 'failed' }] };
+  const text = renderDigest(buildSnapshot({ roadmap: failed, runs: [], decisions: [], attention: [], supervisor, now: new Date() }));
+  assert.match(text, /pool retry F2/);
+});
+
+test('a review:end roadmap waiting for a final land surfaces as a decision', () => {
+  const done = {
+    ...roadmap,
+    review: 'end',
+    roadmapStatus: 'awaiting_final_review',
+    workingBranch: 'pipeline/roadmap/billing-v2',
+    features: roadmap.features.map((f) => ({ ...f, status: 'landed' })),
+  };
+  const s = buildSnapshot({ roadmap: done, runs: [], decisions: [], attention: [], supervisor, now: new Date() });
+  assert.ok(s.needsDecision.some((d) => d.kind === 'roadmap-merge'));
+  assert.match(renderDigest(s), /pool approve-merge|pool land-roadmap/);
+});
 test('a held feature says how to release it', () => {
   const held = { ...roadmap, features: [{ ...roadmap.features[1], status: 'held', heldReason: 'waiting on design' }] };
   const text = renderDigest(buildSnapshot({ roadmap: held, runs: [], decisions: [], attention: [], supervisor, now: new Date() }));

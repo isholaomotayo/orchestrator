@@ -48,6 +48,18 @@ const SATISFIED_STATUSES = ['landed', 'skipped'];
 
 export const FEATURE_MODES = ['build', 'research'];
 export const MERGE_MODES = ['pr', 'local-only'];
+export const REVIEW_GATES = ['feature', 'end'];
+export const ROADMAP_STATUSES = ['running', 'awaiting_final_review', 'merge_approved', 'landed'];
+
+/** Long-lived branch that `review: end` accumulates accepted features onto. */
+export function roadmapWorkingBranch(title) {
+  const slug = String(title || 'roadmap')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48) || 'roadmap';
+  return `pipeline/roadmap/${slug}`;
+}
 
 const FEATURE_ID_RE = /^[A-Za-z][\w-]{0,31}$/;
 
@@ -186,6 +198,10 @@ export function parseRoadmapMd(text) {
   if (!MERGE_MODES.includes(merge)) {
     errors.push({ line: 1, message: `Unknown merge mode "${merge}"; expected one of: ${MERGE_MODES.join(', ')}.` });
   }
+  const review = (data.review || 'feature').trim();
+  if (!REVIEW_GATES.includes(review)) {
+    errors.push({ line: 1, message: `Unknown review gate "${review}"; expected one of: ${REVIEW_GATES.join(', ')}.` });
+  }
   if (errors.length) return { roadmap: null, errors };
 
   try { orderFeatures(features); } catch (err) {
@@ -193,7 +209,7 @@ export function parseRoadmapMd(text) {
   }
 
   return {
-    roadmap: { title: data.title || 'Untitled roadmap', base: data.base || 'main', merge, features },
+    roadmap: { title: data.title || 'Untitled roadmap', base: data.base || 'main', merge, review, features },
     errors: [],
   };
 }
@@ -268,6 +284,10 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
     title: roadmap.title,
     base: roadmap.base,
     merge: roadmap.merge,
+    review: roadmap.review || 'feature',
+    workingBranch: previous?.workingBranch || roadmapWorkingBranch(roadmap.title),
+    workingSha: previous?.workingSha ?? null,
+    roadmapStatus: previous?.roadmapStatus || 'running',
     currentFeatureId: null,
     features,
     orphans,
@@ -307,4 +327,31 @@ export function setFeatureStatus(json, featureId, status, patch = {}) {
   const updated = { ...json, features };
   updated.currentFeatureId = currentFeatureId(updated);
   return updated;
+}
+
+/** Roadmap-level status (used by `review: end` for the final land-on-base gate). */
+export function setRoadmapStatus(json, status, patch = {}) {
+  if (!ROADMAP_STATUSES.includes(status)) {
+    throw new Error(`Unknown roadmap status "${status}"; expected one of: ${ROADMAP_STATUSES.join(', ')}.`);
+  }
+  const updated = { ...json, ...patch, roadmapStatus: status };
+  updated.currentFeatureId = currentFeatureId(updated);
+  return updated;
+}
+
+/**
+ * Context a planner brief should include so a slice of a larger product does
+ * not pull in sibling features or ignore what has already landed.
+ */
+export function featureBriefContext(json, feature) {
+  const others = (json.features || []).filter((f) => f.id !== feature.id);
+  return {
+    roadmapTitle: json.title || 'Untitled roadmap',
+    dependsOn: (feature.dependsOn || []).map((id) => {
+      const dep = (json.features || []).find((f) => f.id === id);
+      return dep ? `${dep.id}: ${dep.title} (${dep.status})` : id;
+    }),
+    landed: others.filter((f) => f.status === 'landed').map((f) => `${f.id}: ${f.title}`),
+    remaining: others.filter((f) => ['queued', 'held'].includes(f.status)).map((f) => `${f.id}: ${f.title}`),
+  };
 }

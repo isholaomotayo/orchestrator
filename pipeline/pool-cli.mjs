@@ -27,8 +27,10 @@ Acting:
   claim <runId>                 pick up a run parked at a chat handoff (runner: host)
   decide <decisionId> "<answer>"
   approve-plan <runId>
-  approve-merge <featureId> [--note "..."]
+  approve-merge [featureId] [--note "..."]   omit featureId to land a review:end roadmap
+  land-roadmap [--note "..."]
   request-changes <featureId> "<text>"
+  retry <featureId>
   extend <runId> <cycles>
   ack <attentionId>
   notes add "<text>" [--kind learning|decision|gotcha] [--run <id>] [--feature <id>]
@@ -93,6 +95,7 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
             for (const e of res.errors) console.error(`  ${path.relative(cwd, paths.roadmapMd)}:${e.line}: ${e.message}`);
             return 1;
           }
+          for (const w of res.warnings || []) console.error(`  warning: ${w.message}`);
           out(json, res.roadmap, `Compiled ${res.roadmap.features.length} feature(s); next up: ${res.roadmap.currentFeatureId ?? 'nothing'}.`);
           return 0;
         }
@@ -134,9 +137,21 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
         return 0;
       }
       case 'approve-merge': {
+        const res = pool.approveMerge(paths, args[1] && !String(args[1]).startsWith('--') ? args[1] : null, { via: 'cli', note: flag('note') });
+        out(json, res, res.roadmap
+          ? 'Roadmap merge approved. The supervisor will verify it is still mergeable before landing onto the base branch.'
+          : `Merge approved for ${args[1]}. The supervisor will verify it is still mergeable before merging.`);
+        return 0;
+      }
+      case 'land-roadmap': {
+        const res = pool.landRoadmap(paths, { via: 'cli', note: flag('note') });
+        out(json, res, 'Roadmap merge approved. The supervisor will verify it is still mergeable before landing onto the base branch.');
+        return 0;
+      }
+      case 'retry': {
         if (!args[1]) { console.error(USAGE); return 2; }
-        const res = pool.approveMerge(paths, args[1], { via: 'cli', note: flag('note') });
-        out(json, res, `Merge approved for ${args[1]}. The supervisor will verify it is still mergeable before merging.`);
+        const res = pool.retryFeature(paths, args[1]);
+        out(json, res, `Retrying ${args[1]}; the supervisor will plan it again.`);
         return 0;
       }
       case 'request-changes': {

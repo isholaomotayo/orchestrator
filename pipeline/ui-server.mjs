@@ -67,7 +67,7 @@ let lastActivityAt = Date.now();
 
 const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'reporter.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
-const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'gemini'];
+const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'antigravity'];
 const EVENTS_PER_STAGE = 250;
 
 // Project registry map: repoRoot -> project context object
@@ -735,7 +735,14 @@ const server = http.createServer((req, res) => {
     const guard = selfGuardError(project);
     if (guard) return json(res, { error: guard.error }, guard.code);
     readBody(req, (body) => {
-      if (!body?.featureId) return json(res, { error: 'expected { featureId }' }, 400);
+      if (!body?.featureId) {
+        try {
+          json(res, { ok: true, ...pool.approveMerge(project.paths, null, { via: 'dashboard', note: body?.note ?? null }) });
+        } catch (err) {
+          json(res, { error: err.message }, 409);
+        }
+        return;
+      }
       try {
         json(res, { ok: true, ...pool.approveMerge(project.paths, body.featureId, { via: 'dashboard', note: body.note ?? null }) });
       } catch (err) {

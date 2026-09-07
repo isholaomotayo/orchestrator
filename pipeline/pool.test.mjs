@@ -7,7 +7,7 @@ import { pipelinePaths } from './state.mjs';
 import { openDecision } from './attention.mjs';
 import {
   compile, readRoadmap, writeRoadmap, snapshot, writePrimaryMirror,
-  decide, approvePlan, approveMerge, requestChanges,
+  decide, approvePlan, approveMerge, requestChanges, retryFeature, landRoadmap,
   holdFeature, releaseFeature, skipFeature, addNote, pause, resume,
   listRunStates, supervisorState, queueFollowup, requestExtend,
   claim, poolConfig,
@@ -192,6 +192,54 @@ test('approving a plan resolves the open gate for that run', () => {
   openDecision(paths, { runId: 'r1', featureId: 'F1', kind: 'plan-approval', stage: 'planner', question: 'ok?', options: [] });
   approvePlan(paths, 'r1');
   assert.equal(snapshot(paths).needsDecision.length, 0);
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('retryFeature requeues a failed feature and keeps its baseRef', () => {
+  const paths = tmpPool();
+  compile(paths);
+  writeRoadmap(paths, setFeatureStatus(readRoadmap(paths), 'F1', 'failed', {
+    baseRef: 'abc123', tickets: [{ id: 'T1', status: 'failed', runId: 'r1' }], specRunId: 'plan-1',
+  }));
+  const res = retryFeature(paths, 'F1');
+  assert.equal(res.status, 'queued');
+  const feature = readRoadmap(paths).features[0];
+  assert.equal(feature.status, 'queued');
+  assert.equal(feature.baseRef, 'abc123');
+  assert.deepEqual(feature.tickets, []);
+  assert.equal(feature.specRunId, null);
+  assert.throws(() => retryFeature(paths, 'F1'), /not failed/i);
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('approve-merge without a feature id lands a review:end roadmap', () => {
+  const paths = tmpPool();
+  fs.writeFileSync(paths.roadmapMd, ROADMAP.replace('merge: pr', 'merge: pr\nreview: end'));
+  compile(paths);
+  assert.throws(() => approveMerge(paths, null), /not awaiting a final review/i);
+  let rm = readRoadmap(paths);
+  rm = { ...rm, roadmapStatus: 'awaiting_final_review' };
+  writeRoadmap(paths, rm);
+  const res = landRoadmap(paths, { by: 'operator', via: 'cli' });
+  assert.equal(res.roadmap, true);
+  assert.equal(readRoadmap(paths).roadmapStatus, 'merge_approved');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('a review:end roadmap that has accepted every feature is not done until it lands on base', () => {
+  const paths = tmpPool();
+  fs.writeFileSync(paths.roadmapMd, ROADMAP.replace('merge: pr', 'merge: pr\nreview: end'));
+  compile(paths);
+  let roadmap = readRoadmap(paths);
+  roadmap = setFeatureStatus(roadmap, 'F1', 'landed', {});
+  roadmap = setFeatureStatus(roadmap, 'F2', 'landed', {});
+  roadmap = { ...roadmap, roadmapStatus: 'awaiting_final_review' };
+  writeRoadmap(paths, roadmap);
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  const snap = snapshot(paths);
+  assert.ok(snap.needsDecision.some((d) => d.kind === 'roadmap-merge'));
+  const mirror = writePrimaryMirror(paths, { snap, runs: [], config: {} });
+  assert.equal(mirror.overall, 'awaiting_plan_approval');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 

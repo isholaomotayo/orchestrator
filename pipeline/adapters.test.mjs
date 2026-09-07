@@ -58,13 +58,44 @@ test('cursor withholds --force during a read-only audit', () => {
   assert.ok(rw.args.includes('--force'));
 });
 
-test('gemini withholds --yolo during a read-only audit', () => {
-  const ro = buildInvocation({ ...base, runner: 'gemini', readOnly: true });
+test('antigravity withholds --dangerously-skip-permissions during a read-only audit', () => {
+  const ro = buildInvocation({ ...base, runner: 'antigravity', readOnly: true });
+  assert.equal(ro.bin, 'agy');
   assert.equal(ro.readOnlyEnforced, false);
+  assert.ok(!ro.args.includes('--dangerously-skip-permissions'));
+  assert.ok(!ro.args.includes('--yolo'));
+
+  const rw = buildInvocation({ ...base, runner: 'antigravity', readOnly: false });
+  assert.equal(rw.bin, 'agy');
+  assert.ok(rw.args.includes('--dangerously-skip-permissions'));
+  assert.ok(!rw.args.includes('--yolo'));
+});
+
+test('gemini runner is a deprecated alias for antigravity (agy)', () => {
+  const ro = buildInvocation({ ...base, runner: 'gemini', readOnly: true });
+  const agy = buildInvocation({ ...base, runner: 'antigravity', readOnly: true });
+  assert.equal(ro.bin, 'agy');
+  assert.deepEqual(ro.args, agy.args);
   assert.ok(!ro.args.includes('--yolo'));
 
   const rw = buildInvocation({ ...base, runner: 'gemini', readOnly: false });
-  assert.ok(rw.args.includes('--yolo'));
+  assert.ok(rw.args.includes('--dangerously-skip-permissions'));
+});
+
+test('antigravity passes --effort and --model to agy', () => {
+  const inv = buildInvocation({
+    ...base, runner: 'antigravity', readOnly: false,
+    model: 'gemini-3.1-pro', effort: 'high',
+  });
+  assert.ok(inv.args.includes('--model'));
+  assert.equal(inv.args[inv.args.indexOf('--model') + 1], 'gemini-3.1-pro');
+  assert.ok(inv.args.includes('--effort'));
+  assert.equal(inv.args[inv.args.indexOf('--effort') + 1], 'high');
+
+  const collapsed = buildInvocation({
+    ...base, runner: 'antigravity', readOnly: false, effort: 'xhigh',
+  });
+  assert.equal(collapsed.args[collapsed.args.indexOf('--effort') + 1], 'high');
 });
 
 test('unknown runner without a custom definition throws', () => {

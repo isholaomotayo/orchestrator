@@ -19,6 +19,8 @@ const CHAT_ENV_SIGNALS = [
 // Canonical host-client names plus the aliases instruction files might pass.
 const HOST_CLIENT_ALIASES = {
   agy: 'antigravity',
+  // Gemini CLI IDE was replaced by Antigravity.
+  gemini: 'antigravity',
   'claude-code': 'claude',
   'cursor-agent': 'cursor',
 };
@@ -51,7 +53,7 @@ export function detectHostClient({ env = process.env, argv = [] } = {}) {
   if (env.CURSOR_AGENT === '1' || env.CURSOR_TRACE_ID) return 'cursor';
   if (env.CLAUDE_CODE === '1' || env.CLAUDECODE) return 'claude';
   if (env.CODEX_IN_IDE === '1') return 'codex';
-  if (env.GEMINI_CLI_IDE === '1') return 'gemini';
+  if (env.GEMINI_CLI_IDE === '1') return 'antigravity';
   if (env.VSCODE_PID) return 'vscode';
   return null;
 }
@@ -132,22 +134,24 @@ function probeCodexAuth() {
   return res.status === 0 && /logged in/i.test(out);
 }
 
-function probeGeminiAuth() {
-  if (!binExists('gemini')) return false;
-  const res = spawnSync('gemini', ['-p', 'ok'], { encoding: 'utf8', timeout: 8000, input: '' });
+function probeAntigravityAuth() {
+  if (!binExists('agy')) return false;
+  const res = spawnSync('agy', ['-p', 'ok'], { encoding: 'utf8', timeout: 8000, input: '' });
   const out = `${res.stdout}\n${res.stderr}`;
-  return res.status === 0 && !/not authenticated|login required|sign in/i.test(out);
+  return res.status === 0 && !/authentication required|not authenticated|login required|sign in/i.test(out);
 }
 
 const AUTH_PROBES = {
   claude: probeClaudeAuth,
   cursor: probeCursorAuth,
   codex: probeCodexAuth,
-  gemini: probeGeminiAuth,
+  antigravity: probeAntigravityAuth,
+  // Deprecated alias — same binary and credentials as antigravity.
+  gemini: probeAntigravityAuth,
 };
 
 /** First CLI runner on PATH that passes an auth probe (CLI mode only). */
-export function firstAuthenticatedRunner(order = ['claude', 'cursor', 'codex', 'gemini']) {
+export function firstAuthenticatedRunner(order = ['claude', 'cursor', 'codex', 'antigravity']) {
   for (const name of order) {
     const probe = AUTH_PROBES[name];
     if (probe?.()) return name;

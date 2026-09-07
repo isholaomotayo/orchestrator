@@ -1,7 +1,7 @@
 // Runner-independent integrity checks.
 //
 // buildInvocation can only constrain runners whose CLI exposes a permission
-// model (claude, codex). cursor-agent and gemini get a best-effort constraint at
+// model (claude, codex). cursor-agent and agy (Antigravity) get a best-effort constraint at
 // most, and a custom runner gets none. These checks close that gap after the
 // fact: hash what a stage was not supposed to touch, compare once it exits, and
 // invalidate the stage if the bytes moved. That covers every runner, including

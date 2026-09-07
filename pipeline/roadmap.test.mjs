@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseFrontmatter, parseRoadmapMd, compileRoadmap,
-  orderFeatures, nextFeature, setFeatureStatus, FEATURE_STATUSES, POOL_RUNNERS,
+  orderFeatures, nextFeature, setFeatureStatus, featureBriefContext, FEATURE_STATUSES, POOL_RUNNERS,
 } from './roadmap.mjs';
 
 const ROADMAP = `---
@@ -62,6 +62,7 @@ test('parseRoadmapMd reads features, descriptions, acceptance and dependencies',
   assert.equal(roadmap.title, 'Billing v2');
   assert.equal(roadmap.base, 'main');
   assert.equal(roadmap.merge, 'pr');
+  assert.equal(roadmap.review, 'feature');
   assert.equal(roadmap.features.length, 2);
   const [f1, f2] = roadmap.features;
   assert.equal(f1.id, 'F1');
@@ -72,6 +73,17 @@ test('parseRoadmapMd reads features, descriptions, acceptance and dependencies',
   assert.match(f1.description, /Invoice and LineItem tables/);
   assert.equal(f1.acceptance.length, 2);
   assert.deepEqual(f2.dependsOn, ['F1']);
+});
+
+test('parseRoadmapMd accepts review: end', () => {
+  const { roadmap, errors } = parseRoadmapMd(ROADMAP.replace('merge: pr', 'merge: pr\nreview: end'));
+  assert.deepEqual(errors, []);
+  assert.equal(roadmap.review, 'end');
+});
+
+test('an unknown review gate is rejected with a line number', () => {
+  const { errors } = parseRoadmapMd(ROADMAP.replace('merge: pr', 'merge: pr\nreview: someday'));
+  assert.ok(errors.some((e) => /review/i.test(e.message) && /someday/.test(e.message)));
 });
 
 test('a feature with no runner bullet defaults to auto', () => {
@@ -142,6 +154,14 @@ test('a dependency cycle throws rather than deadlocking the pool', () => {
 
 // ---- compile ---------------------------------------------------------------
 
+test('compileRoadmap records a working branch and review: end', () => {
+  const { roadmap } = parseRoadmapMd(ROADMAP.replace('merge: pr', 'merge: pr\nreview: end'));
+  const json = compileRoadmap(roadmap, null);
+  assert.equal(json.review, 'end');
+  assert.equal(json.roadmapStatus, 'running');
+  assert.equal(json.workingBranch, 'pipeline/roadmap/billing-v2');
+});
+
 test('compileRoadmap produces a versioned document with queued features', () => {
   const { roadmap } = parseRoadmapMd(ROADMAP);
   const json = compileRoadmap(roadmap, null, { sourceSha256: 'abc' });
@@ -189,6 +209,17 @@ test('a feature removed from the source is retained as an orphan, never silently
 });
 
 // ---- scheduling ------------------------------------------------------------
+
+test('featureBriefContext lists landed and remaining siblings', () => {
+  const { roadmap } = parseRoadmapMd(ROADMAP);
+  let json = compileRoadmap(roadmap, null);
+  json = setFeatureStatus(json, 'F1', 'landed', {});
+  const ctx = featureBriefContext(json, json.features[1]);
+  assert.equal(ctx.roadmapTitle, 'Billing v2');
+  assert.deepEqual(ctx.landed, ['F1: Invoice data model']);
+  assert.deepEqual(ctx.dependsOn, ['F1: Invoice data model (landed)']);
+  assert.deepEqual(ctx.remaining, []);
+});
 
 test('nextFeature is the first queued feature whose dependencies have landed', () => {
   const { roadmap } = parseRoadmapMd(ROADMAP);

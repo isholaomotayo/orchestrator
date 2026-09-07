@@ -50,6 +50,10 @@ test('host runner with a known hostClient uses that ecosystem profile', () => {
   assert.equal(antigravity.stages.coder, 'gemini-3.6-flash');
   assert.equal(antigravity.stages.handoff, 'gemini-3.5-flash');
 
+  // Deprecated Gemini CLI host-client name maps onto the Antigravity profile.
+  const geminiHost = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'gemini' });
+  assert.equal(geminiHost.stages.planner, 'gemini-3.1-pro');
+
   const claude = resolveModelProfile({ config, runner: 'host', profile: 'auto', hostClient: 'claude' });
   assert.equal(claude.stages.planner, 'opus-5');
   assert.equal(claude.stages.coder, 'sonnet-5');
@@ -120,7 +124,7 @@ test('modelForStage reads the resolved stage map', () => {
 });
 
 test('auto profiles include designer and handoff for every runner', () => {
-  for (const runner of ['host', 'claude', 'cursor', 'codex', 'gemini']) {
+  for (const runner of ['host', 'claude', 'cursor', 'codex', 'gemini', 'antigravity']) {
     const m = resolveModelProfile({ config: {}, runner, profile: 'auto' });
     assert.ok(m.stages.designer, `${runner} missing designer`);
     assert.ok(m.stages.handoff, `${runner} missing handoff`);

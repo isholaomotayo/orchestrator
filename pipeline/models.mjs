@@ -59,7 +59,7 @@ export const MODEL_FAMILIES = Object.fromEntries(
 //          model id there rather than as a separate flag (see CURSOR_EFFORT_IDS).
 // codex:   identity pass-through — `codex exec --model` accepts provider names
 //          directly and publishes no enumerable list to map against.
-// gemini:  identity pass-through.
+// antigravity / gemini (alias): identity pass-through.
 const RUNNER_MODEL_IDS = {
   claude: {
     'opus-5': 'opus',
@@ -224,7 +224,7 @@ const HOST_CLIENT_PROFILE_KEYS = {
   'claude-code': 'claude',
   cursor: 'cursor',
   codex: 'codex',
-  gemini: 'gemini',
+  gemini: 'antigravity',
   antigravity: 'antigravity',
 };
 

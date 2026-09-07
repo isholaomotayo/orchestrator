@@ -358,3 +358,148 @@ test('a mixed feature runs one ticket on a CLI and the other on host, landing bo
   const finalMeta = JSON.parse(fs.readFileSync(pipelinePaths(root, { runId: hostTicket.ticket.runId }).runMeta, 'utf8'));
   assert.equal(finalMeta.pid, null);
 });
+
+test('review: end accepts features onto a working branch and waits for a final land', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(root, '.pipeline', 'roadmap.md'), ROADMAP.replace('merge: local-only', 'merge: local-only\nreview: end'));
+  git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'review end');
+
+  const paths = pipelinePaths(root);
+  const compiled = pool.compile(paths);
+  assert.equal(compiled.ok, true, JSON.stringify(compiled.errors));
+  assert.equal(compiled.roadmap.review, 'end');
+
+  const sup = createSupervisor({ repoRoot: root });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+
+  const f1 = await until(sup, (rm) => rm.features[0].status === 'landed', { limit: 500 });
+  const init = git(root, 'rev-parse', 'HEAD');
+  assert.equal(git(root, 'rev-parse', 'main'), init, 'review: end must not touch the base when F1 is accepted');
+  assert.equal(f1.features[0].status, 'landed');
+  const working = f1.workingBranch;
+  assert.ok(working, 'a working branch was recorded');
+  const workingFiles = git(root, 'ls-tree', '-r', '--name-only', working).split('\n');
+  assert.ok(workingFiles.includes('alpha.mjs') && workingFiles.includes('beta.mjs'), 'accepted work is on the working branch');
+
+  const f2started = await until(sup, (rm) => rm.features[1].status !== 'queued');
+  assert.equal(f2started.features[1].baseRef, f1.features[0].landedSha, 'F2 starts from the accepted F1 sha');
+
+  const both = await until(sup, (rm) => rm.features[1].status === 'landed' && rm.roadmapStatus === 'awaiting_final_review', { limit: 600 });
+  assert.equal(git(root, 'rev-parse', 'main'), init, 'the base is still untouched after every feature is accepted');
+  assert.equal(both.roadmapStatus, 'awaiting_final_review');
+  const decisions = pool.openDecisions(paths);
+  assert.ok(decisions.some((d) => d.kind === 'roadmap-merge'), 'the operator was asked to land the roadmap');
+
+  pool.landRoadmap(paths, { by: 'test', via: 'cli' });
+  await until(sup, (rm) => rm.roadmapStatus === 'landed');
+  assert.notEqual(git(root, 'rev-parse', 'main'), init, 'the working branch reached the base after the final land');
+  const mainFiles = git(root, 'ls-tree', '-r', '--name-only', 'main').split('\n');
+  assert.ok(mainFiles.includes('alpha.mjs') && mainFiles.includes('beta.mjs'));
+});
+
+test('MAX_CYCLES auto-extends once without an operator verb, then stops asking', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+
+  const spawned = [];
+  const sup = createSupervisor({
+    repoRoot: root,
+    spawn: (_cmd, args) => {
+      spawned.push(args);
+      return { pid: 4242, unref() {} };
+    },
+  });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+
+  const { setFeatureStatus } = await import('./roadmap.mjs');
+  const runId = '20260907T000000Z-F1-T1-deadbeef';
+  let rm = pool.readRoadmap(paths);
+  rm = setFeatureStatus(rm, 'F1', 'executing', {
+    specRunId: 'plan-1',
+    tickets: [{ id: 'T1', title: 't', runId, status: 'running' }],
+    baseRef: git(root, 'rev-parse', 'HEAD'),
+  });
+  pool.writeRoadmap(paths, rm);
+
+  const rp = pipelinePaths(root, { runId });
+  fs.mkdirSync(rp.dir, { recursive: true });
+  fs.writeFileSync(rp.status, JSON.stringify({ overall: 'halted', haltReason: 'MAX_CYCLES', featureId: 'F1' }));
+  fs.writeFileSync(rp.runMeta, JSON.stringify({
+    runId, featureId: 'F1', ticketId: 'T1', kind: 'ticket', runner: 'fake',
+  }));
+
+  sup.tick();
+  assert.ok(spawned.some((args) => args.includes('--extend')), 'the supervisor auto-extended');
+  assert.equal(pool.readRoadmap(paths).features[0].status, 'executing', 'the feature was not failed on the auto-resume tick');
+  const meta = JSON.parse(fs.readFileSync(rp.runMeta, 'utf8'));
+  assert.equal(meta.autoCycleExtends, 1);
+
+  spawned.length = 0;
+  sup.tick();
+  assert.equal(spawned.filter((args) => args.includes('--extend')).length, 0, 'MAX_CYCLES is not auto-extended a second time');
+  assert.equal(pool.readRoadmap(paths).features[0].status, 'failed');
+});
+
+test('pool retry requeues a failed feature so the supervisor plans it again', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+  const { setFeatureStatus } = await import('./roadmap.mjs');
+  let rm = pool.readRoadmap(paths);
+  rm = setFeatureStatus(rm, 'F1', 'failed', { baseRef: git(root, 'rev-parse', 'HEAD'), specRunId: 'old-plan' });
+  pool.writeRoadmap(paths, rm);
+
+  pool.retryFeature(paths, 'F1');
+  assert.equal(pool.readRoadmap(paths).features[0].status, 'queued');
+
+  const sup = createSupervisor({ repoRoot: root });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  await until(sup, (r) => r.features[0].status === 'planning' || r.features[0].status === 'executing');
+  const after = pool.readRoadmap(paths);
+  assert.notEqual(after.features[0].specRunId, 'old-plan');
+  assert.ok(['planning', 'executing'].includes(after.features[0].status));
+});
+
+test('a resolved merge-conflict rerun-ticket leaves integrating', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+  const { setFeatureStatus } = await import('./roadmap.mjs');
+  const { openDecision } = await import('./attention.mjs');
+
+  const specRunId = '20260907T000000Z-F1-plan-cafe';
+  const specPaths = pipelinePaths(root, { runId: specRunId });
+  fs.mkdirSync(specPaths.dir, { recursive: true });
+  fs.writeFileSync(specPaths.specs, '# Specification\n\n## 3. Tracer-Bullet Tickets\n### Ticket 1: alpha\n- **Files:** alpha.mjs\n');
+
+  let rm = pool.readRoadmap(paths);
+  rm = setFeatureStatus(rm, 'F1', 'integrating', {
+    specRunId,
+    tickets: [
+      { id: 'T1', title: 'alpha', runId: 't1', status: 'committed' },
+      { id: 'T2', title: 'beta', runId: 't2', status: 'committed' },
+    ],
+    conflict: { ticketId: 'T1' },
+    integrationRunId: 'int-1',
+  });
+  pool.writeRoadmap(paths, rm);
+  const decision = openDecision(paths, {
+    runId: 'int-1', featureId: 'F1', kind: 'merge-conflict', stage: 'coder',
+    question: 'resolve?', options: ['rerun-ticket', 'drop-ticket'], recommended: 'rerun-ticket',
+  });
+  pool.decide(paths, decision.id, 'rerun-ticket');
+
+  const sup = createSupervisor({ repoRoot: root });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  sup.tick();
+  const after = pool.readRoadmap(paths);
+  assert.notEqual(after.features[0].status, 'integrating', 'the supervisor acted on the decision');
+  assert.equal(after.features[0].status, 'executing');
+  assert.ok(['queued', 'running'].includes(after.features[0].tickets.find((tk) => tk.id === 'T1').status));
+});
+
