@@ -254,3 +254,58 @@ test('every POST under /api is guarded, including ones added later', withServer(
     assert.equal(res.status, 403, `${route} was not guarded`);
   }
 }));
+
+test('a note targets the selected run, not the project root', withServer(async ({ post, paths, root }) => {
+  const r2 = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(r2.dir, { recursive: true });
+  fs.writeFileSync(r2.status, JSON.stringify({
+    overall: 'awaiting_chat', awaitingStage: 'planner',
+    stages: [{ name: 'planner', status: 'awaiting_host' }],
+  }));
+  const res = await post('/api/followup', { stage: 'planner', text: 'keep the API small', run: 'r2' });
+  assert.equal(res.status, 200, await res.text());
+  assert.match(fs.readFileSync(path.join(r2.dir, 'followups', 'planner.txt'), 'utf8'), /keep the API small/);
+  assert.ok(!fs.existsSync(path.join(paths.dir, 'followups', 'planner.txt')), 'must not write the root followups');
+  const events = fs.readFileSync(r2.events, 'utf8');
+  assert.match(events, /keep the API small/);
+  assert.match(events, /"kind":"note"/);
+}));
+
+test('a note cannot target an archived run, a mismatched stage, or a path-traversal id', withServer(async ({ post, root }) => {
+  const archived = await post('/api/followup', { stage: 'planner', text: 'nope', run: 'r1' });
+  assert.equal(archived.status, 409);
+  const r2 = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(r2.dir, { recursive: true });
+  fs.writeFileSync(r2.status, JSON.stringify({
+    overall: 'awaiting_chat', awaitingStage: 'planner',
+    stages: [{ name: 'planner', status: 'awaiting_host' }],
+  }));
+  const mismatch = await post('/api/followup', { stage: 'coder', text: 'wrong stage', run: 'r2' });
+  assert.equal(mismatch.status, 409);
+  const traversal = await post('/api/followup', { stage: 'planner', text: 'x', run: '../secret' });
+  assert.equal(traversal.status, 404);
+}));
+
+test('continue for a selected pool run writes --run-id into that run directory', withServer(async ({ post, root }) => {
+  const r2 = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(r2.dir, { recursive: true });
+  fs.writeFileSync(r2.status, JSON.stringify({
+    overall: 'awaiting_chat', awaitingStage: 'planner',
+    stages: [{ name: 'planner', status: 'awaiting_host' }],
+  }));
+  fs.writeFileSync(r2.specs, `# TECHNICAL SPECIFICATION: Thing
+## 2. Technical Specification (PRD)
+- **Objective:** ship the thing
+### Edge Cases & Failure Modes
+| # | Case | Trigger | Required behavior | Proven by |
+| E1 | empty input | \`[]\` | returns 0 | sums_empty |
+## 3. Tracer-Bullet Tickets
+### Ticket 1: do it
+`.padEnd(400, '\n- filler line'));
+  const res = await post('/api/continue', { run: 'r2' });
+  assert.equal(res.status, 200, await res.text());
+  const out = fs.readFileSync(path.join(r2.dir, 'orchestrator.out'), 'utf8');
+  assert.match(out, /--run-id r2/);
+  assert.match(out, /--continue/);
+  assert.ok(!fs.existsSync(path.join(root, '.pipeline', 'orchestrator.out')));
+}));

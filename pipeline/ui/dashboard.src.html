@@ -217,11 +217,24 @@
   .stagebtn { display:flex; gap:7px; align-items:center; border:1px solid var(--border);
     background:var(--surface); border-radius:999px; padding:4px 12px 4px 4px; cursor:pointer; font-size:12.5px; }
   .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; background:var(--surface-hover); }
+  /* A run view pins the chrome and virtualizes the transcript so a live
+     stream cannot rebuild (or even layout) the whole page on every token. */
+  .panel.is-run { display:flex; flex-direction:column; overflow:hidden; padding-bottom:16px; }
+  .panel.is-run .wrap { flex:1; min-height:0; width:100%; display:flex; flex-direction:column; }
+  .feed-shell { flex:1; min-height:140px; overflow-y:auto; margin:0 0 8px; }
   .feed { display:flex; flex-direction:column; gap:9px; }
   .block { background:var(--panel); border:1px solid var(--border); border-radius:10px;
     padding:11px 13px; content-visibility:auto; contain-intrinsic-size:auto 60px; }
   .block.sys { color:var(--muted); font-size:12.5px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
   .block.err { border-color:var(--halt-border); color:var(--red-text); }
+  .block.note { border-color:var(--focus); background:var(--surface-hover); }
+  .block.card { font-size:12.5px; color:var(--muted); }
+  .block .role { display:block; font-size:10.5px; font-weight:700; letter-spacing:.06em;
+    text-transform:uppercase; color:var(--faint); margin-bottom:4px; }
+  .block .note-state { font-size:11px; color:var(--muted); margin-top:4px; }
+  details.diagnostics { margin:14px 0 8px; color:var(--muted); font-size:12.5px; }
+  details.diagnostics summary { cursor:pointer; }
+  details.diagnostics pre { margin-top:8px; }
   .divider { display:flex; align-items:center; gap:8px; color:var(--faint); font-size:10.5px;
     text-transform:uppercase; letter-spacing:.07em; font-weight:700; margin-top:6px; }
   .divider::after { content:""; flex:1; height:1px; background:var(--border); }

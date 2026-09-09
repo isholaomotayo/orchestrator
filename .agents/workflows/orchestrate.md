@@ -29,7 +29,7 @@ You are an **Antigravity chat session**. When this workflow triggers, the pipeli
 5. **Chat handoff loop** — while `.pipeline/stage-handoff.json` exists:
    - Read the handoff and its `promptFile`.
    - If `handoff.model` names a model available in Antigravity, use it; otherwise use your active chat model. Either way, record the model actually used as `"actualModel"` in `stage-handoff.json`.
-   - Complete the stage in THIS chat (write the required artifact). While working, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box queues live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. Apply anything found immediately, then delete the file. Then run:
+   - Complete the stage in THIS chat (write the required artifact). While working, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box queues live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. Apply anything found immediately, then delete the file. Publish concise progress with `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one). Then run:
      ```bash
      bash .pipeline/orchestrate.sh --continue
      ```

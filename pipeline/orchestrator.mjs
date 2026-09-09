@@ -13,7 +13,7 @@ import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile } from './state.mjs';
 import { runChecks } from './checker.mjs';
-import { runAgent, detectRunner } from './adapters.mjs';
+import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
@@ -152,11 +152,8 @@ if (isOrchestratorSourceRepo(repoRoot) && !selfTargetAllowed({ env: process.env,
 
 const invocation = detectInvocationMode({ env: process.env, argv: process.argv });
 const invocationMode = args.mode === 'chat' || args.mode === 'cli' ? args.mode : invocation.mode;
-// The IDE/chat client hosting this run (antigravity, cursor, claude, …) — only
-// meaningful in chat mode; used for attribution and environment-aware models.
-const hostClient = invocationMode === 'chat'
-  ? (normalizeHostClient(args.hostClient) || detectHostClient({ env: process.env, argv: process.argv }))
-  : null;
+const detectedHostClient = normalizeHostClient(args.hostClient) || detectHostClient({ env: process.env, argv: process.argv });
+let hostClient = invocationMode === 'chat' ? detectedHostClient : null;
 
 // ---- Guardrail 3: mutex lock -----------------------------------------------
 // Acquire atomically with the 'wx' (exclusive create) flag so two orchestrators
@@ -289,9 +286,12 @@ if (args.continue) {
   status.awaitingStage = null;
   runner = status.runner || 'host';
   models = status.models || null;
-  // Backfill attribution: legacy runs (or runs started outside the IDE) learn
-  // their host client on the first --continue issued from the IDE chat.
-  if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
+  if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
+    status.executionSurface = 'host-handoff';
+    status.invocationMode = 'chat';
+    if (!status.hostClient) status.hostClient = detectedHostClient;
+    hostClient = status.hostClient;
+  }
   loadWorkCwdFromStatus();
   loadHistory();
   if (!planApprovalPending) {
@@ -315,7 +315,12 @@ if (args.continue) {
     ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
-    if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
+    if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
+      status.executionSurface = 'host-handoff';
+      status.invocationMode = 'chat';
+      if (!status.hostClient) status.hostClient = detectedHostClient;
+      hostClient = status.hostClient;
+    }
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles)${dashboardMsg}`);
@@ -340,7 +345,12 @@ if (args.continue) {
     ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
-    if (!status.hostClient && runner === 'host' && hostClient) status.hostClient = hostClient;
+    if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
+      status.executionSurface = 'host-handoff';
+      status.invocationMode = 'chat';
+      if (!status.hostClient) status.hostClient = detectedHostClient;
+      hostClient = status.hostClient;
+    }
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming interrupted/stale run${dashboardMsg}`);
@@ -361,6 +371,18 @@ if (args.continue) {
       console.error(`[Orchestrator] A run is already active, parked at a chat handoff (overall=${prior.overall}${prior.awaitingStage ? `, awaitingStage=${prior.awaitingStage}` : ''}). Refusing to start a new run over it. Complete the pending stage and run --continue, or --resume/--cancel it first.`);
       haltAndExit(1);
     }
+  }
+  if (!args.runId) {
+    try {
+      for (const id of fs.readdirSync(paths.runs)) {
+        let sibling = null;
+        try { sibling = JSON.parse(fs.readFileSync(path.join(paths.runs, id, 'status.json'), 'utf8')); } catch { continue; }
+        if (sibling && (sibling.overall === 'awaiting_chat' || sibling.overall === 'awaiting_plan_approval')) {
+          console.error(`[Orchestrator] A pool run (${id}) is already parked at a chat handoff. Refusing to start a new run over it. Complete it with --continue --run-id ${id}, or drain the pool first.`);
+          haltAndExit(1);
+        }
+      }
+    } catch { /* no runs directory yet */ }
   }
 
   // ---- Guardrail 1: isolate the workspace in a git worktree --------------------
@@ -409,6 +431,8 @@ if (args.continue) {
     console.error(`[Orchestrator] ${err.message}`);
     haltAndExit(2);
   }
+  const executionSurface = resolveExecutionSurface({ runner, invocationMode });
+  if (executionSurface === 'host-handoff') hostClient = hostClient || detectedHostClient;
   try {
     models = resolveModelsForRun(runner);
   } catch (err) {
@@ -422,15 +446,16 @@ if (args.continue) {
     reviewPanel: args.reviewPanel || config.reviewPanel === true,
     report: args.report || config.reportStage === true,
   };
-  if (runFlags.reviewPanel && invocationMode === 'chat') {
+  if (runFlags.reviewPanel && executionSurface === 'host-handoff') {
     console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
   }
   status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff, reporter: runFlags.report });
   status.flags = runFlags;
   status.planApproved = false;
-  status.invocationMode = invocationMode;
+  status.executionSurface = executionSurface;
+  status.invocationMode = executionSurface === 'host-handoff' ? 'chat' : invocationMode;
   status.runner = runner;
-  status.hostClient = runner === 'host' ? hostClient : null;
+  status.hostClient = executionSurface === 'host-handoff' ? hostClient : null;
   status.models = models;
   status.sandbox = args.sandbox;
   status.runId = args.runId;
@@ -450,8 +475,9 @@ if (args.continue) {
     // exit at its first stage handoff — recording its own transient pid would
     // read as "still running" long after it is gone. There is never a
     // process to point to for a host run, so it is always null.
-    pid: runner === 'host' ? null : process.pid,
+    pid: executionSurface === 'host-handoff' ? null : process.pid,
     phase: 'running',
+    executionSurface,
   });
   // Capture the commit each repo starts from, before any agent runs, so the
   // review diff can be scoped to this run even after agents commit their work.
@@ -479,7 +505,7 @@ if (args.continue) {
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, hostClient: status.hostClient || undefined, models, flags: runFlags });
-  const modeLabel = invocationMode === 'chat'
+  const modeLabel = executionSurface === 'host-handoff'
     ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
     : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}@${models.effort?.[s] || '-'}`).join(', ') : '';
@@ -517,11 +543,12 @@ function finalize() {
     writeRunMeta(paths, { phase: 'failed' });
   }
 }
-function halt(stageName, reason, detail) {
+function halt(stageName, reason, detail, extra = {}) {
   console.error(`\n[HALT] ${reason}: ${detail}`);
   setStage(stageName, { status: reason === 'REGRESSION_BLOCKED' ? 'blocked' : 'failed', endedAt: new Date().toISOString(), detail });
   status.overall = 'halted';
   status.haltReason = reason;
+  status.haltTransient = extra.haltTransient === true || reason === 'MAX_CYCLES';
   if (writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot })) {
     console.error(`[HALT] Handoff document written: ${path.relative(repoRoot, paths.handoffDoc)}`);
   }
@@ -734,16 +761,17 @@ function enforceHandoffIntegrity() {
 // Turn a failed invocation into the most actionable halt we can. Auth and
 // timeout get their own message because the generic "exited with code N" sends
 // people to a log that says nothing useful.
-function failStage(name, res, logTail, { reason, attempts }) {
+function failStage(name, res, logTail, { reason, attempts, transient = false }) {
   const tried = attempts > 1 ? ` after ${attempts} attempts` : '';
+  const haltOpts = { haltTransient: !!transient };
   if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
-    halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`);
+    halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`, { haltTransient: false });
   }
   if (res.timedOut) {
-    halt(name, 'AGENT_ERROR', `${runner} exceeded the ${Math.round(config.agentTimeoutMs / 60000)}-minute agent timeout${tried} and was killed. Raise "agentTimeoutMs" in .pipeline/config.json, or narrow the task — inspect .pipeline/logs/${name}.log for where it stalled.`);
+    halt(name, 'AGENT_ERROR', `${runner} exceeded the ${Math.round(config.agentTimeoutMs / 60000)}-minute agent timeout${tried} and was killed. Raise "agentTimeoutMs" in .pipeline/config.json, or narrow the task — inspect .pipeline/logs/${name}.log for where it stalled.`, haltOpts);
   }
-  if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed${tried}: ${res.error}`);
-  halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}${tried} (${reason}). Inspect .pipeline/logs/${name}.log`);
+  if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed${tried}: ${res.error}`, haltOpts);
+  halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}${tried} (${reason}). Inspect .pipeline/logs/${name}.log`, haltOpts);
 }
 
 // Post-stage audit. A stage that rewrote the control plane, or a "read-only"
@@ -864,7 +892,7 @@ async function runCoderChecksAfterInitialCycle(cycle) {
   compactChangesArtifact();
   console.log('[Checker] Running verification (test / lint / typecheck)...');
   appendEvent(paths, { stage: 'coder', cycle, type: 'checks_start' });
-  const check = runChecks({ cwd: workCwd, config, paths });
+  const check = runChecks({ cwd: workCwd, config, paths, stage: 'coder' });
   console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
   if (evaluateChecks('coder', 'coder', check) === 'pass') return 'pass';
   if (cycle >= status.limits.coderMax) return 'exhausted';
@@ -898,7 +926,7 @@ async function invokePostTesterCoderCycle(cycle) {
 async function runCoderChecksAfterPostTesterCycle(cycle) {
   requireArtifact('coder', paths.changes);
   compactChangesArtifact();
-  const check = runChecks({ cwd: workCwd, config, paths });
+  const check = runChecks({ cwd: workCwd, config, paths, stage: 'coder' });
   console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
   if (evaluateChecks('postTester', 'tester', check) === 'pass') return 'pass';
   const totalMax = status.limits.coderMax + status.limits.postTesterMax;
@@ -972,7 +1000,7 @@ async function runTesterStage(taskOverride = null, chatContext = {}) {
   requireArtifact('tester', paths.testSuite);
 
   console.log('[Checker] Re-running full suite with the new tests...');
-  let check = runChecks({ cwd: workCwd, config, paths });
+  let check = runChecks({ cwd: workCwd, config, paths, stage: 'tester' });
   console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
   if (!check.isPassed) {
     history.postTester.push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: false, at: new Date().toISOString() });
@@ -1033,7 +1061,7 @@ function reviewerTask(extra = '') {
 // a chat host completes one stage at a time, so a panel there would mean three
 // sequential round-trips for the human.
 function panelEnabled() {
-  return (status.flags?.reviewPanel === true) && status.invocationMode !== 'chat';
+  return (status.flags?.reviewPanel === true) && !isHostSurface(status);
 }
 
 async function runReviewPanel(pass) {
@@ -1488,7 +1516,7 @@ async function dispatchResumeStep(step, context = {}) {
         haltMaxCycles('postTester', 'tester', status.limits.postTesterMax);
         return;
       }
-      if (status.invocationMode === 'chat') {
+      if (isHostSurface(status)) {
         await invokePostTesterCoderCycle(cycle + 1);
       } else {
         const green = await runPostTesterLoop(cycle + 1);
@@ -1512,7 +1540,7 @@ async function dispatchResumeStep(step, context = {}) {
       haltMaxCycles('coder', 'coder', status.limits.coderMax);
       return;
     }
-    if (status.invocationMode === 'chat') {
+    if (isHostSurface(status)) {
       await invokeInitialCoderCycle(cycle + 1);
     } else {
       const green = await runInitialCoderLoop(cycle + 1);
@@ -1533,12 +1561,12 @@ async function dispatchResumeStep(step, context = {}) {
   if (step === 'after_tester') {
     requireArtifact('tester', paths.testSuite);
     console.log('[Checker] Re-running full suite with the new tests...');
-    let check = runChecks({ cwd: workCwd, config, paths });
+    let check = runChecks({ cwd: workCwd, config, paths, stage: 'tester' });
     console.log(`[Checker] ${check.isPassed ? 'PASS' : 'FAIL'} — ${check.passedCount} passed, ${check.failedCount} failed`);
     if (!check.isPassed) {
       history.postTester.push({ passedCount: check.passedCount, failedCount: check.failedCount, isPassed: false, at: new Date().toISOString() });
       saveHistory();
-      if (status.invocationMode === 'chat') {
+      if (isHostSurface(status)) {
         await invokePostTesterCoderCycle(status.limits.coderMax + 1);
         return;
       } else {

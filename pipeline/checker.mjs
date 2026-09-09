@@ -62,7 +62,7 @@ function fence(text, limit = 12000) {
   return '```\n' + (body || '(no output)') + '\n```';
 }
 
-export function runChecks({ cwd, config, paths }) {
+export function runChecks({ cwd, config, paths, stage = 'coder' }) {
   const results = {};
   for (const name of ['lint', 'typecheck', 'test']) {
     const cmd = config.checks[name];
@@ -70,10 +70,10 @@ export function runChecks({ cwd, config, paths }) {
       results[name] = { skipped: true, ok: true, output: '' };
       continue;
     }
-    appendEvent(paths, { stage: 'checker', type: 'check_start', check: name, cmd });
+    appendEvent(paths, { stage, type: 'check_start', check: name, cmd });
     results[name] = runCommand(cmd, cwd, config.checkTimeoutMs);
     appendEvent(paths, {
-      stage: 'checker',
+      stage,
       type: 'check_end',
       check: name,
       ok: results[name].ok,

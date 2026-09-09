@@ -41,7 +41,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 7. **Chat handoff loop** (while `.pipeline/stage-handoff.json` exists):
    - Read the handoff + stage prompt file.
    - If `handoff.model` is set, **switch to that model in Cursor** before completing the stage.
-   - Complete the stage (write the required artifact). While doing so, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box writes live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. If it has content, apply it immediately and delete the file.
+   - Complete the stage (write the required artifact). While doing so, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box writes live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. If it has content, apply it immediately and delete the file. Publish concise progress with `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one) so the dashboard transcript stays current.
    - Run `bash .pipeline/orchestrate.sh --continue`
    - Repeat until done or halted.
 8. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.

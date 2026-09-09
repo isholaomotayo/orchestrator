@@ -45,6 +45,20 @@ test('missing or unreadable state is unknown and is never promoted to busy', () 
   assert.equal(classifyRun({ status: null, pidAlive: true, lastOutputAt: null, now }, T), 'unknown');
 });
 
+test('a spawned worker with a live pid and no status yet is starting (busy)', () => {
+  assert.equal(classifyRun({
+    status: null, pidAlive: true, lastOutputAt: null, now,
+    meta: { phase: 'spawned', runner: 'cursor' },
+  }, T), 'busy');
+});
+
+test('a spawned worker whose pid is already gone and never wrote status is dead', () => {
+  assert.equal(classifyRun({
+    status: null, pidAlive: false, lastOutputAt: null, now,
+    meta: { phase: 'spawned', runner: 'cursor' },
+  }, T), 'dead');
+});
+
 test('a run parked at a gate is awaiting, not busy and not dead', () => {
   const state = classifyRun({
     status: { overall: 'awaiting_plan_approval' }, pidAlive: false,

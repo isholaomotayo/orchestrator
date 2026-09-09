@@ -381,3 +381,23 @@ test('an informational note does not become the run current verb', () => {
   assert.equal(run.verb, 'done');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
+
+test('the primary mirror reports awaiting_chat when a worker is parked for a host handoff', () => {
+  const paths = tmpPool();
+  compile(paths);
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  fakeRun(paths, 'r1', { overall: 'awaiting_chat', verb: 'needs-decision', stage: 'planner' });
+  const rp = pipelinePaths(paths.root, { runId: 'r1' });
+  const status = JSON.parse(fs.readFileSync(rp.status, 'utf8'));
+  status.awaitingStage = 'planner';
+  status.invocationMode = 'chat';
+  status.executionSurface = 'host-handoff';
+  status.runner = 'host';
+  fs.writeFileSync(rp.status, JSON.stringify(status));
+  const snap = snapshot(paths);
+  const mirror = writePrimaryMirror(paths, { snap, runs: listRunStates(paths), config: {} });
+  assert.equal(mirror.overall, 'awaiting_chat');
+  assert.equal(mirror.awaitingStage, 'planner');
+  assert.equal(mirror.invocationMode, 'chat');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});

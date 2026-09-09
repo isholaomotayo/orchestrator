@@ -7,6 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
 import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
+import { createStreamParser, hostEventCommand } from './events.mjs';
 
 export const RUNNER_BINS = {
   claude: 'claude',
@@ -47,6 +48,17 @@ function buildGoogleCliInvocation({ combined, readOnly, modelId, level }) {
 export function resolvePoolRunner(requested) {
   if (!requested || requested === 'auto') return firstAuthenticatedRunner() || 'host';
   return requested;
+}
+
+/** How this run actually executes agent stages — independent of the CLI flag. */
+export function resolveExecutionSurface({ runner, invocationMode, executionSurface } = {}) {
+  if (executionSurface === 'host-handoff' || executionSurface === 'cli-subprocess') return executionSurface;
+  if (runner === 'host' || invocationMode === 'chat') return 'host-handoff';
+  return 'cli-subprocess';
+}
+
+export function isHostSurface(input = {}) {
+  return resolveExecutionSurface(input) === 'host-handoff';
 }
 
 // Preflight a resolved (non-auto) runner before the supervisor spawns anything
@@ -205,7 +217,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       if (!readOnly) args.push('--force');
       // No --effort flag: resolveModelId already selected the effort-tiered id.
       if (modelId) args.push('--model', modelId);
-      return { bin: 'cursor-agent', args, parse: 'jsonl-or-text', readOnlyEnforced: false };
+      return { bin: 'cursor-agent', args, parse: 'stream-json', readOnlyEnforced: false };
     }
     case 'codex': {
       // codex exec supports a hard read-only sandbox.
@@ -217,7 +229,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       // Effort is a config override rather than a flag on `codex exec`.
       if (level) args.push('-c', `model_reasoning_effort="${level}"`);
       args.push(combined);
-      return { bin: 'codex', args, parse: 'jsonl-or-text', readOnlyEnforced: !!readOnly };
+      return { bin: 'codex', args, parse: 'stream-json', readOnlyEnforced: !!readOnly };
     }
     case 'antigravity':
     case 'gemini':
@@ -261,61 +273,9 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     handoff.hostClient = hostClient;
     handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
   }
+  handoff.eventCommand = hostEventCommand({ runId: paths.runId, stage });
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
-}
-
-// Turn a claude stream-json event line into structured activity blocks the
-// dashboard can render (text paragraphs, file chips, command cards).
-function parseClaudeEvent(line) {
-  let ev;
-  try { ev = JSON.parse(line); } catch { return [{ kind: 'text', text: line }]; }
-  if (ev.type === 'system' && ev.subtype === 'init') return [{ kind: 'sys', text: `session started · model ${ev.model || '?'}` }];
-  if (ev.type === 'assistant') {
-    const blocks = [];
-    for (const block of ev.message?.content || []) {
-      if (block.type === 'text' && block.text?.trim()) blocks.push({ kind: 'text', text: block.text.trim() });
-      if (block.type === 'tool_use') {
-        const input = block.input || {};
-        blocks.push({
-          kind: 'tool',
-          tool: block.name,
-          file: input.file_path || input.path || input.notebook_path || null,
-          cmd: input.command || input.pattern || input.query || null,
-        });
-      }
-    }
-    return blocks;
-  }
-  if (ev.type === 'result') {
-    return [{
-      kind: 'sys',
-      text: `done · ${ev.subtype || ''} · ${ev.num_turns ?? '?'} turns · $${ev.total_cost_usd?.toFixed?.(4) ?? '?'}`,
-      costUsd: typeof ev.total_cost_usd === 'number' ? ev.total_cost_usd : undefined,
-      turns: ev.num_turns,
-    }];
-  }
-  return []; // user/tool_result echoes — too noisy for the dashboard
-}
-
-function parseLine(parse, line) {
-  if (!line.trim()) return [];
-  if (parse === 'claude-stream-json') return parseClaudeEvent(line);
-  if (parse === 'jsonl-or-text') {
-    try {
-      const ev = JSON.parse(line);
-      const text = ev.text || ev.message || ev.content;
-      return typeof text === 'string' ? [{ kind: 'text', text }] : [{ kind: 'text', text: line }];
-    } catch { return [{ kind: 'text', text: line }]; }
-  }
-  return [{ kind: 'text', text: line }];
-}
-
-function blockToLogLine(b) {
-  if (b.kind === 'tool') return `[tool] ${b.tool} ${b.file || b.cmd || ''}`.trim();
-  if (b.kind === 'sys') return `[session] ${b.text}`;
-  if (b.kind === 'err') return `[stderr] ${b.text}`;
-  return b.text;
 }
 
 export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
@@ -327,12 +287,12 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
     appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, effort: normalizeEffort(effort) || undefined, hostClient: hostClient || undefined });
     writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills });
-    appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, hostHandoff: true });
+    appendEvent(paths, { stage, cycle, type: 'agent_parked', ok: true, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills });
+  const { bin, args, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
@@ -358,8 +318,8 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     }, config.agentTimeoutMs);
 
     let buffer = '';
+    const parser = createStreamParser();
     const emit = (b) => {
-      log.write(blockToLogLine(b) + '\n');
       appendEvent(paths, { stage, cycle, type: 'agent_output', ...b });
     };
     const handleChunk = (chunk, isErr) => {
@@ -368,8 +328,12 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
-        const blocks = isErr ? (line.trim() ? [{ kind: 'err', text: line }] : []) : parseLine(parse, line);
-        blocks.forEach(emit);
+        log.write(`${line}\n`);
+        if (isErr) {
+          if (line.trim()) emit({ kind: 'err', text: line });
+          continue;
+        }
+        parser.pushLine(line).forEach(emit);
       }
     };
     child.stdout.on('data', (c) => handleChunk(c, false));
@@ -384,7 +348,11 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (buffer.trim()) parseLine(parse, buffer).forEach(emit);
+      if (buffer.trim()) {
+        log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
+        parser.pushLine(buffer).forEach(emit);
+      }
+      parser.flush().forEach(emit);
       if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code, timedOut: timedOut || undefined });
       log.end();

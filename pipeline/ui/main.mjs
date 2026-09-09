@@ -18,6 +18,10 @@ import { createTabStore } from './tabs.mjs';
 import { buildTree, attentionByRun, featureLabel } from './pool-tree.mjs';
 import { createApi } from './api.mjs';
 import { stageIcon, agentMeta, STAGE_ORDER } from './stages.mjs';
+import {
+  describeEvent, isStaleRefresh, conversationItems, estimateItemHeight,
+  visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
+} from './feed.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -243,6 +247,7 @@ function render() {
     panel.addEventListener('scroll', () => { tab.scrollTop = panel.scrollTop; }, { passive: true });
     lastPanelTabId = tab.id;
   }
+  panel.classList.toggle('is-run', tab.kind === 'run');
   const view = VIEWS[tab.kind] || VIEWS.home;
   view(wrap, tab);
 }
@@ -380,31 +385,23 @@ const STAGE_ARTIFACT = {
 };
 
 async function viewRun(wrap, tab) {
-  // A background refresh of a tab already showing this run must not blank it
-  // while re-fetching: that is the "page flashes on every update" complaint.
-  // Only a first mount, with nothing on screen yet, gets the loading state.
+  // Keep the chrome in place across SSE refreshes. Replacing the whole tree
+  // is what made a live stream steal the scrollbar and flash the page.
   const firstMount = !wrap.querySelector('.agent-header');
-  // A rebuild replaces the note textarea even when its text survives via
-  // tab._noteDraft — restore focus and caret too, so a mid-sentence refresh
-  // doesn't even cost the reader having to click back in.
-  const priorNote = wrap.querySelector('textarea');
-  const hadFocus = !!priorNote && priorNote === document.activeElement;
-  const caret = hadFocus ? priorNote.selectionStart : null;
   if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: 'Loading…' }));
+
+  tab._fetchGen = (tab._fetchGen || 0) + 1;
+  const gen = tab._fetchGen;
 
   let data;
   try { data = await api.state(tab.subject); }
   catch (err) {
     if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: err.message }));
-    return; // a refresh that failed leaves the last good view up rather than blanking it
+    return;
   }
-  if (tabs.activeId() !== tab.id) return; // the reader moved on while we fetched
+  if (isStaleRefresh(tab._fetchGen, gen) || tabs.activeId() !== tab.id) return;
 
   const status = data.status || {};
-  const body = el('div');
-
-  // Every run shows all 7 steps, in order, whatever this run's own status.json
-  // actually recorded — a stage it never reached yet is 'pending', not absent.
   const byName = new Map((status.stages || []).map((s) => [s.name, s]));
   const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
   const active = tab.stage
@@ -412,96 +409,69 @@ async function viewRun(wrap, tab) {
     || [...stages].reverse().find((s) => s.status !== 'pending')?.name
     || 'planner';
   const meta = agentMeta(active);
+  const remount = wrap.dataset.stage !== active || wrap.dataset.subject !== String(tab.subject || '');
 
-  // The header every run opens with: which specialist is at work, what it
-  // does, and the run's overall state as a pill — not a wall of plain text.
-  body.append(el('div', { class: 'agent-header' }, [
+  if (firstMount || remount) mountRunChrome(wrap, tab, { status, stages, active, meta, data });
+  else patchRunChrome(wrap, tab, { status, stages, active, meta, data });
+
+  const items = conversationItems((data.events || {})[active] || [], data.followups, active);
+  paintVirtualFeed(wrap.querySelector('.feed-shell'), items, tab, active);
+}
+
+function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
+  wrap.dataset.stage = active;
+  wrap.dataset.subject = String(tab.subject || '');
+  wrap.replaceChildren();
+
+  wrap.append(el('div', { class: 'agent-header' }, [
     el('span', { class: `agent-ico ${active}`, html: stageIcon(active) }),
     el('div', {}, [
       el('div', { class: 'nm', text: (tab.title || tab.subject || active).toString() }),
       el('div', { class: 'desc', text: meta.desc }),
     ]),
     el('span', { class: 'spacer' }),
-    el('span', { class: `pill ${status.overall || ''}`, text: (status.overall || 'no state recorded').replace(/_/g, ' ') }),
+    el('span', { class: `pill ${status.overall || ''}`, 'data-role': 'pill', text: (status.overall || 'no state recorded').replace(/_/g, ' ') }),
   ]));
 
-  body.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
+  const railHost = el('div', { 'data-role': 'rail' });
+  railHost.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
+  railHost.dataset.sig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
+  wrap.append(railHost);
 
-  // Run controls: only the live run (no runId — the root .pipeline/ state)
-  // can be steered from here; an archived run is read-only history.
-  if (data.live && (data.canCancel || data.canResume || data.canExtend || data.canContinue)) {
-    const controls = el('div', { class: 'row', style: 'margin:2px 0 16px' });
-    if (data.canContinue) controls.append(el('button', {
-      class: 'btn', text: 'Continue',
-      onclick: async () => { try { await api.continueRun(); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
-    }));
-    if (data.canResume) controls.append(el('button', {
-      class: 'btn ghost', text: 'Resume',
-      onclick: async () => { try { await api.resumeRun(); toast('Asked the run to resume.'); refresh(); } catch (err) { toast(err.message); } },
-    }));
-    if (data.canExtend) {
-      const cycles = el('input', { type: 'text', value: '5', style: 'width:52px' });
-      controls.append(cycles, el('button', {
-        class: 'btn ghost', text: 'Extend',
-        onclick: async () => { try { await api.extendRun(cycles.value); toast('Extended.'); refresh(); } catch (err) { toast(err.message); } },
-      }));
-    }
-    if (data.canCancel) controls.append(el('button', {
-      class: 'btn danger', text: 'Stop run',
-      onclick: async () => { try { await api.cancelRun(); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
-    }));
-    body.append(controls);
-  }
+  wrap.append(el('div', { 'data-role': 'goal' }));
+  wrap.append(el('div', { 'data-role': 'controls' }));
+  wrap.append(el('div', { 'data-role': 'banners' }));
+  wrap.append(el('h3', { 'data-role': 'feed-title', text: `${active} activity` }));
+  wrap.append(el('div', { class: 'feed-shell' }, el('div', { class: 'feed' })));
+  wrap.append(el('div', { 'data-role': 'artifact' }));
 
-  if (status.haltReason) {
-    body.append(el('div', { class: 'banner fail', text: `Halted: ${status.haltReason}. ${status.stages?.find((s) => s.detail)?.detail || ''}` }));
-  }
-  if (status.overall === 'awaiting_plan_approval') {
-    body.append(el('div', { class: 'banner warn', text: 'This run is waiting for its plan to be approved. Answer it in Decisions, or read the specification below first.' }));
-  }
+  const logDetails = el('details', { class: 'diagnostics' }, [
+    el('summary', { text: 'Diagnostics — raw stage log' }),
+    el('pre', {}, el('code', { text: 'Open to load the raw stage log.' })),
+  ]);
+  logDetails.addEventListener('toggle', () => {
+    if (!logDetails.open || logDetails.dataset.loaded === wrap.dataset.stage) return;
+    const stage = wrap.dataset.stage;
+    api.log(stage, tab.subject).then((log) => {
+      if (wrap.dataset.stage !== stage) return;
+      logDetails.querySelector('code').textContent = log.text || 'No log for this stage.';
+      logDetails.dataset.loaded = stage;
+    }).catch(() => { logDetails.querySelector('code').textContent = 'No log for this stage.'; });
+  });
+  wrap.append(logDetails);
 
-  // Activity, rebuilt from the events the engine recorded for this stage.
-  const events = (data.events || {})[active] || [];
-  body.append(el('h3', { text: `${active} activity` }));
-  if (!events.length) body.append(el('div', { class: 'empty', text: 'Nothing recorded for this stage yet.' }));
-  const feed = el('div', { class: 'feed' });
-  for (const ev of events.slice(-120)) feed.append(eventBlock(ev));
-  body.append(feed);
-
-  // The artifact this stage produced. `data.artifacts` is a list of file names
-  // that exist and are non-empty; content is fetched separately.
-  const wanted = STAGE_ARTIFACT[active];
-  if (wanted && (data.artifacts || []).includes(wanted)) {
-    body.append(el('div', { class: 'sec-label', text: `Output — ${wanted}` }));
-    const card = el('div', { class: 'artifact-card', text: 'Loading…' });
-    body.append(card);
-    api.artifact(wanted, tab.subject)
-      .then((a) => { card.innerHTML = renderMd(a.content || ''); })
-      .catch(() => { card.textContent = 'Could not read this artifact.'; });
-  }
-
-  body.append(el('h3', { text: 'Log' }));
-  const logBox = el('pre', {}, el('code', { text: 'Loading…' }));
-  body.append(logBox);
-  api.log(active, tab.subject).then((log) => {
-    logBox.replaceChildren(el('code', { text: log.text || 'No log for this stage.' }));
-  }).catch(() => logBox.replaceChildren(el('code', { text: 'No log for this stage.' })));
-
-  // A note for the agent working this stage. Its draft lives on the tab, not
-  // just the DOM, so a background refresh rebuilding this element never
-  // costs the reader whatever they were mid-typing.
   const note = el('textarea', {
     placeholder: `Note for the ${active} stage — it is picked up on the next cycle.`,
     oninput: (e) => { tab._noteDraft = e.target.value; },
   });
   note.value = tab._noteDraft || '';
-  body.append(el('h3', { text: 'Send a note' }), note, el('div', { class: 'row', style: 'margin-top:8px' }, [
+  wrap.append(el('h3', { text: 'Send a note' }), note, el('div', { class: 'row', style: 'margin-top:8px' }, [
     el('button', {
       class: 'btn', text: 'Send',
       onclick: async () => {
         if (!note.value.trim()) return toast('Write a note first.');
         try {
-          await api.followup(active, note.value.trim(), tab.subject);
+          await api.followup(wrap.dataset.stage, note.value.trim(), tab.subject);
           note.value = ''; tab._noteDraft = ''; toast('Queued for the agent.');
         } catch (err) { toast(err.message); }
       },
@@ -509,21 +479,207 @@ async function viewRun(wrap, tab) {
     el('button', { class: 'btn ghost', text: 'Review this run', onclick: () => open({ kind: 'review', subject: tab.subject, title: `Review ${tab.title || tab.subject}` }) }),
   ]));
 
-  // One atomic swap: the reader never sees an interim empty state on a
-  // refresh, only ever the previous content or the next content.
-  wrap.replaceChildren(body);
-  if (hadFocus) { note.focus(); if (caret != null) note.setSelectionRange(caret, caret); }
+  fillGoal(wrap, data.goal);
+  fillControls(wrap, tab, data);
+  fillBanners(wrap, status);
+  fillArtifact(wrap, tab, active, data);
+}
+
+function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
+  const pill = wrap.querySelector('[data-role="pill"]');
+  if (pill) {
+    const label = (status.overall || 'no state recorded').replace(/_/g, ' ');
+    const cls = `pill ${status.overall || ''}`;
+    if (pill.className !== cls) pill.className = cls;
+    if (pill.textContent !== label) pill.textContent = label;
+  }
+  const railHost = wrap.querySelector('[data-role="rail"]');
+  if (railHost) {
+    const railSig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
+    if (railHost.dataset.sig !== railSig) {
+      railHost.dataset.sig = railSig;
+      railHost.replaceChildren(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
+    }
+  }
+  fillGoal(wrap, data.goal);
+  fillControls(wrap, tab, data);
+  fillBanners(wrap, status);
+  fillArtifact(wrap, tab, active, data);
+}
+
+function fillGoal(wrap, goal) {
+  const host = wrap.querySelector('[data-role="goal"]');
+  if (!host) return;
+  const sig = goal ? `${goal.title || ''}|${(goal.dependsOn || []).join(',')}|${goal.nextTitle || ''}|${goal.acceptance || ''}` : '';
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.replaceChildren();
+  if (!goal) return;
+  const bits = [
+    goal.title,
+    (goal.dependsOn || []).length ? `depends on ${goal.dependsOn.join(', ')}` : null,
+    goal.nextTitle ? `next: ${goal.nextTitle}` : null,
+  ].filter(Boolean);
+  if (bits.length) host.append(el('p', { class: 'sub', text: bits.join(' · ') }));
+  if (goal.acceptance) host.append(el('div', { class: 'meta', text: goal.acceptance }));
+}
+
+function fillControls(wrap, tab, data) {
+  const host = wrap.querySelector('[data-role="controls"]');
+  if (!host) return;
+  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue].join();
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.replaceChildren();
+  if (!(data.canCancel || data.canResume || data.canExtend || data.canContinue)) return;
+  const controls = el('div', { class: 'row', style: 'margin:2px 0 16px' });
+  const run = tab.subject || undefined;
+  if (data.canContinue) controls.append(el('button', {
+    class: 'btn', text: 'Continue',
+    onclick: async () => { try { await api.continueRun(false, run); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
+  }));
+  if (data.canResume) controls.append(el('button', {
+    class: 'btn ghost', text: 'Resume',
+    onclick: async () => { try { await api.resumeRun(run); toast('Asked the run to resume.'); refresh(); } catch (err) { toast(err.message); } },
+  }));
+  if (data.canExtend) {
+    const cycles = el('input', { type: 'text', value: '5', style: 'width:52px' });
+    controls.append(cycles, el('button', {
+      class: 'btn ghost', text: 'Extend',
+      onclick: async () => { try { await api.extendRun(cycles.value, run); toast('Extended.'); refresh(); } catch (err) { toast(err.message); } },
+    }));
+  }
+  if (data.canCancel) controls.append(el('button', {
+    class: 'btn danger', text: 'Stop run',
+    onclick: async () => { try { await api.cancelRun(run); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
+  }));
+  host.append(controls);
+}
+
+function fillBanners(wrap, status) {
+  const host = wrap.querySelector('[data-role="banners"]');
+  if (!host) return;
+  const sig = `${status.haltReason || ''}|${status.overall || ''}`;
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.replaceChildren();
+  if (status.haltReason) {
+    host.append(el('div', { class: 'banner fail', text: `Halted: ${status.haltReason}. ${status.stages?.find((s) => s.detail)?.detail || ''}` }));
+  }
+  if (status.overall === 'awaiting_plan_approval') {
+    host.append(el('div', { class: 'banner warn', text: 'This run is waiting for its plan to be approved. Answer it in Decisions, or read the specification below first.' }));
+  }
+}
+
+function fillArtifact(wrap, tab, active, data) {
+  const host = wrap.querySelector('[data-role="artifact"]');
+  if (!host) return;
+  const wanted = STAGE_ARTIFACT[active];
+  const key = wanted && (data.artifacts || []).includes(wanted) ? `${active}:${wanted}` : '';
+  if (host.dataset.key === key) return;
+  host.dataset.key = key;
+  host.replaceChildren();
+  if (!key) return;
+  host.append(el('div', { class: 'sec-label', text: `Output — ${wanted}` }));
+  const card = el('div', { class: 'artifact-card', text: 'Loading…' });
+  host.append(card);
+  api.artifact(wanted, tab.subject)
+    .then((a) => { if (host.dataset.key === key) card.innerHTML = renderMd(a.content || ''); })
+    .catch(() => { if (host.dataset.key === key) card.textContent = 'Could not read this artifact.'; });
+}
+
+function paintVirtualFeed(shell, items, tab, stage) {
+  if (!shell) return;
+  const feed = shell.querySelector('.feed') || shell.appendChild(el('div', { class: 'feed' }));
+  shell._feedItems = items;
+  shell._feedStage = stage;
+  if (!items.length) {
+    feed.style.paddingTop = '0px';
+    feed.style.paddingBottom = '0px';
+    feed.replaceChildren(el('div', { class: 'empty', text: 'Nothing recorded for this stage yet.' }));
+    tab._feedSig = '0';
+    tab._feedRange = '0:0';
+    return;
+  }
+
+  tab._heights = tab._heights || {};
+
+  const paint = () => {
+    const list = shell._feedItems || [];
+    if (!list.length) return;
+    const heightKey = `${shell._feedStage}:`;
+    const heights = list.map((ev, i) => tab._heights[heightKey + itemKey(ev, i)] || estimateItemHeight(ev));
+    const sig = feedSignature(list);
+    const range = visibleRange({
+      heights,
+      scrollTop: shell.scrollTop,
+      viewportHeight: shell.clientHeight || 360,
+    });
+    const rangeKey = `${range.start}:${range.end}:${list.length}`;
+    if (tab._feedSig === sig && tab._feedRange === rangeKey) return;
+    tab._feedSig = sig;
+    tab._feedRange = rangeKey;
+    feed.style.paddingTop = `${range.padTop}px`;
+    feed.style.paddingBottom = `${range.padBottom}px`;
+    feed.replaceChildren();
+    for (let i = range.start; i < range.end; i++) feed.append(eventBlock(list[i]));
+    requestAnimationFrame(() => {
+      if (tab._feedMeasuring) return;
+      const nodes = feed.children;
+      let dirty = false;
+      for (let n = 0; n < nodes.length; n++) {
+        const i = range.start + n;
+        if (!list[i]) continue;
+        const measured = nodes[n].offsetHeight + FEED_GAP;
+        if (measured <= FEED_GAP) continue;
+        const key = heightKey + itemKey(list[i], i);
+        if (Math.abs((tab._heights[key] || heights[i]) - measured) > 8) {
+          tab._heights[key] = measured;
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        tab._feedMeasuring = true;
+        tab._feedRange = '';
+        paint();
+        tab._feedMeasuring = false;
+        if (tab._feedPinned !== false) shell.scrollTop = shell.scrollHeight;
+      }
+    });
+  };
+
+  shell._paintFeed = paint;
+  if (!shell._feedBound) {
+    shell._feedBound = true;
+    shell.addEventListener('scroll', () => {
+      if (shell._pinning) return;
+      tab._feedPinned = isNearBottom(shell.scrollTop, shell.scrollHeight, shell.clientHeight);
+      tab.feedScrollTop = shell.scrollTop;
+      tab._feedRange = '';
+      shell._paintFeed?.();
+    }, { passive: true });
+  }
+
+  paint();
+  if (tab._feedPinned !== false) {
+    shell._pinning = true;
+    shell.scrollTop = shell.scrollHeight;
+    shell._pinning = false;
+  } else if (tab.feedScrollTop != null) {
+    shell._pinning = true;
+    shell.scrollTop = tab.feedScrollTop;
+    shell._pinning = false;
+  }
 }
 
 function eventBlock(ev) {
-  if (ev.type === 'checks_start') return el('div', { class: 'divider', text: 'verification' });
-  if (ev.type === 'check_end') return el('div', { class: 'block sys', text: `${ev.ok ? '✓' : '✗'} ${ev.check}` });
-  if (ev.type === 'agent_start') return el('div', { class: 'divider', text: ev.cycle > 1 ? `cycle ${ev.cycle}` : 'started' });
-  if (ev.type === 'followup_applied') return el('div', { class: 'block sys', text: 'A note from you was applied here.' });
-  if (ev.kind === 'err') return el('div', { class: 'block err', text: ev.text || '' });
-  if (ev.kind === 'tool') return el('div', { class: 'block sys', text: `${ev.tool || 'tool'}${ev.file ? ` · ${ev.file}` : ''}${ev.cmd ? ` · ${ev.cmd}` : ''}` });
-  if (ev.kind === 'sys') return el('div', { class: 'block sys', text: ev.text || '' });
-  return el('div', { class: 'block', html: renderMd(ev.text || '') });
+  const d = describeEvent(ev);
+  const node = el('div', { class: d.className });
+  if (d.role) node.append(el('span', { class: 'role', text: d.role }));
+  if (d.markdown) node.insertAdjacentHTML('beforeend', renderMd(d.text || ''));
+  else if (d.text) node.append(document.createTextNode(d.text));
+  if (d.noteStatus) node.append(el('div', { class: 'note-state', text: d.noteStatus }));
+  return node;
 }
 
 // ---- review view ----------------------------------------------------------

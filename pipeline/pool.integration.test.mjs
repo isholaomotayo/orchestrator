@@ -312,10 +312,16 @@ test('a feature whose configured runner is unusable never spawns; the supervisor
 
   sup.tick();
   const rm = pool.readRoadmap(paths);
-  assert.equal(rm.features[0].status, 'planning', 'the feature never advances past its unusable runner');
+  assert.equal(rm.features[0].status, 'failed', 'an unusable runner fails the feature instead of leaving it planning');
   const specRunId = rm.features[0].specRunId;
   assert.ok(specRunId, 'a run id was still allocated');
-  assert.ok(!fs.existsSync(pipelinePaths(root, { runId: specRunId }).runMeta), 'nothing was ever actually spawned for it');
+  const runPaths = pipelinePaths(root, { runId: specRunId });
+  const status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8'));
+  assert.equal(status.overall, 'halted');
+  assert.equal(status.haltReason, 'RUNNER_UNAVAILABLE');
+  assert.equal(status.haltTransient, false);
+  const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
+  assert.equal(meta.phase, 'failed');
   const pending = pool.pendingAttention(paths);
   assert.ok(pending.some((a) => a.kind === 'runner-unavailable' && /not-configured/.test(a.summary)), 'the operator was told exactly why');
 });

@@ -31,9 +31,16 @@ const WAITING_VERBS = ['needs-decision', 'blocked', 'paused', 'held'];
  * What is this run doing right now?
  * @returns {'busy'|'stale'|'awaiting'|'idle'|'dead'|'unknown'}
  */
-export function classifyRun({ status, pidAlive, lastOutputAt, lastVerb = null, now = Date.now() }, thresholds = DEFAULT_THRESHOLDS) {
-  // No readable status at all: we know nothing, and say so.
-  if (!status?.overall) return 'unknown';
+export function classifyRun({ status, pidAlive, lastOutputAt, lastVerb = null, meta = null, now = Date.now() }, thresholds = DEFAULT_THRESHOLDS) {
+  // No readable status at all: a spawn that has not yet written status.json is
+  // still a live start if the worker pid is up; a vanished pid is a crash.
+  if (!status?.overall) {
+    if (meta?.phase === 'spawned') {
+      if (pidAlive) return 'busy';
+      return 'dead';
+    }
+    return 'unknown';
+  }
 
   if (status.overall === 'done' || status.overall === 'halted') return 'idle';
 
@@ -44,7 +51,7 @@ export function classifyRun({ status, pidAlive, lastOutputAt, lastVerb = null, n
 
   if (status.overall === 'running') {
     if (!pidAlive) return 'dead';
-    if (!lastOutputAt) return 'unknown';
+    if (!lastOutputAt) return 'busy';
     const quietFor = now - Date.parse(lastOutputAt);
     if (Number.isNaN(quietFor)) return 'unknown';
     return quietFor > thresholds.staleAfterMs ? 'stale' : 'busy';

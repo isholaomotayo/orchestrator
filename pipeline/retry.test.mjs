@@ -28,6 +28,7 @@ test('auth, quota, and model-configuration failures are fatal', () => {
     'authentication required',
     'Invalid API key provided',
     'unknown model: opus-4.8',
+    'The \'gpt-5.6-sol\' model requires a newer version of Codex',
     'quota exceeded for this organization',
     'insufficient credit balance',
   ]) {

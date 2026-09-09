@@ -16,13 +16,13 @@ import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } f
 import {
   parseRoadmapMd, compileRoadmap, setFeatureStatus, setRoadmapStatus, nextFeature, FEATURE_STATUSES,
 } from './roadmap.mjs';
-import { binExists } from './adapters.mjs';
-import {
-  classifyRun, DEFAULT_THRESHOLDS,
+import { binExists, isHostSurface, resolveExecutionSurface } from './adapters.mjs';
+import { classifyRun, DEFAULT_THRESHOLDS,
   appendAttention, pendingAttention, ackAttention,
   openDecisions, resolveDecision, readDecisions,
 } from './attention.mjs';
 import { buildSnapshot, renderDigest } from './snapshot.mjs';
+import { queueStageNote } from './events.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -140,7 +140,14 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
       stage: running?.name ?? null,
       cycle: running?.cycle ?? null,
       maxCycles: running?.maxCycles ?? null,
-      state: classifyRun({ status, pidAlive: pidAlive(lock?.pid ?? meta?.pid), lastOutputAt, lastVerb: verb, now }, thresholds),
+      state: classifyRun({
+        status,
+        pidAlive: pidAlive(lock?.pid ?? meta?.pid),
+        lastOutputAt,
+        lastVerb: verb,
+        meta,
+        now,
+      }, thresholds),
       costUsd: 0,
     });
   }
@@ -148,8 +155,11 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
 }
 
 export function activeRuns(runs) {
-  return runs.filter((r) => ['busy', 'stale', 'awaiting', 'dead', 'unknown'].includes(r.state)
-    && !['done', 'halted'].includes(r.status?.overall));
+  return runs.filter((r) => {
+    if (['done', 'halted'].includes(r.status?.overall)) return false;
+    if (r.state === 'unknown' && !r.status?.overall) return false;
+    return ['busy', 'stale', 'awaiting', 'dead'].includes(r.state);
+  });
 }
 
 // ---- supervisor liveness ---------------------------------------------------
@@ -212,14 +222,27 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   const primary = runs.find((r) => r.kind === 'integration' && ['busy', 'stale', 'awaiting'].includes(r.state))
     ?? runs.find((r) => ['busy', 'stale', 'awaiting'].includes(r.state))
     ?? null;
+  const awaitingChat = runs.find((r) => r.status?.overall === 'awaiting_chat') ?? null;
+  const awaitingPlan = runs.find((r) => r.status?.overall === 'awaiting_plan_approval') ?? null;
 
   const status = newStatus(
     roadmap ? `${roadmap.title}${feature ? ` — ${feature.title}` : ''}` : 'Pool run',
     {},
   );
   status.startedAt = snap.supervisor.startedAt || status.startedAt;
-  status.invocationMode = 'cli';
-  status.runner = config?.runner ?? 'auto';
+  const surface = resolveExecutionSurface({
+    runner: primary?.status?.runner || primary?.meta?.runner || config?.runner,
+    invocationMode: primary?.status?.invocationMode,
+    executionSurface: primary?.status?.executionSurface,
+  });
+  status.executionSurface = surface;
+  status.invocationMode = isHostSurface({ executionSurface: surface }) ? 'chat' : (primary?.status?.invocationMode || 'cli');
+  status.runner = primary?.status?.runner || primary?.meta?.runner || config?.runner || 'auto';
+  status.hostClient = primary?.status?.hostClient || null;
+  if (awaitingChat) {
+    status.awaitingStage = awaitingChat.status.awaitingStage || null;
+    status.chatResume = awaitingChat.status.chatResume || null;
+  }
 
   if (primary?.status?.stages) {
     status.stages = primary.status.stages;
@@ -234,7 +257,8 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   if (!snap.supervisor.alive) status.overall = 'halted', status.haltReason = 'POOL_STOPPED';
   else if (snap.supervisor.paused) status.overall = 'halted', status.haltReason = 'POOL_PAUSED';
   else if (allDone) status.overall = 'done';
-  else if (awaitingFinal || (snap.needsDecision.length && !snap.counts.inProgress)) status.overall = 'awaiting_plan_approval';
+  else if (awaitingChat) status.overall = 'awaiting_chat';
+  else if (awaitingPlan || awaitingFinal || (snap.needsDecision.length && !snap.counts.inProgress)) status.overall = 'awaiting_plan_approval';
   else status.overall = 'running';
 
   status.pool = {
@@ -253,9 +277,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
 /** Queue a note for a stage of a run — the same channel the dashboard uses. */
 export function queueFollowup(paths, runId, stage, text) {
   const runPaths = pipelinePaths(paths.root, { runId });
-  const dir = path.join(runPaths.dir, 'followups');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.appendFileSync(path.join(dir, `${stage}.txt`), `${String(text).trim()}\n`);
+  return queueStageNote(runPaths, stage, text);
 }
 
 /**

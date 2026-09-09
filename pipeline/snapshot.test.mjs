@@ -194,3 +194,18 @@ test('a feature already covered by a decision is not listed twice', () => {
   assert.equal(s.needsDecision.length, 1);
   assert.equal(s.needsDecision[0].decisionId, 'd9');
 });
+
+test('feature runIds include the plan, ticket, and integration lineage', () => {
+  const withPlan = {
+    ...roadmap,
+    features: [
+      { ...roadmap.features[1], specRunId: 'plan-1', integrationRunId: 'int-1', acceptance: '- PDF renders', tickets: [{ id: 'T1', runId: 'r1' }, { id: 'T2', runId: 'r2' }] },
+    ],
+  };
+  const s = buildSnapshot({ roadmap: withPlan, runs, decisions: [], attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  assert.deepEqual(s.roadmap.features[0].runIds, ['plan-1', 'r1', 'r2', 'int-1']);
+  const r1 = s.inProgress.find((r) => r.runId === 'r1');
+  assert.equal(r1.goal.featureId, 'F2');
+  assert.equal(r1.goal.acceptance, '- PDF renders');
+  assert.equal(r1.goal.specRunId, 'plan-1');
+});

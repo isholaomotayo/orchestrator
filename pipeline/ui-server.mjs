@@ -18,6 +18,7 @@ import { isOrchestratorSourceRepo } from './self-guard.mjs';
 import { resolveEngineEntry, readInstall, readCheck, gitHead, packageVersion } from './installer.mjs';
 import * as pool from './pool.mjs';
 import { skillStatuses } from './skills.mjs';
+import { AGENT_STAGES, DASHBOARD_EVENT_TYPES, queueStageNote, readStageNotes } from './events.mjs';
 
 // Dashboard-initiated runs must honor the same self-targeting guard as the CLI
 // entrypoints (the spawned engine would refuse anyway — this returns a friendly
@@ -66,7 +67,6 @@ const IDLE_TIMEOUT_MS = process.env.PIPELINE_UI_IDLE_TIMEOUT_MS !== undefined
 let lastActivityAt = Date.now();
 
 const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'reporter.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
-const AGENT_STAGES = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'antigravity'];
 const EVENTS_PER_STAGE = 250;
 
@@ -175,9 +175,10 @@ function readEventsByStage(dir) {
     if (!line.trim()) continue;
     let ev;
     try { ev = JSON.parse(line); } catch { continue; }
-    if (!byStage[ev.stage]) continue;
-    if (['agent_output', 'agent_start', 'checks_start', 'check_end', 'followup_applied', 'chat_handoff'].includes(ev.type)) {
-      byStage[ev.stage].push(ev);
+    const stage = ev.stage === 'checker' ? 'coder' : ev.stage;
+    if (!byStage[stage]) continue;
+    if (DASHBOARD_EVENT_TYPES.includes(ev.type)) {
+      byStage[stage].push({ ...ev, stage });
     }
   }
   for (const s of AGENT_STAGES) {
@@ -186,15 +187,41 @@ function readEventsByStage(dir) {
   return { byStage, totalCost, costPartial };
 }
 
-function readFollowups(project) {
-  const out = {};
-  for (const s of AGENT_STAGES) {
-    try {
-      const t = fs.readFileSync(path.join(project.paths.dir, 'followups', `${s}.txt`), 'utf8').trim();
-      if (t) out[s] = t;
-    } catch {}
-  }
-  return out;
+function readFollowups(dir) {
+  return readStageNotes(dir);
+}
+
+function runPathsFor(project, runId) {
+  return pipelinePaths(project.repoRoot, { runId: runId || null });
+}
+
+function runProcessAlive(runPaths) {
+  const lock = readLock(runPaths);
+  return !!(lock && pidAlive(lock.pid));
+}
+
+function loadRunStatus(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8')); } catch { return null; }
+}
+
+function activeStageName(status) {
+  if (!status) return null;
+  if (status.awaitingStage) return status.awaitingStage;
+  return (status.stages || []).find((s) => ['running', 'awaiting_host'].includes(s.status))?.name || null;
+}
+
+function isArchivedStatus(status) {
+  return ['done'].includes(status?.overall);
+}
+
+function parkedPoolWork(project) {
+  try {
+    for (const id of fs.readdirSync(project.paths.runs)) {
+      const s = loadRunStatus(path.join(project.paths.runs, id));
+      if (s && (s.overall === 'awaiting_chat' || s.overall === 'awaiting_plan_approval' || s.overall === 'running')) return id;
+    }
+  } catch { /* no runs */ }
+  return null;
 }
 
 function orchestratorAlive(project) {
@@ -231,43 +258,48 @@ function engineInfo(project) {
 function readState(project, runId) {
   const dir = runDir(project, runId);
   if (!dir) return { error: 'unknown run' };
-  let status = null;
-  try { status = JSON.parse(fs.readFileSync(path.join(dir, 'status.json'), 'utf8')); } catch {}
-  // Backfill stages a legacy (4-stage) status.json never wrote, so the dashboard
-  // can tell "optional stage never ran" (skipped) from "not started yet" (pending).
+  let status = loadRunStatus(dir);
   if (status) ensureStageEntries(status);
-  const live = dir === project.paths.dir;
-  const stale = live && status?.overall === 'running' && !orchestratorAlive(project);
+  const runPaths = runPathsFor(project, runId);
+  const isRoot = dir === project.paths.dir;
+  const alive = runProcessAlive(runPaths);
+  const stale = status?.overall === 'running' && !alive;
   const artifacts = ARTIFACTS.filter((n) => {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
   const { byStage, totalCost, costPartial } = readEventsByStage(dir);
-  const canExtend = live && !orchestratorAlive(project) && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
-  const canResume = live &&
-    !orchestratorAlive(project) &&
+  const canExtend = !alive && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
+  const canResume = !alive &&
     ((status?.overall === 'halted' && status?.haltReason === 'INTERRUPTED') ||
       (status?.overall === 'running' && stale));
-  const idle = live && !orchestratorAlive(project);
-  const canApprovePlan = idle && status?.overall === 'awaiting_plan_approval';
-  // Whether the awaited stage's artifact is present and usable yet — lets the
-  // dashboard enable "Continue" only when continuing would actually work.
+  const canApprovePlan = !alive && status?.overall === 'awaiting_plan_approval';
+  const canContinue = !alive && status?.overall === 'awaiting_chat';
+  const canCancel = alive;
   let stageReady = null;
-  if (idle && status?.overall === 'awaiting_chat' && status?.awaitingStage) {
+  if (canContinue && status?.awaitingStage) {
     const artifact = STAGE_ARTIFACT_FILES[status.awaitingStage];
     stageReady = artifact
       ? validateArtifactFile(status.awaitingStage, path.join(dir, artifact))
       : { ok: true, reason: null };
   }
+  const live = canCancel || canExtend || canResume || canContinue || canApprovePlan;
+  const goal = (() => {
+    try {
+      const snap = pool.snapshot(project.paths, { config: project.config });
+      const row = (snap.inProgress || []).find((r) => r.runId === (runId || snap.pool?.primaryRunId));
+      if (row?.goal) return row.goal;
+      const feature = snap.roadmap?.features?.find((f) => f.id === status?.featureId);
+      return feature
+        ? { featureId: feature.id, title: feature.title, dependsOn: feature.dependsOn, acceptance: feature.acceptance, specRunId: feature.specRunId, integrationRunId: feature.integrationRunId }
+        : null;
+    } catch { return null; }
+  })();
   return {
     status, artifacts, events: byStage,
-    followups: live ? readFollowups(project) : {},
-    live, stale, runId: runId || null,
+    followups: readFollowups(dir),
+    live, stale, runId: runId || null, isRoot, goal,
     totals: { costUsd: totalCost, costPartial: !!costPartial },
-    canCancel: live && orchestratorAlive(project),
-    canExtend,
-    canResume,
-    canApprovePlan,
-    canContinue: idle && status?.overall === 'awaiting_chat',
+    canCancel, canExtend, canResume, canApprovePlan, canContinue,
     stageReady,
     ...engineInfo(project),
     runners: [...RUNNERS, ...Object.keys(project.config.customRunners || {})],
@@ -293,7 +325,8 @@ function listRuns(project) {
     try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
     return {
       id, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall,
-      verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt, live: false,
+      verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt,
+      live: s?.overall === 'running' || s?.overall === 'awaiting_chat' || s?.overall === 'awaiting_plan_approval',
     };
   });
   // A plain single-run project (no pool) keeps its live run at the project
@@ -318,8 +351,9 @@ function positiveInt(v) {
 }
 
 function spawnOrchestrator(project, nodeArgs, options = {}) {
-  const outPath = path.join(project.paths.dir, 'orchestrator.out');
+  const outPath = options.outPath || path.join(project.paths.dir, 'orchestrator.out');
   const flags = options.append ? 'a' : 'w';
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
   const outFd = fs.openSync(outPath, flags);
   fs.writeSync(outFd, `\n[UI] Spawning at ${new Date().toISOString()}: ${process.execPath} ${nodeArgs.join(' ')}\n`);
   
@@ -340,7 +374,7 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   if (guarded) return guarded;
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
   if (runner && !RUNNERS.includes(runner) && !project.config.customRunners?.[runner]) return { error: 'unknown runner', code: 400 };
-  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
+  if (orchestratorAlive(project) || parkedPoolWork(project)) return { error: 'a pipeline run is already active', code: 409 };
   const profile = modelProfile === 'manual' ? 'manual' : 'auto';
   if (profile === 'manual') {
     if (!models || typeof models !== 'object') return { error: 'manual model profile requires models object', code: 400 };
@@ -372,73 +406,79 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   return { ok: true, pid: child.pid };
 }
 
-function extendRun(project, { extend, runner }) {
+function targetRun(project, run) {
+  if (run && !runDir(project, run)) return { error: 'unknown run', code: 404 };
+  const runPaths = runPathsFor(project, run || null);
+  const status = loadRunStatus(runPaths.dir);
+  if (!status) return { error: 'no run recorded at this path', code: 409 };
+  return { runPaths, status, run: run || null };
+}
+
+function spawnForRun(project, runPaths, nodeArgs) {
+  const args = runPaths.runId ? [...nodeArgs, '--run-id', runPaths.runId] : nodeArgs;
+  return spawnOrchestrator(project, args, {
+    append: true,
+    outPath: path.join(runPaths.dir, 'orchestrator.out'),
+  });
+}
+
+function extendRun(project, { extend, runner, run = null } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const n = positiveInt(extend);
   if (!n) return { error: 'extend must be a positive integer', code: 400 };
-  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
-  let status;
-  try { status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {
-    return { error: 'no run to extend', code: 409 };
-  }
-  if (status.overall !== 'halted' || status.haltReason !== 'MAX_CYCLES') {
-    return { error: `cannot extend: last halt reason was "${status.haltReason || status.overall}", not MAX_CYCLES`, code: 409 };
+  const target = targetRun(project, run);
+  if (target.error) return target;
+  if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
+  if (target.status.overall !== 'halted' || target.status.haltReason !== 'MAX_CYCLES') {
+    return { error: `cannot extend: last halt reason was "${target.status.haltReason || target.status.overall}", not MAX_CYCLES`, code: 409 };
   }
   const nodeArgs = [orchestratorEntry(project), '--resume', '--extend', String(n)];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
   }
-  const child = spawnOrchestrator(project, nodeArgs, { append: true });
+  const child = spawnForRun(project, target.runPaths, nodeArgs);
   return { ok: true, pid: child.pid, extend: n };
 }
 
-function resumeInterruptedRunUi(project, { runner }) {
+function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
-  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
-  let status;
-  try { status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {
-    return { error: 'no run to resume', code: 409 };
-  }
-  const lock = readLock(project.paths);
-  const stale = status.overall === 'running' && !(lock && pidAlive(lock.pid));
-  const isInterrupted = status.overall === 'halted' && status.haltReason === 'INTERRUPTED';
+  const target = targetRun(project, run);
+  if (target.error) return target;
+  if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
+  const stale = target.status.overall === 'running' && !runProcessAlive(target.runPaths);
+  const isInterrupted = target.status.overall === 'halted' && target.status.haltReason === 'INTERRUPTED';
   if (!isInterrupted && !stale) {
-    return { error: `cannot resume: run is not interrupted or stale (overall=${status.overall}, haltReason=${status.haltReason})`, code: 409 };
+    return { error: `cannot resume: run is not interrupted or stale (overall=${target.status.overall}, haltReason=${target.status.haltReason})`, code: 409 };
   }
   const nodeArgs = [orchestratorEntry(project), '--resume'];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
     if (runner === 'host') nodeArgs.push('--mode', 'chat');
   }
-  const child = spawnOrchestrator(project, nodeArgs, { append: true });
+  const child = spawnForRun(project, target.runPaths, nodeArgs);
   return { ok: true, pid: child.pid };
 }
 
 // Advance a run parked at a chat handoff or the plan-approval gate. Without
 // this the dashboard could only print the shell command for the user to go and
 // type somewhere else — it could observe the pipeline but never move it.
-function continueRun(project, { approve = false } = {}) {
+function continueRun(project, { approve = false, run = null } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
-  if (orchestratorAlive(project)) return { error: 'a pipeline run is already active', code: 409 };
-  let status;
-  try { status = JSON.parse(fs.readFileSync(project.paths.status, 'utf8')); } catch {
-    return { error: 'no run to continue', code: 409 };
-  }
+  const target = targetRun(project, run);
+  if (target.error) return target;
+  if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
+  const status = target.status;
 
   if (status.overall === 'awaiting_plan_approval') {
-    // Approving is the human decision this gate exists for; requesting changes
-    // is done by queueing a Planner follow-up, which --continue then picks up.
     if (!approve) return { error: 'plan approval requires an explicit approve', code: 400 };
   } else if (status.overall === 'awaiting_chat') {
-    // Continuing before the stage was actually completed would march straight
-    // into a MISSING_ARTIFACT halt. Say so here instead.
     const stage = status.awaitingStage;
     const artifact = STAGE_ARTIFACT_FILES[stage];
-    const check = artifact ? validateArtifactFile(stage, path.join(project.paths.dir, artifact)) : { ok: true };
+    const check = artifact ? validateArtifactFile(stage, path.join(target.runPaths.dir, artifact)) : { ok: true };
     if (!check.ok) {
       return { error: `the ${stage} stage has not been completed yet — ${artifact}: ${check.reason}`, code: 409 };
     }
@@ -446,12 +486,13 @@ function continueRun(project, { approve = false } = {}) {
     return { error: `cannot continue: run is "${status.overall}", not awaiting a handoff or approval`, code: 409 };
   }
 
-  const child = spawnOrchestrator(project, [orchestratorEntry(project), '--continue'], { append: true });
+  const child = spawnForRun(project, target.runPaths, [orchestratorEntry(project), '--continue']);
   return { ok: true, pid: child.pid, continued: status.overall };
 }
 
-function cancelRun(project) {
-  const lock = readLock(project.paths);
+function cancelRun(project, { run = null } = {}) {
+  const runPaths = runPathsFor(project, run || null);
+  const lock = readLock(runPaths);
   if (!lock || !pidAlive(lock.pid)) return { error: 'no active run', code: 409 };
   try { process.kill(lock.pid, 'SIGTERM'); return { ok: true, signalled: lock.pid }; }
   catch (err) { return { error: err.message, code: 500 }; }
@@ -575,10 +616,20 @@ const server = http.createServer((req, res) => {
       if (!body || !AGENT_STAGES.includes(body.stage) || typeof body.text !== 'string' || !body.text.trim()) {
         return json(res, { error: 'expected { stage: planner|designer|coder|tester|reviewer|handoff, text }' }, 400);
       }
-      const dir = path.join(project.paths.dir, 'followups');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(path.join(dir, `${body.stage}.txt`), body.text.trim() + '\n');
-      json(res, { ok: true, queued: body.stage });
+      if (body.run && !runDir(project, body.run)) return json(res, { error: 'unknown run' }, 404);
+      const runPaths = runPathsFor(project, body.run || null);
+      const status = loadRunStatus(runPaths.dir);
+      if (!status) return json(res, { error: 'no run recorded at this path' }, 409);
+      if (isArchivedStatus(status)) return json(res, { error: 'cannot note an archived run' }, 409);
+      const active = activeStageName(status);
+      if (active && body.stage !== active) {
+        return json(res, { error: `stage "${body.stage}" is not active on this run (active: ${active})` }, 409);
+      }
+      try {
+        json(res, queueStageNote(runPaths, body.stage, body.text.trim()));
+      } catch (err) {
+        json(res, { error: err.message }, 400);
+      }
     });
   } else if (req.method === 'POST' && url.pathname === '/api/orchestrate') {
     const project = getProjectForRequest(req, url);
@@ -587,15 +638,12 @@ const server = http.createServer((req, res) => {
       if (!body || typeof body.text !== 'string' || !body.text.trim()) {
         return json(res, { error: 'expected { text }' }, 400);
       }
-      let status = null;
-      try {
-        status = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8'));
-      } catch (e) {}
+      if (body.run && !runDir(project, body.run)) return json(res, { error: 'unknown run' }, 404);
+      const runPaths = runPathsFor(project, body.run || null);
+      let status = loadRunStatus(runPaths.dir);
       try {
         const result = await routeMessage({ text: body.text, status, config: project.config });
-        const dir = path.join(project.paths.dir, 'followups');
-        fs.mkdirSync(dir, { recursive: true });
-        fs.appendFileSync(path.join(dir, `${result.stage}.txt`), body.text.trim() + '\n');
+        queueStageNote(runPaths, result.stage, body.text.trim());
         json(res, { ok: true, stage: result.stage, via: result.via, reason: result.reason });
       } catch (err) {
         json(res, { error: err.message || 'Internal routing error' }, 500);
@@ -619,8 +667,10 @@ const server = http.createServer((req, res) => {
   } else if (req.method === 'POST' && url.pathname === '/api/cancel') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    const result = cancelRun(project);
-    json(res, result, result.code || 200);
+    readBody(req, (body) => {
+      const result = cancelRun(project, body || {});
+      json(res, result, result.code || 200);
+    });
   } else if (req.method === 'POST' && url.pathname === '/api/extend') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);

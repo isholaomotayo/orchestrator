@@ -103,22 +103,40 @@ export function buildSnapshot({
       reportRel: f.reportRel ?? null,
     }));
 
-  const inProgress = runs.map((r) => ({
-    runId: r.runId,
-    featureId: r.featureId ?? null,
-    ticketId: r.ticketId ?? null,
-    title: r.title ?? byFeature.get(r.featureId)?.title ?? null,
-    kind: r.kind || 'ticket',
-    stage: r.stage ?? null,
-    cycle: r.cycle ?? null,
-    maxCycles: r.maxCycles ?? null,
-    state: r.state || 'unknown',
-    verb: r.verb ?? null,
-    lastOutputAt: r.lastOutputAt ?? null,
-    worktree: r.worktree ?? null,
-    branch: r.branch ?? null,
-    costUsd: r.costUsd ?? 0,
-  }));
+  const inProgress = runs.map((r) => {
+    const feature = byFeature.get(r.featureId);
+    const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(r.featureId))
+      || features.find((f) => f.status === 'queued');
+    return {
+      runId: r.runId,
+      featureId: r.featureId ?? null,
+      ticketId: r.ticketId ?? null,
+      title: r.title ?? feature?.title ?? null,
+      kind: r.kind || 'ticket',
+      stage: r.stage ?? null,
+      cycle: r.cycle ?? null,
+      maxCycles: r.maxCycles ?? null,
+      state: r.state || 'unknown',
+      verb: r.verb ?? null,
+      lastOutputAt: r.lastOutputAt ?? null,
+      worktree: r.worktree ?? null,
+      branch: r.branch ?? null,
+      costUsd: r.costUsd ?? 0,
+      goal: feature
+        ? {
+          featureId: feature.id,
+          title: feature.title,
+          status: feature.status,
+          dependsOn: feature.dependsOn || [],
+          acceptance: feature.acceptance || null,
+          specRunId: feature.specRunId ?? null,
+          integrationRunId: feature.integrationRunId ?? null,
+          nextFeatureId: next?.id ?? null,
+          nextTitle: next?.title ?? null,
+        }
+        : null,
+    };
+  });
 
   // Queued features, plus the tickets of the feature currently executing that
   // have not started yet — both answer "what happens next".
@@ -156,7 +174,11 @@ export function buildSnapshot({
           id: f.id, title: f.title, status: f.status, dependsOn: f.dependsOn || [],
           mode: f.mode || 'build', branch: f.branch ?? null, pr: f.pr ?? null,
           landedSha: f.landedSha ?? null, reportRel: f.reportRel ?? null,
-          runIds: (f.tickets || []).map((t) => t.runId).filter(Boolean),
+          acceptance: f.acceptance || null,
+          specRunId: f.specRunId ?? null,
+          integrationRunId: f.integrationRunId ?? null,
+          runIds: [f.specRunId, ...(f.tickets || []).map((t) => t.runId), f.integrationRunId].filter(Boolean),
+          tickets: (f.tickets || []).map((t) => ({ id: t.id, title: t.title ?? null, runId: t.runId ?? null, status: t.status ?? null })),
         })),
       }
       : null,

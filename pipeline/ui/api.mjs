@@ -44,9 +44,9 @@ export function createApi(projectRef) {
     followup: (stage, text, run) => post('/api/followup', { stage, text, run }),
     pausePool: (why) => post('/api/pool/pause', { why }),
     resumePool: () => post('/api/pool/resume', {}),
-    continueRun: (approve) => post('/api/continue', approve ? { approve: true } : {}),
-    cancelRun: () => post('/api/cancel', {}),
-    resumeRun: () => post('/api/resume', {}),
-    extendRun: (cycles) => post('/api/extend', { cycles }),
+    continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
+    cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
+    resumeRun: (run) => post('/api/resume', run ? { run } : {}),
+    extendRun: (cycles, run) => post('/api/extend', { cycles, ...(run ? { run } : {}) }),
   };
 }

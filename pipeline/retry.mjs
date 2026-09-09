@@ -35,7 +35,7 @@ const FATAL_PATTERNS = [
   /permission denied/i,
   /(unknown|invalid|unsupported) model/i,
   /model .* (not found|does not exist)/i,
-  /quota exceeded/i,
+  /requires a newer version/i,
   /insufficient (credit|funds|balance)/i,
 ];
 

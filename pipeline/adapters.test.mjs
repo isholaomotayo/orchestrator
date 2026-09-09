@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS } from './adapters.mjs';
+import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS, resolveExecutionSurface, isHostSurface } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
 const base = { systemPrompt: 'sys', task: 'do it', config: {}, model: null };
@@ -114,6 +114,12 @@ test('host runAgent with hostClient stamps the handoff and events', async () => 
   assert.equal(handoff.hostClient, 'antigravity');
   assert.match(handoff.hostNote, /antigravity chat session/);
   assert.match(handoff.hostNote, /do not spawn/i);
+  assert.match(handoff.eventCommand, /host-event\.mjs/);
+  assert.match(handoff.eventCommand, /--stage planner/);
+  const parked = readEvents(paths).find((e) => e.type === 'agent_parked');
+  assert.equal(parked.hostHandoff, true);
+  assert.equal(parked.ok, true);
+  assert.ok(!readEvents(paths).some((e) => e.type === 'agent_end' && e.hostHandoff));
   const chatHandoffEv = readEvents(paths).find((e) => e.type === 'chat_handoff');
   assert.equal(chatHandoffEv.hostClient, 'antigravity');
   const startEv = readEvents(paths).find((e) => e.type === 'agent_start');
@@ -234,4 +240,18 @@ test('an agent process never receives forge credentials', () => {
   assert.equal(env.GITHUB_TOKEN, undefined);
   assert.equal(env.GITLAB_TOKEN, undefined);
   assert.equal(env.PATH, '/usr/bin', 'the rest of the environment survives');
+});
+
+test('cursor and codex streams use the shared JSON parser, not raw jsonl-or-text', () => {
+  assert.equal(buildInvocation({ ...base, runner: 'cursor', readOnly: false }).parse, 'stream-json');
+  assert.equal(buildInvocation({ ...base, runner: 'codex', readOnly: false }).parse, 'stream-json');
+  assert.equal(buildInvocation({ ...base, runner: 'claude', readOnly: false }).parse, 'claude-stream-json');
+});
+
+test('a host runner is always a host-handoff, even when the CLI flag said cli', () => {
+  assert.equal(resolveExecutionSurface({ runner: 'host', invocationMode: 'cli' }), 'host-handoff');
+  assert.equal(resolveExecutionSurface({ runner: 'claude', invocationMode: 'cli' }), 'cli-subprocess');
+  assert.equal(resolveExecutionSurface({ runner: 'claude', invocationMode: 'chat' }), 'host-handoff');
+  assert.equal(isHostSurface({ runner: 'host' }), true);
+  assert.equal(isHostSurface({ executionSurface: 'cli-subprocess', runner: 'host' }), false);
 });

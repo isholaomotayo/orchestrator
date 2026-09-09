@@ -21,12 +21,13 @@
 // operator reviews once, when the list is done, before anything reaches base.
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn as nodeSpawn, spawnSync } from 'node:child_process';
+import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
+  writeStatus, newStatus,
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
-import { resolvePoolRunner, checkRunnerAvailable } from './adapters.mjs';
+import { resolvePoolRunner, checkRunnerAvailable, resolveExecutionSurface } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
 import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } from './roadmap.mjs';
 import { classifyEvent, appendAttention, openDecision, openDecisions, readDecisions } from './attention.mjs';
@@ -43,6 +44,7 @@ const ENGINE = 'pipeline/orchestrator.mjs';
 export function createSupervisor({
   repoRoot = process.cwd(),
   spawn = nodeSpawn,
+  spawnSync = nodeSpawnSync,
   now = () => Date.now(),
   log = (line) => appendLine(pipelinePaths(repoRoot).supervisorLog, `${new Date().toISOString()} ${line}`),
 } = {}) {
@@ -66,6 +68,54 @@ export function createSupervisor({
     return 'auto';
   }
 
+  function persistRunRecord(runPaths, {
+    runId, featureId, ticketId, kind, runner, branch, baseRef, brief, pid = null,
+    phase = 'spawned', haltReason = null, haltDetail = null,
+  }) {
+    const surface = resolveExecutionSurface({ runner });
+    let existing = null;
+    try { existing = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* first write */ }
+    // A resume must not clobber the orchestrator's halt record — otherwise
+    // MAX_CYCLES looks "running" again and the feature never fails. Bootstrap
+    // status.json only for a brand-new run, or overwrite when this spawn is
+    // itself the terminal failure (runner unavailable, host early-exit).
+    if (haltReason || !existing) {
+      const status = existing && haltReason ? { ...existing } : newStatus(`${kind} ${featureId}${ticketId ? `/${ticketId}` : ''}`, {});
+      status.runner = runner;
+      status.executionSurface = surface;
+      status.invocationMode = surface === 'host-handoff' ? 'chat' : 'cli';
+      status.featureId = featureId;
+      status.ticketId = ticketId;
+      status.runId = runId;
+      if (haltReason) {
+        status.overall = 'halted';
+        status.haltReason = haltReason;
+        status.haltTransient = false;
+        status.endedAt = new Date(now()).toISOString();
+        if (haltDetail) {
+          const row = (status.stages || []).find((s) => s.name === 'planner') || status.stages?.[0];
+          if (row) { row.status = 'failed'; row.detail = haltDetail; }
+        }
+      }
+      writeStatus(runPaths, status);
+    }
+    writeRunMeta(runPaths, {
+      runId, featureId, ticketId, kind, branch, baseRef, runner,
+      worktree: runPaths.worktree ? path.relative(repoRoot, runPaths.worktree) : null,
+      brief, pid, phase, spawnedAt: new Date(now()).toISOString(),
+      executionSurface: surface,
+    });
+  }
+
+  function alreadyPending(runId, kind) {
+    return pool.pendingAttention(paths).some((item) => item.runId === runId && item.kind === kind);
+  }
+
+  function raiseAttention(item) {
+    if (item.runId && item.kind && alreadyPending(item.runId, item.kind)) return null;
+    return appendAttention(paths, item);
+  }
+
   // A feature/ticket's runner may resolve to a real CLI (spawned headless, in
   // the background, for genuine unattended parallel automation) or to 'host'
   // (no subprocess at all — the run is left for a human to claim and complete
@@ -78,9 +128,13 @@ export function createSupervisor({
 
     const avail = checkRunnerAvailable(runner, config);
     if (!avail.ok) {
-      // Fails clean, as an attention item — not as a throw inside a detached
-      // child process nobody is watching.
-      appendAttention(paths, {
+      persistRunRecord(runPaths, {
+        runId, featureId, ticketId, kind, runner, branch, baseRef,
+        brief: brief ? path.relative(repoRoot, brief) : null,
+        phase: 'failed', haltReason: 'RUNNER_UNAVAILABLE', haltDetail: avail.reason,
+      });
+      appendRunVerb(runPaths, 'failed', `runner-unavailable: ${avail.reason}`);
+      raiseAttention({
         runId, featureId, ticketId, kind: 'runner-unavailable', escalate: true,
         summary: `Resolved runner "${runner}" for ${featureId}${ticketId ? `/${ticketId}` : ''} is not usable: ${avail.reason}`,
       });
@@ -88,10 +142,12 @@ export function createSupervisor({
       return { runId, pid: null, blocked: true };
     }
 
+    const surface = resolveExecutionSurface({ runner });
+    const mode = surface === 'host-handoff' ? 'chat' : 'cli';
     const args = [
       ENGINE,
       '--run-id', runId,
-      '--mode', 'cli',
+      '--mode', mode,
       '--runner', runner,
       '--feature-id', featureId,
       ...(ticketId ? ['--ticket-id', ticketId] : []),
@@ -105,8 +161,9 @@ export function createSupervisor({
     const out = fs.openSync(outFile, 'a');
     const metaBase = {
       runId, featureId, ticketId, kind, branch, baseRef, runner,
-      worktree: path.relative(repoRoot, runPaths.worktree),
+      worktree: runPaths.worktree ? path.relative(repoRoot, runPaths.worktree) : null,
       brief: brief ? path.relative(repoRoot, brief) : null,
+      executionSurface: surface,
     };
 
     if (runner === 'host') {
@@ -120,7 +177,17 @@ export function createSupervisor({
       const result = spawnSync(process.execPath, args, {
         cwd: repoRoot, env: { ...process.env }, stdio: ['ignore', out, out], timeout: 30_000,
       });
-      if (result.error) log(`host spawn error for ${runId}: ${result.error.message}`);
+      try { fs.closeSync(out); } catch { /* already closed */ }
+      if (result.error || (result.status !== 0 && result.status != null)) {
+        const detail = result.error?.message || `host orchestrator exited ${result.status}`;
+        persistRunRecord(runPaths, {
+          ...metaBase, pid: null, phase: 'failed',
+          haltReason: 'AGENT_ERROR', haltDetail: detail,
+        });
+        appendRunVerb(runPaths, 'failed', detail);
+        log(`host spawn error for ${runId}: ${detail}`);
+        return { runId, pid: null, blocked: true };
+      }
       log(`spawned ${kind} run ${runId} for ${featureId}${ticketId ? `/${ticketId}` : ''} — host runner, awaiting chat`);
       return { runId, pid: null };
     }
@@ -132,7 +199,7 @@ export function createSupervisor({
       detached: true,
     });
     if (child.unref) child.unref();
-    writeRunMeta(runPaths, { ...metaBase, pid: child.pid ?? null, phase: 'spawned', spawnedAt: new Date(now()).toISOString() });
+    persistRunRecord(runPaths, { ...metaBase, pid: child.pid ?? null, phase: 'spawned' });
     appendRunVerb(runPaths, 'note', `spawned ${kind} run`);
     log(`spawned ${kind} run ${runId} for ${featureId}${ticketId ? `/${ticketId}` : ''} (pid ${child.pid})`);
     return { runId, pid: child.pid ?? null };
@@ -152,6 +219,11 @@ export function createSupervisor({
   // ---- feature lifecycle ---------------------------------------------------
 
   function startFeature(rm, feature) {
+    if (feature.specRunId) {
+      let existing = null;
+      try { existing = JSON.parse(fs.readFileSync(pipelinePaths(repoRoot, { runId: feature.specRunId }).status, 'utf8')); } catch { /* gone */ }
+      if (existing && !['done', 'halted'].includes(existing.overall)) return;
+    }
     const baseRef = feature.baseRef || currentSha(repoRoot, rm.base);
     const runId = newRunId({ featureId: feature.id, kind: 'plan' });
     const brief = writeBrief({
@@ -160,12 +232,18 @@ export function createSupervisor({
       body: planBriefBody(rm, feature),
     });
     const wantPlanApproval = poolCfg.featurePlanApproval && rm.review !== 'end';
-    spawnWorker({
+    const spawned = spawnWorker({
       runId, featureId: feature.id, ticketId: null, kind: 'plan',
       brief, branch: `pipeline/work/${feature.id}/plan-${runId}`, baseRef,
       runner: resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner)),
       extra: ['--plan-only', ...(wantPlanApproval ? ['--approve-plan'] : [])],
     });
+    if (spawned.blocked) {
+      saveRoadmap(setFeatureStatus(rm, feature.id, 'failed', {
+        baseRef, specRunId: runId, startedAt: new Date(now()).toISOString(),
+      }));
+      return;
+    }
     saveRoadmap(setFeatureStatus(rm, feature.id, 'planning', {
       baseRef, specRunId: runId, startedAt: new Date(now()).toISOString(),
     }));
@@ -207,7 +285,7 @@ export function createSupervisor({
         mode: feature.mode, base: feature.baseRef, branch: `pipeline/work/${feature.id}/${runId}`,
         body: ticket.body || feature.description,
       });
-      spawnWorker({
+      const spawned = spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
         brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: feature.baseRef,
         runner: resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner)),
@@ -217,7 +295,9 @@ export function createSupervisor({
         ],
       });
       const row = updated.find((t) => t.id === ticket.id);
-      if (row) { row.runId = runId; row.status = 'running'; } else { updated.push({ id: ticket.id, title: ticket.title, runId, status: 'running' }); }
+      const ticketStatus = spawned.blocked ? 'failed' : 'running';
+      if (row) { row.runId = runId; row.status = ticketStatus; }
+      else { updated.push({ id: ticket.id, title: ticket.title, runId, status: ticketStatus }); }
     }
     if (wave.length || !feature.tickets?.length) {
       saveRoadmap(setFeatureStatus(roadmap(), feature.id, 'executing', { tickets: updated }));
@@ -303,10 +383,10 @@ export function createSupervisor({
   }
 
   function tryMerge(worktree, branch) {
-    const res = spawnSync('git', ['merge', '--no-ff', '--no-edit', branch], { cwd: worktree, encoding: 'utf8' });
+    const res = nodeSpawnSync('git', ['merge', '--no-ff', '--no-edit', branch], { cwd: worktree, encoding: 'utf8' });
     if (res.status === 0) return { ok: true, files: [] };
-    const conflicted = spawnSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: worktree, encoding: 'utf8' });
-    spawnSync('git', ['merge', '--abort'], { cwd: worktree, encoding: 'utf8' });
+    const conflicted = nodeSpawnSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: worktree, encoding: 'utf8' });
+    nodeSpawnSync('git', ['merge', '--abort'], { cwd: worktree, encoding: 'utf8' });
     return { ok: false, files: (conflicted.stdout || '').trim().split('\n').filter(Boolean) };
   }
 
@@ -603,7 +683,7 @@ export function createSupervisor({
   }
 
   function escalate(feature, run, kind, summary) {
-    appendAttention(paths, { runId: run?.runId ?? null, featureId: feature?.id ?? null, kind, summary });
+    raiseAttention({ runId: run?.runId ?? null, featureId: feature?.id ?? null, kind, summary, escalate: true });
     log(`escalated ${kind}: ${summary}`);
   }
 
@@ -628,7 +708,7 @@ export function createSupervisor({
         staleSince: run.lastOutputAt, verbSince: run.verbSince, now: now(),
       }, poolCfg);
       if (event) {
-        if (event.escalate) {
+        if (event.escalate && !alreadyPending(run.runId, event.kind)) {
           const decisionId = event.kind === 'plan-approval'
             ? openDecision(paths, {
               runId: run.runId, featureId: run.featureId, kind: 'plan-approval', stage: 'planner',
@@ -825,10 +905,12 @@ export function createSupervisor({
   function resumableHalt(run) {
     if (run.status?.overall !== 'halted') return false;
     const reason = run.status.haltReason;
-    if (!['MAX_CYCLES', 'AGENT_ERROR'].includes(reason)) return false;
     if (Number(run.meta?.autoResumes || 0) >= poolCfg.autoResumeMax) return false;
-    if (reason === 'MAX_CYCLES' && Number(run.meta?.autoCycleExtends || 0) >= 1) return false;
-    return true;
+    if (reason === 'MAX_CYCLES') {
+      if (Number(run.meta?.autoCycleExtends || 0) >= 1) return false;
+      return true;
+    }
+    return reason === 'AGENT_ERROR' && run.status.haltTransient === true;
   }
 
   function isRetrying(run) {
@@ -906,7 +988,7 @@ export function createSupervisor({
 
 // Small helpers kept at the bottom so the lifecycle above reads top to bottom.
 function gitIn(cwd, args) {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
