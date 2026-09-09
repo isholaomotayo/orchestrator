@@ -8,18 +8,103 @@ ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-https://github.com/isholaomotayo/orchest
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v2.0.0}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v2.0.1}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from
 # the clone it validates (see scaffold-manifest.mjs). Verification runs before
 # anything fetched is copied or executed, and uses the verifier next to this
 # script — never the clone's own copy, which a tampered tree would control.
-MANIFEST="${ORCHESTRATOR_MANIFEST:-$SCRIPT_DIR/scaffold.sha256}"
-VERIFIER="$SCRIPT_DIR/scaffold-manifest.mjs"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Default to this script's directory (.agents/… on first bootstrap). When the
+# Cursor Skill Manager has refreshed ~/.cursor/skills/orchestrate but the
+# project's .agents copy is still stale, prefer the newer global anchor.
+resolve_trust_anchor() {
+  if [ -n "${ORCHESTRATOR_MANIFEST:-}" ]; then
+    MANIFEST="$ORCHESTRATOR_MANIFEST"
+    VERIFIER="${ORCHESTRATOR_VERIFIER:-$(dirname "$MANIFEST")/scaffold-manifest.mjs}"
+    return 0
+  fi
+  local candidates=(
+    "$HOME/.cursor/skills/orchestrate/scripts"
+    "$REPO_ROOT/.cursor/skills/orchestrate/scripts"
+    "$SCRIPT_DIR"
+    "$REPO_ROOT/.agents/skills/orchestrate/scripts"
+  )
+  for dir in "${candidates[@]}"; do
+    if [ -f "$dir/scaffold.sha256" ] && [ -f "$dir/scaffold-manifest.mjs" ]; then
+      MANIFEST="$dir/scaffold.sha256"
+      VERIFIER="$dir/scaffold-manifest.mjs"
+      return 0
+    fi
+  done
+  MANIFEST="$SCRIPT_DIR/scaffold.sha256"
+  VERIFIER="$SCRIPT_DIR/scaffold-manifest.mjs"
+}
+resolve_trust_anchor
 
 if command -v bun >/dev/null 2>&1; then JS_RUNNER="bun"; else JS_RUNNER="node"; fi
+
+RELEASE_MANIFEST="skills/orchestrate/scripts/scaffold.sha256"
+RELEASE_VERIFIER="skills/orchestrate/scripts/scaffold-manifest.mjs"
+
+# Verify a fetched tree against the installed manifest. When that fails — typical
+# on a release upgrade where the local manifest still describes the previous
+# tag — self-verify against the manifest bundled inside the fetched tag, refresh
+# the local trust anchor, and proceed.
+verify_fetched_tree() {
+  local tree="$1"
+  if [ "$SKIP_VERIFY" -eq 1 ]; then
+    echo "[orchestrate] Warning: --skip-verify given; the fetched tree was NOT integrity-checked." >&2
+    return 0
+  fi
+  if [ ! -f "$MANIFEST" ] || [ ! -f "$VERIFIER" ]; then
+    echo "[orchestrate] Integrity manifest not found next to this script ($MANIFEST)." >&2
+    echo "[orchestrate] Reinstall the skill (npx skills add …) so the manifest is present, or pass --skip-verify to install without verification." >&2
+    return 1
+  fi
+  local candidates=(
+    "$HOME/.cursor/skills/orchestrate/scripts"
+    "$REPO_ROOT/.cursor/skills/orchestrate/scripts"
+    "$SCRIPT_DIR"
+    "$REPO_ROOT/.agents/skills/orchestrate/scripts"
+  )
+  local dir manifest verifier
+  for dir in "${candidates[@]}"; do
+    manifest="$dir/scaffold.sha256"
+    verifier="$dir/scaffold-manifest.mjs"
+    [ -f "$manifest" ] && [ -f "$verifier" ] || continue
+    if "$JS_RUNNER" "$verifier" --verify "$tree" --manifest "$manifest"; then
+      if [ "$manifest" != "$SCRIPT_DIR/scaffold.sha256" ]; then
+        mkdir -p "$SCRIPT_DIR"
+        cp "$manifest" "$SCRIPT_DIR/scaffold.sha256"
+        cp "$verifier" "$SCRIPT_DIR/scaffold-manifest.mjs"
+        echo "[orchestrate] Synced trust anchor from ${manifest} → $SCRIPT_DIR/." >&2
+      fi
+      MANIFEST="$SCRIPT_DIR/scaffold.sha256"
+      VERIFIER="$SCRIPT_DIR/scaffold-manifest.mjs"
+      return 0
+    fi
+  done
+  local release_manifest="$tree/$RELEASE_MANIFEST"
+  local release_verifier="$tree/$RELEASE_VERIFIER"
+  if [ -f "$release_manifest" ] && [ -f "$release_verifier" ] \
+    && "$JS_RUNNER" "$release_verifier" --verify "$tree" --manifest "$release_manifest"; then
+    cp "$release_manifest" "$MANIFEST"
+    cp "$release_verifier" "$VERIFIER"
+    local gemini_manifest="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold.sha256"
+    local gemini_verifier="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs"
+    if [ -d "$(dirname "$gemini_manifest")" ]; then
+      mkdir -p "$(dirname "$gemini_manifest")"
+      cp "$release_manifest" "$gemini_manifest"
+      cp "$release_verifier" "$gemini_verifier"
+    fi
+    echo "[orchestrate] Local scaffold manifest was stale; refreshed the trust anchor from the fetched release." >&2
+    return 0
+  fi
+  echo "[orchestrate] Refusing to install: the fetched tree does not match a reviewed release." >&2
+  return 1
+}
 
 UPDATE=0
 FORCE=0
@@ -50,10 +135,19 @@ if [ "$UPDATE" -eq 1 ]; then
     echo "[orchestrate] Nothing to update — no scaffold here. Run bootstrap.sh without --update first." >&2
     exit 1
   fi
-  UPDATE_ARGS=(--apply --repo "$REPO_ROOT" --source "$ORCHESTRATOR_REPO" --ref "$ORCHESTRATOR_REF")
+  TMP="$(mktemp -d)"
+  cleanup_update() { rm -rf "$TMP"; }
+  trap cleanup_update EXIT
+  echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF ..."
+  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
+  if ! verify_fetched_tree "$TMP"; then
+    exit 1
+  fi
+  UPDATE_ARGS=(--apply --repo "$REPO_ROOT" --src "$TMP" --no-rexec)
   [ "$SKIP_VERIFY" -eq 1 ] && UPDATE_ARGS+=(--skip-verify)
   [ "$FORCE" -eq 1 ] && UPDATE_ARGS+=(--force)
-  exec "$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" "${UPDATE_ARGS[@]}"
+  "$JS_RUNNER" "$REPO_ROOT/pipeline/installer.mjs" "${UPDATE_ARGS[@]}"
+  exit $?
 fi
 
 if [ -f "$REPO_ROOT/.pipeline/orchestrate.sh" ] && [ -d "$REPO_ROOT/pipeline" ]; then
@@ -76,15 +170,7 @@ echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF 
 git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
 
 # Verify BEFORE copying or executing anything from the fetched tree.
-if [ "$SKIP_VERIFY" -eq 1 ]; then
-  echo "[orchestrate] Warning: --skip-verify given; the fetched tree was NOT integrity-checked." >&2
-elif [ ! -f "$MANIFEST" ] || [ ! -f "$VERIFIER" ]; then
-  echo "[orchestrate] Integrity manifest not found next to this script ($MANIFEST)." >&2
-  echo "[orchestrate] Reinstall the skill (npx skills add …) so the manifest is present, or pass --skip-verify to install without verification." >&2
-  exit 1
-elif ! "$JS_RUNNER" "$VERIFIER" --verify "$TMP" --manifest "$MANIFEST"; then
-  echo "[orchestrate] Refusing to install: the fetched tree does not match the reviewed release recorded in scaffold.sha256." >&2
-  echo "[orchestrate] This means the pinned tag now resolves to different content than was reviewed. Do not bypass this without understanding why." >&2
+if ! verify_fetched_tree "$TMP"; then
   exit 1
 fi
 

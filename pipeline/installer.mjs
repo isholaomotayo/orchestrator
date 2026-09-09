@@ -35,19 +35,39 @@ export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git
 // installed skill before any of it is copied or executed — see
 // skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
 // travel out-of-band from the clone.
-export const DEFAULT_REF = 'v2.0.0';
+export const DEFAULT_REF = 'v2.0.1';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
 // self-target guard's marker).
-export const VERIFIER_RELS = [
-  '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs',
-  '.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs',
+// Cursor Skill Manager installs to ~/.cursor/skills/ (global) or
+// .cursor/skills/ (project). Bootstrap and the first bootstrap copy live under
+// .agents/skills/. All of these are valid out-of-band trust anchors; we try
+// each until one verifies the fetched release.
+export const TRUST_ANCHOR_RELS = [
+  {
+    manifest: '.agents/skills/orchestrate/scripts/scaffold.sha256',
+    verifier: '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs',
+  },
+  {
+    manifest: '.cursor/skills/orchestrate/scripts/scaffold.sha256',
+    verifier: '.cursor/skills/orchestrate/scripts/scaffold-manifest.mjs',
+  },
+  {
+    manifest: '.gemini/skills/orchestrate/scripts/scaffold.sha256',
+    verifier: '.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs',
+  },
 ];
-export const MANIFEST_RELS = [
-  '.agents/skills/orchestrate/scripts/scaffold.sha256',
-  '.gemini/skills/orchestrate/scripts/scaffold.sha256',
+export const GLOBAL_TRUST_ANCHOR_RELS = [
+  {
+    manifest: '.cursor/skills/orchestrate/scripts/scaffold.sha256',
+    verifier: '.cursor/skills/orchestrate/scripts/scaffold-manifest.mjs',
+  },
 ];
+export const VERIFIER_RELS = TRUST_ANCHOR_RELS.map((a) => a.verifier);
+export const MANIFEST_RELS = TRUST_ANCHOR_RELS.map((a) => a.manifest);
+export const RELEASE_MANIFEST_REL = 'skills/orchestrate/scripts/scaffold.sha256';
+export const RELEASE_VERIFIER_REL = 'skills/orchestrate/scripts/scaffold-manifest.mjs';
 export const CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -339,12 +359,63 @@ export function firstExisting(repoRoot, rels, exists = fs.existsSync) {
   return null;
 }
 
+/** Every trust-anchor pair present in the project or the user's global skills dir. */
+export function listTrustAnchors(repoRoot, { homeDir = os.homedir(), exists = fs.existsSync } = {}) {
+  const out = [];
+  const seen = new Set();
+  for (const anchor of GLOBAL_TRUST_ANCHOR_RELS) {
+    const manifest = path.join(homeDir, anchor.manifest);
+    const verifier = path.join(homeDir, anchor.verifier);
+    if (!exists(manifest) || !exists(verifier)) continue;
+    const key = `${manifest}\0${verifier}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ manifest, verifier, scope: 'global-cursor' });
+  }
+  for (const anchor of TRUST_ANCHOR_RELS) {
+    const manifest = path.join(repoRoot, anchor.manifest);
+    const verifier = path.join(repoRoot, anchor.verifier);
+    if (!exists(manifest) || !exists(verifier)) continue;
+    const key = `${manifest}\0${verifier}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ manifest, verifier, scope: anchor.manifest.startsWith('.agents/') ? 'project-agents' : 'project' });
+  }
+  return out;
+}
+
+function runManifestVerify(runner, verifier, srcRoot, manifest) {
+  const res = spawnSync(runner, [verifier, '--verify', srcRoot, '--manifest', manifest], { encoding: 'utf8', timeout: 120000 });
+  if (res.status === 0) return { ok: true };
+  return { ok: false, detail: (res.stderr || res.stdout || '').trim() };
+}
+
+/** Copy the release tag's trust anchor into the consumer before applying an update. */
+export function refreshInstalledTrustAnchor(repoRoot, srcRoot) {
+  const manifestSrc = path.join(srcRoot, RELEASE_MANIFEST_REL);
+  const verifierSrc = path.join(srcRoot, RELEASE_VERIFIER_REL);
+  if (!fs.existsSync(manifestSrc) || !fs.existsSync(verifierSrc)) return false;
+  for (const rel of MANIFEST_RELS) {
+    const dest = path.join(repoRoot, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(manifestSrc, dest);
+  }
+  for (const rel of VERIFIER_RELS) {
+    const dest = path.join(repoRoot, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(verifierSrc, dest);
+  }
+  return true;
+}
+
 /**
- * Verify a freshly fetched tree against the manifest that shipped with the
- * installed skill, BEFORE anything in it is copied or executed. The verifier
- * and manifest are both taken from the consumer project (out-of-band from the
- * clone) — running the clone's own copy of either would let a tampered tree
- * approve itself.
+ * Verify a freshly fetched tree before anything in it is copied or executed.
+ *
+ * First try the manifest already installed in this project (out-of-band from
+ * the clone). When that fails — typical on a release upgrade where the local
+ * manifest still describes the previous tag — self-verify the fetched tree
+ * against the manifest bundled *inside* that tag, then refresh the local
+ * trust anchor and proceed. A tampered fetch fails both checks.
  *
  * @returns {{ok: boolean, reason?: string, detail?: string}} `ok:true` with
  *   `reason:'unverifiable'` when this project predates the manifest (installed
@@ -352,15 +423,40 @@ export function firstExisting(repoRoot, rels, exists = fs.existsSync) {
  *   the caller decides whether to proceed rather than hard-failing an existing
  *   working install.
  */
-export function verifyFetchedTree({ repoRoot, srcRoot, runner = process.execPath }) {
-  const verifier = firstExisting(repoRoot, VERIFIER_RELS);
-  const manifest = firstExisting(repoRoot, MANIFEST_RELS);
-  if (!verifier || !manifest) {
+export function verifyFetchedTree({ repoRoot, srcRoot, runner = process.execPath, homeDir = os.homedir() }) {
+  const anchors = listTrustAnchors(repoRoot, { homeDir });
+  if (!anchors.length) {
     return { ok: true, reason: 'unverifiable', detail: 'no scaffold manifest is installed in this project (installed before manifests existed)' };
   }
-  const res = spawnSync(runner, [verifier, '--verify', srcRoot, '--manifest', manifest], { encoding: 'utf8', timeout: 120000 });
-  if (res.status === 0) return { ok: true, reason: 'verified' };
-  return { ok: false, reason: 'mismatch', detail: (res.stderr || res.stdout || '').trim() };
+
+  let lastDetail = '';
+  for (const anchor of anchors) {
+    const local = runManifestVerify(runner, anchor.verifier, srcRoot, anchor.manifest);
+    if (local.ok) {
+      if (anchor.scope === 'global-cursor' || anchor.scope === 'project') {
+        refreshInstalledTrustAnchor(repoRoot, srcRoot);
+      }
+      return {
+        ok: true,
+        reason: anchor.scope === 'global-cursor' ? 'verified-global-skill' : 'verified',
+      };
+    }
+    lastDetail = local.detail || lastDetail;
+  }
+
+  const releaseManifest = path.join(srcRoot, RELEASE_MANIFEST_REL);
+  const releaseVerifier = path.join(srcRoot, RELEASE_VERIFIER_REL);
+  if (fs.existsSync(releaseManifest) && fs.existsSync(releaseVerifier)) {
+    const release = runManifestVerify(runner, releaseVerifier, srcRoot, releaseManifest);
+    if (release.ok && refreshInstalledTrustAnchor(repoRoot, srcRoot)) {
+      return { ok: true, reason: 'verified-release-manifest' };
+    }
+    if (!release.ok) {
+      return { ok: false, reason: 'mismatch', detail: release.detail || lastDetail };
+    }
+  }
+
+  return { ok: false, reason: 'mismatch', detail: lastDetail };
 }
 
 function doApply({ repoRoot, srcRoot, force, source }) {
@@ -449,11 +545,13 @@ function main(argv) {
       if (!check.ok) {
         console.error(`[installer] Integrity check failed for ${source}@${ref}:`);
         if (check.detail) console.error(check.detail);
-        console.error('[installer] Refusing to update from a tree that does not match the reviewed release recorded in this project\'s scaffold manifest. If you are deliberately updating to a NEWER release, reinstall the skill first (npx skills add …) so its manifest matches, or pass --skip-verify to accept an unverified tree.');
+        console.error('[installer] Refusing to update from a tree that does not match a reviewed release. Reinstall the skill (npx skills add …) so its manifest matches, update to a release whose bundled manifest self-verifies, or pass --skip-verify to accept an unverified tree.');
         try { fs.rmSync(cloned, { recursive: true, force: true }); } catch {}
         return 1;
       }
       if (check.reason === 'unverifiable') console.error(`[installer] Warning: ${check.detail} — proceeding unverified.`);
+      if (check.reason === 'verified-release-manifest') console.error('[installer] Local scaffold manifest was stale; refreshed the trust anchor from the fetched release before applying.');
+      if (check.reason === 'verified-global-skill') console.error('[installer] Verified via Cursor Skill Manager (~/.cursor/skills/orchestrate); synced the trust anchor into this project.');
       if (check.reason === 'skipped') console.error('[installer] Warning: --skip-verify given; the fetched tree was NOT integrity-checked.');
       srcRoot = cloned;
       // Hand off to the freshly fetched installer so an update is always

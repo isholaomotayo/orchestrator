@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import {
   MANAGED, listManaged, planUpdate, applyUpdate, nextManifestFiles,
   manifestFilesAfterInstall, shouldCheck, resolveEngineEntry, summarize, isValidSource, CHECK_TTL_MS,
-  firstExisting, verifyFetchedTree, DEFAULT_REF, VERIFIER_RELS, MANIFEST_RELS,
+  firstExisting, listTrustAnchors, verifyFetchedTree, refreshInstalledTrustAnchor, DEFAULT_REF, VERIFIER_RELS, MANIFEST_RELS,
+  RELEASE_MANIFEST_REL, RELEASE_VERIFIER_REL,
 } from './installer.mjs';
 import { SELF_MARKERS } from './self-guard.mjs';
 
@@ -22,6 +23,9 @@ function write(root, rel, body) {
 }
 function read(root, rel) {
   try { return fs.readFileSync(path.join(root, rel), 'utf8'); } catch { return null; }
+}
+function emptyHome() {
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'orch-home-empty-'));
 }
 
 // A minimal source tree covering one file of each class plus both skill copies.
@@ -278,7 +282,10 @@ test('firstExisting picks the first candidate that is present', () => {
 // being checked — these paths are what bootstrap.sh actually installs.
 test('the verifier and manifest are looked up outside the fetched tree', () => {
   for (const rel of [...VERIFIER_RELS, ...MANIFEST_RELS]) {
-    assert.ok(rel.startsWith('.agents/') || rel.startsWith('.gemini/'), `${rel} must be an installed-skill path`);
+    assert.ok(
+      rel.startsWith('.agents/') || rel.startsWith('.gemini/') || rel.startsWith('.cursor/'),
+      `${rel} must be an installed-skill path`,
+    );
     assert.ok(!rel.startsWith('skills/'), `${rel} must not use the self-guard marker path`);
   }
 });
@@ -288,7 +295,7 @@ test('the verifier and manifest are looked up outside the fetched tree', () => {
 // reported rather than silently treated as verified.
 test('verifyFetchedTree reports unverifiable when no manifest is installed', () => {
   const repoRoot = tmpDir('orch-repo-');
-  const result = verifyFetchedTree({ repoRoot, srcRoot: tmpDir('orch-src-') });
+  const result = verifyFetchedTree({ repoRoot, srcRoot: tmpDir('orch-src-'), homeDir: emptyHome() });
   assert.equal(result.ok, true);
   assert.equal(result.reason, 'unverifiable');
   assert.match(result.detail, /manifest/i);
@@ -304,7 +311,7 @@ test('verifyFetchedTree runs the installed verifier and passes on a clean tree',
     process.exit(0);
   `);
   write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.0","files":{}}');
-  const result = verifyFetchedTree({ repoRoot, srcRoot });
+  const result = verifyFetchedTree({ repoRoot, srcRoot, homeDir: emptyHome() });
   assert.equal(result.ok, true);
   assert.equal(result.reason, 'verified');
 });
@@ -314,10 +321,80 @@ test('verifyFetchedTree fails closed when the installed verifier rejects the tre
   const srcRoot = tmpDir('orch-src-', { 'pipeline/orchestrator.mjs': 'tampered' });
   write(repoRoot, VERIFIER_RELS[0], 'console.error("modified (1): pipeline/orchestrator.mjs"); process.exit(1);');
   write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.0","files":{}}');
-  const result = verifyFetchedTree({ repoRoot, srcRoot });
+  const result = verifyFetchedTree({ repoRoot, srcRoot, homeDir: emptyHome() });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'mismatch');
   assert.match(result.detail, /orchestrator\.mjs/);
+});
+
+test('verifyFetchedTree self-verifies via the release manifest when the local one is stale', () => {
+  const releaseManifest = '{"ref":"v2.0.0","files":{"pipeline/events.mjs":"abc"}}';
+  const releaseVerifier = `
+    const a = process.argv.slice(2);
+    if (a[0] !== '--verify' || !a[1] || a[2] !== '--manifest' || !a[3]) process.exit(2);
+    process.exit(0);
+  `;
+  const repoRoot = tmpDir('orch-repo-');
+  const srcRoot = tmpDir('orch-src-', {
+    'pipeline/events.mjs': 'new runtime',
+    [RELEASE_MANIFEST_REL]: releaseManifest,
+    [RELEASE_VERIFIER_REL]: releaseVerifier,
+  });
+  write(repoRoot, VERIFIER_RELS[0], 'console.error("modified (43): pipeline/events.mjs"); process.exit(1);');
+  write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.1","files":{}}');
+  const result = verifyFetchedTree({ repoRoot, srcRoot, homeDir: emptyHome() });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'verified-release-manifest');
+  assert.equal(read(repoRoot, MANIFEST_RELS[0]), releaseManifest);
+  assert.equal(read(repoRoot, VERIFIER_RELS[0]), releaseVerifier);
+});
+
+test('verifyFetchedTree accepts a Cursor Skill Manager global manifest when the project copy is stale', () => {
+  const releaseManifest = '{"ref":"v2.0.0","files":{"pipeline/events.mjs":"abc"}}';
+  const passVerifier = `
+    const a = process.argv.slice(2);
+    if (a[0] !== '--verify' || !a[1] || a[2] !== '--manifest' || !a[3]) process.exit(2);
+    process.exit(0);
+  `;
+  const failVerifier = 'console.error("modified (43): pipeline/events.mjs"); process.exit(1);';
+  const repoRoot = tmpDir('orch-repo-');
+  const homeDir = tmpDir('orch-home-');
+  const srcRoot = tmpDir('orch-src-', {
+    'pipeline/events.mjs': 'new runtime',
+    [RELEASE_MANIFEST_REL]: releaseManifest,
+    [RELEASE_VERIFIER_REL]: passVerifier,
+  });
+  write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1.0.1","files":{}}');
+  write(repoRoot, VERIFIER_RELS[0], failVerifier);
+  write(homeDir, '.cursor/skills/orchestrate/scripts/scaffold.sha256', releaseManifest);
+  write(homeDir, '.cursor/skills/orchestrate/scripts/scaffold-manifest.mjs', passVerifier);
+  const result = verifyFetchedTree({ repoRoot, srcRoot, homeDir });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'verified-global-skill');
+  assert.equal(read(repoRoot, MANIFEST_RELS[0]), releaseManifest);
+});
+
+test('listTrustAnchors prefers the global Cursor skill before stale project copies', () => {
+  const repoRoot = tmpDir('orch-repo-');
+  const homeDir = tmpDir('orch-home-');
+  write(repoRoot, MANIFEST_RELS[0], '{"ref":"v1"}');
+  write(repoRoot, VERIFIER_RELS[0], 'local');
+  write(homeDir, '.cursor/skills/orchestrate/scripts/scaffold.sha256', '{"ref":"v2.0.0"}');
+  write(homeDir, '.cursor/skills/orchestrate/scripts/scaffold-manifest.mjs', 'global');
+  const anchors = listTrustAnchors(repoRoot, { homeDir });
+  assert.equal(anchors[0].scope, 'global-cursor');
+  assert.match(anchors[0].manifest, /\.cursor\/skills\/orchestrate/);
+});
+
+test('refreshInstalledTrustAnchor copies the release trust anchor into installed skill paths', () => {
+  const repoRoot = tmpDir('orch-repo-');
+  const srcRoot = tmpDir('orch-src-', {
+    [RELEASE_MANIFEST_REL]: '{"ref":"v2.0.0","files":{}}',
+    [RELEASE_VERIFIER_REL]: 'verifier v2',
+  });
+  assert.equal(refreshInstalledTrustAnchor(repoRoot, srcRoot), true);
+  assert.equal(read(repoRoot, MANIFEST_RELS[0]), '{"ref":"v2.0.0","files":{}}');
+  assert.equal(read(repoRoot, VERIFIER_RELS[0]), 'verifier v2');
 });
 
 test('the manifest and verifier are engine-class, so a local edit can never preserve a stale trust anchor', () => {
@@ -345,5 +422,5 @@ test('the coordinator skills are delivered to consumers, never at the source pat
 });
 
 test('the pinned release ref matches the version being shipped', () => {
-  assert.equal(DEFAULT_REF, 'v2.0.0');
+  assert.equal(DEFAULT_REF, 'v2.0.1');
 });

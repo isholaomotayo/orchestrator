@@ -37,7 +37,7 @@ Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the Git
 ## Supply-chain integrity
 
 Every fetch — the initial bootstrap clone and every `--update` / `--self-update`
-— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v2.0.0`),
+— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v2.0.1`),
 never a floating branch, and the fetched tree is then **verified file-by-file
 against `scaffold.sha256`** before anything in it is copied or executed.
 

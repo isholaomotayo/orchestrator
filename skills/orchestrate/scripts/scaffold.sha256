@@ -1,5 +1,5 @@
 {
-  "ref": "v2.0.0",
+  "ref": "v2.0.1",
   "files": {
     ".agent/rules/orchestrate.md": "5496ee399b19123621b01242464f21d15ff64973e7d07de4babfc25c0d5b5464",
     ".agents/workflows/orchestrate.md": "c3bda8c48d309ddea2d12c3e0617ae8487633f8c0b8e58d6dd399038f43ea5dc",
@@ -19,7 +19,7 @@
     "AGENTS.md": "00f9a1fd6811b704c3b10fc521e1b37197dfb3928f6208d6fa8ef88ebb0b1c56",
     "CLAUDE.md": "f9364716c45fac9c1701bb49c18813eccc88881272e8703b93ee5d0b20ebffb5",
     "GEMINI.md": "f8d5e7179f1e1bba2755654b0acd64ac0c054879fde839b22c0bf3e4c576a074",
-    "package.json": "f29c9b69fc92f80c55db13342913af7e5a90470d43bb2961f27db474efb13840",
+    "package.json": "24c7c100865cdc7aaa4d7b1e4dbf515bf88e576324d255dc6121c1e9f4637861",
     "pipeline/adapters.mjs": "c3dfd00ae403adfdf00cbdaf7002712aaf297f3ee1d4cc26fdcee27689833506",
     "pipeline/adapters.test.mjs": "8035e742c071e5e16ade08d378549bcf10c4b2de31117405e7e177d227f67312",
     "pipeline/artifacts.mjs": "feddefbbcdcdadeb7e66b13e8ff6e8383341760f5789336a65eed3c5f2ba1b84",
@@ -36,8 +36,8 @@
     "pipeline/host-event.mjs": "252c091ad3a8ecca3cb5a74a835d338f49ef1596bbef37f6d059cf5b80cecc74",
     "pipeline/http-guard.mjs": "af85f0a28c518cc362b8bd073951522a063b532e69cbc1f429722732e140f108",
     "pipeline/http-guard.test.mjs": "524a2e9a365ba99f7044ee0b20681ab41039dc3203f03f8a942f9c6d8b738035",
-    "pipeline/installer.mjs": "7f1c14b9e7434bb3f437b80998f7cdb28369b60f84d2b7b0252160326e3e5156",
-    "pipeline/installer.test.mjs": "2ce599be5d1b1b5c46b41be8e4e1e0285ce2602e38b3a3f0c6d1be18acb7c47d",
+    "pipeline/installer.mjs": "da26c6a57b578aab6ee5fdfe170fcec3f53431df03d30e6839884e65ac29aa27",
+    "pipeline/installer.test.mjs": "69443a4d7e130b82fbb3afc60014406eb7a7cab3861f086dbdea59636200bc15",
     "pipeline/integrity.mjs": "6e0fb62f79619b05a9c1c7aa5be4f2f5d7d4dfdfe16f2aa9c062f3f3d03c94de",
     "pipeline/integrity.test.mjs": "b5c16ee0b3b05334e5d229f007fc33c3568e2ff3fbe84b01e8060f569e4306ad",
     "pipeline/invocation.mjs": "24f8df9aaa4c820e22d0a7fc8b7fa9e959c1adbd52656f6cf84ec99206663d34",
@@ -101,9 +101,9 @@
     "skills/catchup/SKILL.md": "fac7fff7ed95888f28435dc5497cad663f6d8659603b08d2e14f40e4dbd0c732",
     "skills/digest/SKILL.md": "71396cbcb0fb63e1b9cab88aeddacf08d47804b72fc22de605fec513d6f401be",
     "skills/notes/SKILL.md": "c427f9c92ac95e8775be4a20eb8c8803af50609a3298665d7bf889d300950582",
-    "skills/orchestrate/REFERENCE.md": "6ca88e599e52853615049a67367796751316eb948affbeff382868941878a240",
+    "skills/orchestrate/REFERENCE.md": "a230d360d36e0328710a194021cb95a44d9ba14253b2cd7391bd0888043b46da",
     "skills/orchestrate/SKILL.md": "2d34826f11b8b360e53c57246769cebe91337b76d0bd731d3a5a2de6cf4d9709",
-    "skills/orchestrate/scripts/bootstrap.sh": "31a31f00aac2bd77806f991692f1f02a7545e5188957878e72d6b04cae2df11c",
+    "skills/orchestrate/scripts/bootstrap.sh": "0cd4e2d18b144fbb13d5bd356be599526b740c94ef3fc0df697e1229d878a5d1",
     "skills/orchestrate/scripts/scaffold-manifest.mjs": "b196fee5ef55ef3e9cbbdf68a58658c81c06e2a5d8f69909072e79c19bf87ba0",
     "skills/orchestrate/scripts/scaffold-manifest.test.mjs": "dd2c1d43ca07a5cb5470272bfe786c75b8542290f5df8d25ecb306e87548f955",
     "skills/unattended/SKILL.md": "35a4483ea03d3a481e224076852154bd7a098add733f3b5859b6fca806d34264"
