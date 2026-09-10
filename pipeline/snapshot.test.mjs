@@ -209,3 +209,35 @@ test('feature runIds include the plan, ticket, and integration lineage', () => {
   assert.equal(r1.goal.acceptance, '- PDF renders');
   assert.equal(r1.goal.specRunId, 'plan-1');
 });
+
+// ---- Overview's six-way breakdown -------------------------------------------
+
+test('counts split runs into the six overview buckets: executing, awaiting-agent, disconnected, blocked, awaiting-user, queued', () => {
+  const runsWithAllStates = [
+    ...runs, // r1: busy (executing), r2: awaiting with no owner (awaiting-agent)
+    { runId: 'r3', featureId: 'F2', ticketId: 'T3', kind: 'ticket', state: 'awaiting', owner: { capability: 'disconnected' } },
+    { runId: 'r4', featureId: 'F2', ticketId: 'T4', kind: 'ticket', state: 'dead' },
+    { runId: 'r5', featureId: 'F2', ticketId: 'T5', kind: 'ticket', overall: 'halted', state: 'idle' },
+  ];
+  const s = buildSnapshot({ roadmap, runs: runsWithAllStates, decisions, attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  assert.equal(s.counts.executing, 1, 'r1 (busy) is executing');
+  assert.equal(s.counts.awaitingAgent, 1, 'r2 (awaiting, no owner) is awaiting-agent');
+  assert.equal(s.counts.disconnected, 1, 'r3 (awaiting, disconnected owner) is disconnected');
+  assert.equal(s.counts.blocked, 2, 'r4 (dead) and r5 (halted) are both blocked');
+  // awaitingUser counts every needsDecision entry, not just formal decisions:
+  // d1 (the open plan-approval) plus r4 (dead) and r5 (halted) each synthesize
+  // their own escalation.
+  assert.equal(s.counts.awaitingUser, 3, 'd1, r4 (dead), and r5 (halted) each need a person');
+  assert.equal(s.counts.queued, 1, 'F3 is the one queued feature');
+});
+
+test('runner, spawnedAt, and reportRel survive from a raw run record into inProgress', () => {
+  const runsWithProvenance = [
+    { runId: 'r1', featureId: 'F2', ticketId: 'T1', kind: 'ticket', state: 'busy', runner: 'claude', spawnedAt: '2026-09-06T11:00:00Z', reportRel: '.pipeline/runs/r1/reports/work-done.html' },
+  ];
+  const s = buildSnapshot({ roadmap, runs: runsWithProvenance, decisions: [], attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  const r1 = s.inProgress.find((r) => r.runId === 'r1');
+  assert.equal(r1.runner, 'claude');
+  assert.equal(r1.spawnedAt, '2026-09-06T11:00:00Z');
+  assert.equal(r1.reportRel, '.pipeline/runs/r1/reports/work-done.html');
+});

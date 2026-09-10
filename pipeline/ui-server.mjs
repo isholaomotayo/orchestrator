@@ -622,7 +622,7 @@ const server = http.createServer((req, res) => {
     if (!project) return json(res,{error:'invalid project'},400);
     return readBody(req, body => {
       try {
-        const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature};
+        const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature,skip:pool.skipFeature};
         if (!actions[body?.action]) throw new Error('Unknown action');
         return json(res,actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action'));
       } catch (err) { return json(res,{error:err.message},409); }

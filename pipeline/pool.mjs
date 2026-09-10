@@ -154,6 +154,14 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
       ...readUsage(runPaths.events),
       owner: inspectBridge(paths.root, runId).owner,
       handoffId: status?.handoffId ?? null,
+      runner: meta?.runner ?? status?.runner ?? null,
+      spawnedAt: meta?.spawnedAt ?? status?.startedAt ?? null,
+      // A run's own directory (and its reports) outlives its worktree — cleanup
+      // on merge only removes the worktree — so this stays available for a
+      // landed/accepted run same as a live one.
+      reportRel: fs.existsSync(path.join(runPaths.reports, 'work-done.html'))
+        ? path.relative(paths.root, path.join(runPaths.reports, 'work-done.html'))
+        : null,
     });
   }
   return runs;
@@ -197,6 +205,7 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
       stage: r.stage, cycle: r.cycle, maxCycles: r.maxCycles, state: r.state,
       verb: r.verb, lastOutputAt: r.lastOutputAt, worktree: r.worktree,
       branch: r.branch, costUsd: r.costUsd, costPartial: r.partial, owner: r.owner, handoffId: r.handoffId, overall: r.status?.overall, haltReason: r.status?.haltReason,
+      runner: r.runner, spawnedAt: r.spawnedAt, reportRel: r.reportRel,
     })),
     decisions: readDecisions(paths),
     attention: pendingAttention(paths),

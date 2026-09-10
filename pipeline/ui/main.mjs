@@ -22,6 +22,7 @@ import {
   describeEvent, isStaleRefresh, conversationItems, estimateItemHeight,
   visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
 } from './feed.mjs';
+import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -47,6 +48,10 @@ const state = {
   status: null,
   sse: null,
   seq: 0,
+  refreshGen: 0,
+  degraded: false,
+  degradedError: null,
+  lastGoodAt: null,
 };
 
 const api = createApi(() => state.project);
@@ -60,6 +65,20 @@ function toast(message) {
   node.hidden = false;
   clearTimeout(toast._t);
   toast._t = setTimeout(() => { node.hidden = true; }, 3200);
+}
+
+// Connection health: a failed poll never blanks the page (refresh() keeps the
+// last good state.pool/state.runs untouched), but it must not look silent
+// either — this chip is the only visible sign anything is stale.
+function renderDegraded() {
+  const chip = $('degraded');
+  if (!state.degraded) { chip.hidden = true; return; }
+  chip.hidden = false;
+  const age = state.lastGoodAt ? Math.round((Date.now() - state.lastGoodAt) / 1000) : null;
+  chip.textContent = age != null
+    ? `disconnected — showing data from ${age}s ago, retrying…`
+    : 'disconnected — retrying…';
+  chip.onclick = () => refresh();
 }
 
 function setTheme(next) {
@@ -159,7 +178,7 @@ function openFor(item) {
   if (item.kind === 'run') return open({ kind: 'run', subject: item.id || '', title: item.label });
   if (item.kind === 'decision') {
     if (item.featureId && item.level === 'merge') return open({ kind: 'review', subject: item.runId || item.featureId, feature: item.featureId, title: `Review ${item.featureId}` });
-    return open({ kind: 'decisions', title: 'Decisions' });
+    return open({ kind: 'attention', title: 'Attention' });
   }
   if (item.kind === 'feature') {
     if (item.reportRel) return open({ kind: 'report', subject: item.id, file: item.reportRel, title: `${item.id} report` });
@@ -182,7 +201,6 @@ function renderSideFoot(tree) {
       },
     }));
   }
-  foot.append(el('button', { class: 'btn ghost', text: 'Decisions', onclick: () => open({ kind: 'decisions', title: 'Decisions' }) }));
 }
 
 // ---- tabs -----------------------------------------------------------------
@@ -253,15 +271,28 @@ function render() {
 }
 
 const VIEWS = {
-  home: viewHome,
+  overview: viewOverview,
   run: viewRun,
   feature: viewFeature,
   review: viewReview,
-  decisions: viewDecisions,
+  attention: viewAttention,
   report: viewReport,
+  runs: viewRuns,
+  messages: viewMessages,
+  reports: viewReports,
 };
 
-function viewHome(wrap) {
+// The five fixed destinations, always open, always in this order, never
+// closable — the plan calls these "clear destinations", not tabs you opened.
+const DESTINATIONS = [
+  { kind: 'overview', title: 'Overview' },
+  { kind: 'runs', title: 'Runs' },
+  { kind: 'attention', title: 'Attention' },
+  { kind: 'messages', title: 'Messages' },
+  { kind: 'reports', title: 'Reports' },
+];
+
+function viewOverview(wrap) {
   wrap.replaceChildren();
   const snap = state.pool?.snapshot;
   if (!snap) {
@@ -272,8 +303,35 @@ function viewHome(wrap) {
   wrap.append(el('h1', { text: snap.roadmap?.title || 'Pool' }));
   wrap.append(el('p', {
     class: 'sub',
-    text: `${snap.counts.inProgress} run(s) in progress · ${snap.counts.decisions} waiting on you · ${snap.counts.landed} landed · ${snap.counts.queued} queued`,
+    text: `${snap.counts.landed} landed so far`,
   }));
+
+  // Six buckets, each its own thing a person might need to do: work is moving
+  // (executing), a host is between checkpoints (awaiting-agent), a human is
+  // needed (awaiting-user), nobody is currently driving it (disconnected), it
+  // is stuck (blocked), or it has not started (queued). A single "N runs" tally
+  // hides which of these is actually true.
+  const TILES = [
+    { key: 'executing', label: 'Executing', filter: { bucket: 'executing' } },
+    { key: 'awaitingAgent', label: 'Awaiting agent', filter: { bucket: 'awaiting-agent' } },
+    { key: 'awaitingUser', label: 'Awaiting you', cls: 'warn', dest: 'attention' },
+    { key: 'blocked', label: 'Blocked', cls: 'fail', filter: { bucket: 'blocked' } },
+    { key: 'disconnected', label: 'Disconnected', cls: 'warn', filter: { bucket: 'disconnected' } },
+    // Queued features have no run yet, so there is nothing for the Runs table
+    // to filter to — the count here just mirrors the Roadmap list below.
+    { key: 'queued', label: 'Queued', dest: null },
+  ];
+  const grid = el('div', { class: 'stat-grid' });
+  for (const t of TILES) {
+    const n = snap.counts[t.key] ?? 0;
+    const dest = t.dest === null ? null : t.dest || 'runs';
+    grid.append(el('button', {
+      class: `stat-tile${t.cls && n ? ` ${t.cls}` : ''}`,
+      disabled: dest === null,
+      onclick: dest ? () => open({ kind: dest, title: dest === 'attention' ? 'Attention' : 'Runs', runsFilter: t.filter || null }) : null,
+    }, [el('span', { class: 'n', text: String(n) }), el('span', { class: 'lbl', text: t.label })]));
+  }
+  wrap.append(grid);
 
   if (!snap.supervisor.alive) {
     wrap.append(el('div', { class: 'banner fail', html: 'The supervisor is not running, so nothing will advance. Start it with <code>bash .pipeline/orchestrate.sh pool start</code>.' }));
@@ -307,14 +365,32 @@ function viewHome(wrap) {
   }
 }
 
+// A feature stuck on 'failed' or 'held' synthesizes its own needsDecision
+// item with no real decisionId — its "options" are pool verbs (retry/hold/
+// release/skip), not free-text answers, so they get their own explicit
+// action buttons rather than routing through the answer-a-decision flow.
+const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held']);
+
 function decisionCard(item) {
-  const answer = el('textarea', { placeholder: item.options?.length ? `One of: ${item.options.join(', ')}` : 'Your answer' });
+  const isFeatureAction = !item.decisionId && item.featureId && FEATURE_ACTION_KINDS.has(item.kind);
+  const answer = el('textarea', {
+    placeholder: isFeatureAction ? 'Optional reason, recorded with whichever action you pick below.'
+      : item.options?.length ? `One of: ${item.options.join(', ')}` : 'Your answer',
+  });
   const actions = el('div', { class: 'row', style: 'margin-top:8px' });
 
   for (const option of item.options || []) {
     actions.append(el('button', {
       class: 'btn ghost', text: option,
-      onclick: () => { answer.value = option; },
+      onclick: isFeatureAction
+        ? async () => {
+          try {
+            await api.poolAction(option, item.featureId, answer.value.trim() || undefined);
+            toast(`${option} recorded for ${item.featureId}.`);
+            refresh();
+          } catch (err) { toast(err.message); }
+        }
+        : () => { answer.value = option; },
     }));
   }
   if (item.decisionId) {
@@ -330,24 +406,29 @@ function decisionCard(item) {
       },
     }));
   }
-  if (item.runId) actions.append(el('button', { class: 'btn ghost', text: 'Open run', onclick: () => open({ kind: 'run', subject: item.runId, title: item.runId }) }));
+  if (item.runId) actions.append(el('button', {
+    class: 'btn ghost', text: item.kind === 'claim-run' ? 'Claim / connect' : 'Open run',
+    onclick: () => open({ kind: 'run', subject: item.runId, title: item.runId }),
+  }));
 
   return el('div', { class: 'card' }, [
     el('h4', { text: item.question }),
     el('div', { class: 'meta', text: [item.featureId, item.runId, item.kind].filter(Boolean).join(' · ') }),
     item.recommended ? el('div', { class: 'meta', text: `Recommended: ${item.recommended}` }) : null,
     ...(item.artifacts || []).map((a) => el('div', { class: 'meta', html: `<code>${esc(a)}</code>` })),
-    item.decisionId ? answer : el('div', { class: 'meta', text: 'This needs action elsewhere — see the run.' }),
+    item.decisionId || isFeatureAction ? answer
+      : item.kind === 'claim-run' ? el('div', { class: 'meta', text: 'Run `pool claim` (or open the run and complete its stage) to pick this up.' })
+        : el('div', { class: 'meta', text: 'This needs action elsewhere — see the run.' }),
     actions,
   ]);
 }
 
-function viewDecisions(wrap) {
+function viewAttention(wrap) {
   wrap.replaceChildren();
-  wrap.append(el('h1', { text: 'Decisions' }));
+  wrap.append(el('h1', { text: 'Attention' }));
   const items = state.pool?.snapshot?.needsDecision || [];
   if (!items.length) return wrap.append(el('div', { class: 'empty', text: 'Nothing is waiting for you.' }));
-  wrap.append(el('p', { class: 'sub', text: 'Every open question, oldest first. Answering one lets its run continue.' }));
+  wrap.append(el('p', { class: 'sub', text: 'Every open question and escalation, oldest first. Answering one lets its run continue.' }));
   for (const item of items) wrap.append(decisionCard(item));
 }
 
@@ -375,6 +456,154 @@ function viewFeature(wrap, tab) {
       el('button', { class: 'btn ghost', text: 'Open', onclick: () => open({ kind: 'run', subject: run.runId, title: run.ticketId || run.runId }) }),
     ]));
   }
+}
+
+// ---- runs / attention / messages / reports destinations -------------------
+
+function projectRuns() { return allRuns(state.pool?.snapshot, state.runs); }
+
+function viewRuns(wrap, tab) {
+  tab.runsFilter = tab.runsFilter || {};
+  const f = tab.runsFilter;
+  wrap.replaceChildren();
+  wrap.append(el('h1', { text: 'Runs' }));
+  wrap.append(el('p', { class: 'sub', text: 'Every attempt this project has a record of — including failed, orphaned, and historical runs.' }));
+
+  const runs = projectRuns();
+  const features = [...new Set(runs.map((r) => r.featureId).filter(Boolean))].sort();
+  const hosts = [...new Set(runs.map((r) => r.runner).filter(Boolean))].sort();
+
+  const filters = el('div', { class: 'filters' });
+  const featureSel = el('select', {}, [
+    el('option', { value: '', text: 'Any feature' }),
+    ...features.map((id) => el('option', { value: id, text: id, selected: f.feature === id })),
+  ]);
+  featureSel.onchange = () => { f.feature = featureSel.value || null; render(); };
+  const hostSel = el('select', {}, [
+    el('option', { value: '', text: 'Any host' }),
+    ...hosts.map((h) => el('option', { value: h, text: h, selected: f.host === h })),
+  ]);
+  hostSel.onchange = () => { f.host = hostSel.value || null; render(); };
+  const bucketSel = el('select', {}, [
+    el('option', { value: '', text: 'Any state' }),
+    ...Object.entries(BUCKET_LABEL).map(([v, label]) => el('option', { value: v, text: label, selected: f.bucket === v })),
+  ]);
+  bucketSel.onchange = () => { f.bucket = bucketSel.value || null; render(); };
+  const ageSel = el('select', {}, [
+    ['', 'Any age'], ['1', 'Older than 1h'], ['6', 'Older than 6h'], ['24', 'Older than 24h'], ['168', 'Older than 7d'],
+  ].map(([v, label]) => el('option', { value: v, text: label, selected: f.olderThanH === v })));
+  ageSel.onchange = () => { f.olderThanH = ageSel.value || null; render(); };
+  const q = el('input', { type: 'text', placeholder: 'Search run or ticket id…', value: f.q || '' });
+  q.oninput = () => { f.q = q.value; render(); };
+  filters.append(featureSel, hostSel, bucketSel, ageSel, q);
+  if (f.feature || f.host || f.bucket || f.olderThanH || f.q) {
+    filters.append(el('button', {
+      class: 'btn ghost', text: 'Clear filters',
+      onclick: () => { tab.runsFilter = {}; render(); },
+    }));
+  }
+  wrap.append(filters);
+
+  const filtered = filterRuns(runs, f);
+
+  if (!filtered.length) return wrap.append(el('div', { class: 'empty', text: runs.length ? 'No runs match these filters.' : 'No runs recorded yet.' }));
+
+  const table = el('table', { class: 'tbl' }, [
+    el('thead', {}, el('tr', {}, ['Run', 'Feature', 'Host', 'State', 'Stage', 'Last activity', 'Age'].map((h) => el('th', { text: h })))),
+  ]);
+  const tbody = el('tbody');
+  for (const r of filtered) {
+    const bucket = runBucket(r);
+    tbody.append(el('tr', {}, [
+      el('td', {}, el('a', { href: '#', text: r.ticketId || r.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: r.runId, title: r.ticketId || r.runId }); } })),
+      el('td', { text: r.featureId || '—' }),
+      el('td', { text: r.runner || '—' }),
+      el('td', {}, el('span', { class: `chip${bucket === 'blocked' ? ' fail' : bucket === 'disconnected' ? ' warn' : ''}`, text: BUCKET_LABEL[bucket] || bucket })),
+      el('td', { text: r.stage || '—' }),
+      el('td', { text: formatAge(ageMs(r.lastOutputAt || r.spawnedAt)) }),
+      el('td', { text: formatAge(ageMs(r.spawnedAt)) }),
+    ]));
+  }
+  table.append(tbody);
+  wrap.append(table);
+}
+
+function viewMessages(wrap, tab) {
+  tab._msgFilter = tab._msgFilter || '';
+  wrap.replaceChildren();
+  wrap.append(el('h1', { text: 'Messages' }));
+  wrap.append(el('p', { class: 'sub', text: 'Every operator note sent to an agent through the bridge, and its delivery status.' }));
+
+  const filters = el('div', { class: 'filters' });
+  const statusSel = el('select', {}, [
+    ['', 'Any status'], ['queued', 'Queued'], ['delivered', 'Delivered'], ['acknowledged', 'Acknowledged'],
+    ['addressed', 'Addressed'], ['deferred', 'Deferred'], ['rejected', 'Rejected'],
+  ].map(([v, label]) => el('option', { value: v, text: label, selected: tab._msgFilter === v })));
+  statusSel.onchange = () => { tab._msgFilter = statusSel.value; renderMessagesBody(); };
+  filters.append(statusSel);
+  wrap.append(filters);
+  const body = el('div', { text: 'Loading…' });
+  wrap.append(body);
+
+  function renderMessagesBody() {
+    const all = (tab._messages || []).slice().sort((a, b) => (b.sequence || 0) - (a.sequence || 0));
+    const filtered = tab._msgFilter ? all.filter((m) => m.status === tab._msgFilter) : all;
+    if (!filtered.length) return body.replaceChildren(el('div', { class: 'empty', text: all.length ? 'No messages match this filter.' : 'No messages have been sent yet.' }));
+    const table = el('table', { class: 'tbl' }, [
+      el('thead', {}, el('tr', {}, ['When', 'Run', 'Stage', 'Priority', 'Status', 'Text', 'Reason'].map((h) => el('th', { text: h })))),
+    ]);
+    const tbody = el('tbody');
+    for (const m of filtered) {
+      tbody.append(el('tr', {}, [
+        el('td', { text: m.createdAt ? new Date(m.createdAt).toLocaleString() : '—' }),
+        el('td', {}, m.runId ? el('a', { href: '#', text: m.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: m.runId, title: m.runId }); } }) : el('span', { text: '(root run)' })),
+        el('td', { text: m.stage || '—' }),
+        el('td', {}, el('span', { class: `chip${m.priority === 'priority' ? ' warn' : ''}`, text: m.priority || 'normal' })),
+        el('td', {}, el('span', { class: `chip${['deferred', 'rejected'].includes(m.status) ? ' fail' : m.status === 'addressed' ? ' done' : ''}`, text: m.status })),
+        el('td', { text: m.text ? (m.text.length > 140 ? `${m.text.slice(0, 140)}…` : m.text) : '' }),
+        el('td', { text: m.reason || '—' }),
+      ]));
+    }
+    table.append(tbody);
+    body.replaceChildren(table);
+  }
+
+  api.bridge().then((data) => { tab._messages = data.messages || []; renderMessagesBody(); })
+    .catch((err) => body.replaceChildren(el('div', { class: 'empty', text: err.message })));
+}
+
+function viewReports(wrap) {
+  wrap.replaceChildren();
+  wrap.append(el('h1', { text: 'Reports' }));
+  wrap.append(el('p', { class: 'sub', text: 'Every work-done report this project has produced, run or feature level.' }));
+
+  const snap = state.pool?.snapshot;
+  const rows = [];
+  for (const f of snap?.roadmap?.features || []) {
+    if (f.reportRel) rows.push({ id: f.id, label: `${f.id}: ${f.title}`, kind: 'feature', reportRel: f.reportRel });
+  }
+  for (const r of projectRuns()) {
+    if (r.reportRel && !rows.some((row) => row.reportRel === r.reportRel)) {
+      rows.push({ id: r.runId, label: r.ticketId ? `${r.ticketId} (${r.runId})` : r.runId, kind: r.kind || 'run', reportRel: r.reportRel });
+    }
+  }
+  if (!rows.length) return wrap.append(el('div', { class: 'empty', text: 'No reports have been produced yet.' }));
+
+  const table = el('table', { class: 'tbl' }, [
+    el('thead', {}, el('tr', {}, ['Report', 'Kind'].map((h) => el('th', { text: h })))),
+  ]);
+  const tbody = el('tbody');
+  for (const row of rows) {
+    tbody.append(el('tr', {}, [
+      el('td', {}, el('a', {
+        href: '#', text: row.label,
+        onclick: (e) => { e.preventDefault(); open({ kind: 'report', subject: row.id, file: row.reportRel, title: `${row.id} report` }); },
+      })),
+      el('td', { text: row.kind }),
+    ]));
+  }
+  table.append(tbody);
+  wrap.append(table);
 }
 
 // ---- run view -------------------------------------------------------------
@@ -796,14 +1025,28 @@ function viewReport(wrap, tab) {
 // ---- data -----------------------------------------------------------------
 
 async function refresh() {
+  // A project switch mid-flight must not let a slow fetch from the OLD
+  // project land after a faster one from the new project and clobber it.
+  state.refreshGen = (state.refreshGen || 0) + 1;
+  const gen = state.refreshGen;
+  const project = state.project;
+
   try {
-    const [pool, runs] = await Promise.all([
-      api.pool().catch(() => ({ enabled: false })),
-      api.runs().catch(() => ({ runs: [] })),
-    ]);
+    const [pool, runs] = await Promise.all([api.pool(), api.runs()]);
+    if (gen !== state.refreshGen || project !== state.project) return;
     state.pool = pool.enabled ? pool : null;
     state.runs = runs.runs || [];
-  } catch { /* keep the last good view rather than blanking the page */ }
+    state.degraded = false;
+    state.lastGoodAt = Date.now();
+  } catch (err) {
+    if (gen !== state.refreshGen || project !== state.project) return;
+    // Keep the last good view on screen rather than blanking the page; only
+    // the degraded indicator changes, so whatever tab is open stays exactly
+    // as it was.
+    state.degraded = true;
+    state.degradedError = err.message;
+  }
+  renderDegraded();
 
   // Badge the tabs whose runs need someone, without stealing focus.
   const attention = attentionByRun(state.pool?.snapshot ?? null);
@@ -870,10 +1113,10 @@ async function initProjects() {
 const SHORTCUTS = [
   ['[ / ]', 'previous / next tab'],
   ['x', 'close tab'],
-  ['g h', 'home'],
-  ['g d', 'decisions'],
+  ['g o', 'overview'], ['g r', 'runs'], ['g a', 'attention'], ['g m', 'messages'], ['g p', 'reports'],
   ['?', 'this list'],
 ];
+const DESTINATION_KEYS = { o: 'overview', r: 'runs', a: 'attention', m: 'messages', p: 'reports' };
 
 function onKey(event) {
   const target = event.target;
@@ -886,8 +1129,8 @@ function onKey(event) {
   else if (event.key === 'g') {
     const next = (e2) => {
       document.removeEventListener('keydown', next, true);
-      if (e2.key === 'h') open({ kind: 'home', title: 'Overview' });
-      if (e2.key === 'd') open({ kind: 'decisions', title: 'Decisions' });
+      const kind = DESTINATION_KEYS[e2.key];
+      if (kind) open({ kind, title: DESTINATIONS.find((d) => d.kind === kind)?.title || kind });
     };
     document.addEventListener('keydown', next, true);
   }
@@ -926,16 +1169,22 @@ async function boot() {
   initResize();
 
   await initProjects();
-  tabs.open({ kind: 'home', title: 'Overview', pinned: true });
+  let restoredActive = null;
   if (location.hash.includes('tabs=')) {
     // A restored tab has no live data yet, so its label comes from what it is.
     tabs.restore(location.hash, {
       titleFor: (spec) => (spec.kind === 'review' ? `Review ${spec.subject}`
         : spec.kind === 'report' ? `${spec.subject} report`
-          : spec.subject || (spec.kind === 'home' ? 'Overview' : spec.kind)),
+          : DESTINATIONS.find((d) => d.kind === spec.kind)?.title || spec.subject || spec.kind),
     });
-    if (!tabs.list().length) tabs.open({ kind: 'home', title: 'Overview', pinned: true });
+    restoredActive = tabs.activeId();
   }
+  // The five destinations are always open, in this fixed order, and never
+  // closable — restoring an older saved workspace (or a first boot) must not
+  // leave one of them missing. Opening one activates it, so the deliberate
+  // tab the hash asked for (if any) is restored as active afterward.
+  for (const dest of DESTINATIONS) tabs.open({ ...dest, pinned: true });
+  tabs.activate((restoredActive && tabs.get(restoredActive)) ? restoredActive : 'overview');
   connect();
   await refresh();
   // A slow fallback: the watcher is the primary signal, this only covers a

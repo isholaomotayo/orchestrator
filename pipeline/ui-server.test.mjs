@@ -237,6 +237,47 @@ test('pausing and resuming the pool is recorded', withServer(async ({ post, path
   assert.ok(!fs.existsSync(paths.paused));
 }));
 
+test('pool action: retry requeues a failed feature', withServer(async ({ post, paths }) => {
+  const roadmap = JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8'));
+  roadmap.features[0].status = 'failed';
+  fs.writeFileSync(paths.roadmapJson, JSON.stringify(roadmap));
+  const res = await post('/api/pool/action', { action: 'retry', featureId: 'F1' });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8')).features[0].status, 'queued');
+}));
+
+test('pool action: retry on a feature that is not failed is refused', withServer(async ({ post }) => {
+  const res = await post('/api/pool/action', { action: 'retry', featureId: 'F1' });
+  assert.equal(res.status, 409);
+}));
+
+test('pool action: hold parks a feature, release lets it continue', withServer(async ({ post, paths }) => {
+  assert.equal((await post('/api/pool/action', { action: 'hold', featureId: 'F1', reason: 'waiting on legal' })).status, 200);
+  let roadmap = JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8'));
+  assert.equal(roadmap.features[0].status, 'held');
+  assert.equal(roadmap.features[0].heldReason, 'waiting on legal');
+
+  assert.equal((await post('/api/pool/action', { action: 'release', featureId: 'F1' })).status, 200);
+  roadmap = JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8'));
+  assert.equal(roadmap.features[0].status, 'queued');
+}));
+
+test('pool action: release on a feature that is not held is refused', withServer(async ({ post }) => {
+  assert.equal((await post('/api/pool/action', { action: 'release', featureId: 'F1' })).status, 409);
+}));
+
+test('pool action: skip marks a feature skipped', withServer(async ({ post, paths }) => {
+  const res = await post('/api/pool/action', { action: 'skip', featureId: 'F1', reason: 'superseded' });
+  assert.equal(res.status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8')).features[0].status, 'skipped');
+}));
+
+test('pool action: an unrecognized action is refused rather than silently ignored', withServer(async ({ post }) => {
+  const res = await post('/api/pool/action', { action: 'delete-everything', featureId: 'F1' });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /Unknown action/);
+}));
+
 test('a state-changing request from another origin is refused', withServer(async ({ base, root, port }) => {
   const res = await fetch(`${base}/api/pool/pause?project=${encodeURIComponent(root)}`, {
     method: 'POST',
