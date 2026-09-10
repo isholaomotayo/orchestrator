@@ -141,8 +141,6 @@ export function loadConfig(paths) {
     agentRetries: 2, // bounded retries for TRANSIENT agent failures only
     approvePlan: false,
     designStage: false,
-    handoffStage: false,
-    reportStage: false,
     reports: { diagrams: true, archifyTimeoutMs: 120000 },
     skills: [],
     reviewPanel: false, // CLI-only multi-lens review panel (see --review-panel)
@@ -175,7 +173,10 @@ export function loadConfig(paths) {
   return merged;
 }
 
-export function newStatus(task, { design = false, handoff = false, reporter = false } = {}) {
+// Handoff and Reporter are not optional: every run that reaches an APPROVED
+// verdict always compiles a continuation document for the next agent and a
+// human-facing report. Only Designer remains a real opt-in toggle.
+export function newStatus(task, { design = false } = {}) {
   return {
     task,
     startedAt: new Date().toISOString(),
@@ -195,7 +196,7 @@ export function newStatus(task, { design = false, handoff = false, reporter = fa
     stages: STAGES.map((name) => ({
       name,
       // pending | running | passed | failed | blocked | skipped
-      status: (name === 'designer' && !design) || (name === 'handoff' && !handoff) || (name === 'reporter' && !reporter) ? 'skipped' : 'pending',
+      status: (name === 'designer' && !design) ? 'skipped' : 'pending',
       cycle: 0,
       maxCycles: name === 'coder' ? 5 : 1,
       startedAt: null,
@@ -209,9 +210,12 @@ export function newStatus(task, { design = false, handoff = false, reporter = fa
   };
 }
 
-// Backfill stage entries missing from a legacy (4-stage) status.json so stage
-// lookups and the dashboard keep working when resuming an old run. A missing
-// optional stage was never enabled, so it resumes as 'skipped'.
+// Backfill stage entries missing from a legacy status.json (predating a stage,
+// or predating Handoff/Reporter becoming mandatory) so stage lookups and the
+// dashboard keep working when resuming an old run. A run already in flight
+// under the old rules resumes exactly as it started — it is not retroactively
+// upgraded — so a backfilled entry is always 'skipped', never invented as
+// newly mandatory mid-run.
 export function ensureStageEntries(status) {
   if (!status?.stages) return status;
   const have = new Set(status.stages.map((s) => s.name));

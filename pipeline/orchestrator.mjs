@@ -37,7 +37,7 @@ function parseArgs(argv) {
     task: null, taskFile: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
-    approvePlan: false, design: false, handoff: false, report: false, reviewPanel: false,
+    approvePlan: false, design: false, reviewPanel: false,
     allowSelf: false, hostClient: null,
     // Pool mode: identity and isolation for one worker among many.
     runId: null, worktree: null, branch: null, baseRef: null,
@@ -61,8 +61,6 @@ function parseArgs(argv) {
     else if (a === '--models') args.models = argv[++i];
     else if (a === '--approve-plan') args.approvePlan = true;
     else if (a === '--design') args.design = true;
-    else if (a === '--handoff') args.handoff = true;
-    else if (a === '--report') args.report = true;
     else if (a === '--review-panel') args.reviewPanel = true;
     else if (a === '--allow-self') args.allowSelf = true;
     else if (a === '--host-client') args.hostClient = argv[++i];
@@ -82,7 +80,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--handoff] [--report] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const args = parseArgs(process.argv.slice(2));
@@ -236,7 +234,7 @@ function loadHistory() {
 // on-disk status.json won't have, before --continue/--resume touches it.
 // Idempotent — safe to call more than once on the same status object.
 function ensureRunDefaults(status) {
-  status.flags = status.flags || { design: false, handoff: false, approvePlan: false, reviewPanel: false, report: false };
+  status.flags = status.flags || { design: false, approvePlan: false, reviewPanel: false };
   if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
   if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
@@ -455,15 +453,13 @@ if (args.continue) {
   }
   const runFlags = {
     design: args.design || config.designStage === true,
-    handoff: args.handoff || config.handoffStage === true,
     approvePlan: args.approvePlan || config.approvePlan === true,
     reviewPanel: args.reviewPanel || config.reviewPanel === true,
-    report: args.report || config.reportStage === true,
   };
   if (runFlags.reviewPanel && executionSurface === 'host-handoff') {
     console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
   }
-  status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff, reporter: runFlags.report });
+  status = newStatus(args.task, { design: runFlags.design });
   status.bridgeRequired = executionSurface === 'host-handoff' && config.bridge?.required !== false;
   status.flags = { ...runFlags, planOnly: args.planOnly };
   status.intent = { version: 2, kind: args.planOnly ? 'plan' : args.startAt === 'tester' ? 'integration' : 'ticket', planOnly: args.planOnly, startAt: args.startAt, executionSurface, enabledStages: status.stages.filter(s => s.status !== 'skipped').map(s => s.name) };
@@ -525,7 +521,7 @@ if (args.continue) {
     ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
     : 'cli (subprocess)';
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}@${models.effort?.[s] || '-'}`).join(', ') : '';
-  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan}, handoff=${runFlags.handoff}, report=${runFlags.report})${dashboardMsg}`);
+  console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan})${dashboardMsg}`);
 }
 
 function stage(name) { return status.stages.find((s) => s.name === name); }
@@ -1072,9 +1068,10 @@ async function runReviewerStage() {
   await afterReviewerAudit();
 }
 
-// Optional post-approval handoff: a read-only agent compiles handoff.md. A
-// failure here must NOT un-approve the run — fall back to the deterministic
-// document, mark the stage failed, and still finish as done.
+// Mandatory post-approval handoff: a read-only agent compiles handoff.md so
+// work never stops for lack of a continuation document. A failure here must
+// NOT un-approve the run — fall back to the deterministic document, mark the
+// stage failed, and still finish as done.
 async function runHandoffStage() {
   const st = stage('handoff');
   if (!st || st.status === 'skipped' || st.status === 'passed') return;
@@ -1194,8 +1191,10 @@ async function afterReviewerAudit() {
   setStage('reviewer', { status: approved ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'review_report.md', detail: `Verdict: ${status.verdict}` });
 
   if (approved) {
-    await runHandoffStage(); // no-op unless --handoff; hands off & exits in chat mode
-    await runReporterStage(); // no-op unless --report
+    // Mandatory: hands off to the chat host in host-handoff mode, else runs
+    // to completion synchronously (CLI mode).
+    await runHandoffStage();
+    await runReporterStage();
     return finishApproved();
   }
 

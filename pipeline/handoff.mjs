@@ -32,19 +32,23 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
   const lines = [
     halted ? '# Pipeline Handoff (auto-generated on halt)' : '# Pipeline Handoff (auto-generated)',
     '',
-    '> **CRITICAL RESUME DIRECTION:** Do not start planning from scratch. Read `.pipeline/status.json` for the machine state, skim the artifacts below, then follow the resume command at the end.',
+    '> **CRITICAL RESUME DIRECTION:** Do not start planning from scratch. Read `.pipeline/status.json` for the machine state, skim the artifacts below, then follow the resume command at the end. This document was compiled deterministically (no agent call) — it is necessarily less detailed than an agent-authored handoff, so read the stage artifacts below in full rather than relying on this summary alone.',
     '',
     halted ? '## 1. Summary of Blocked State' : '## 1. Summary of Final State',
     `- **Goal:** ${status.task || '(unknown)'}`,
     halted
-      ? `- **Outcome:** halted — ${reason}`
+      ? `- **Outcome:** halted — ${reason}${status.haltTransient ? ' (classified as transient — a bare `--resume` may simply succeed)' : ''}`
       : `- **Outcome:** completed — verdict ${status.verdict || 'UNKNOWN'} (handoff agent failed; deterministic summary written instead)`,
     `- **Phase at freeze:** ${phase}`,
-  ];
+    (status.runId || status.featureId || status.ticketId)
+      ? `- **Identity:** ${[status.runId ? `run \`${status.runId}\`` : null, status.featureId ? `feature \`${status.featureId}\`` : null, status.ticketId ? `ticket \`${status.ticketId}\`` : null].filter(Boolean).join(', ')}`
+      : null,
+    status.reviewPass ? `- **Review fix passes so far:** ${status.reviewPass}` : null,
+  ].filter((l) => l !== null);
   if (failing?.detail) lines.push(`- **Detail:** ${failing.detail}`);
-  lines.push('', '## 2. Stage Status', '| Stage | Status | Cycle | Artifact |', '|---|---|---|---|');
+  lines.push('', '## 2. Stage Status', '| Stage | Status | Cycle | Artifact | Detail |', '|---|---|---|---|---|');
   for (const s of status.stages || []) {
-    lines.push(`| ${s.name} | ${s.status} | ${s.cycle || 0}${s.maxCycles > 1 ? `/${s.maxCycles}` : ''} | ${s.artifact || '—'} |`);
+    lines.push(`| ${s.name} | ${s.status} | ${s.cycle || 0}${s.maxCycles > 1 ? `/${s.maxCycles}` : ''} | ${s.artifact || '—'} | ${s.detail || '—'} |`);
   }
   lines.push('', '## 3. Verification Trend');
   const runs = [...(history?.coder || []), ...(history?.postTester || [])];
@@ -61,7 +65,9 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
     ['`.pipeline/changes.md`', 'what the Coder implemented, fix cycle by fix cycle'],
     ['`.pipeline/specs.md`', 'the specification being implemented'],
     ['`.pipeline/design.md`', 'finalized design contracts (if the design stage ran)'],
+    ['`.pipeline/test_suite.md`', 'the coverage map and any known-uncovered cases (if the tester ran)'],
     ['`.pipeline/review_report.md`', 'last review verdict (if the reviewer ran)'],
+    ['`.pipeline/diff.patch`', 'the actual code diff, if you need ground truth over any narrative'],
     ['`.pipeline/logs/`', 'raw per-stage agent logs'],
   ]) lines.push(`- ${p} — ${why}`);
   lines.push('', '## 5. Git State');

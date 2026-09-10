@@ -243,6 +243,7 @@ export function compileWorkDoneReport({
     `</p>`,
 
     section('Summary', narrativeSection(narrative, 'Summary') || '<p class="note">No narrative was recorded for this run.</p>'),
+    section('Review guidance', narrativeSection(narrative, 'Review Guidance')),
     section('What changed', narrativeSection(narrative, 'What Changed')),
     operations ? section('Operational record', `<pre>${escapeHtml(JSON.stringify(operations,null,2))}</pre>`) : '',
 
@@ -288,6 +289,7 @@ export function compileWorkDoneReport({
     `# ${title}`, '',
     `${feature?.id ? `Feature ${feature.id} · ` : ''}Review verdict: **${verdict}**`, '',
     plain(narrativeSection(narrative, 'Summary')) || '_No narrative was recorded._', '',
+    plain(narrativeSection(narrative, 'Review Guidance')) ? `## Review guidance\n\n${plain(narrativeSection(narrative, 'Review Guidance'))}\n` : '',
     operations ? `## Operational record\n\n${JSON.stringify(operations,null,2)}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',

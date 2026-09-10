@@ -1,6 +1,6 @@
 # /orchestrate
 
-A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → (optional Handoff)** — with a live local dashboard (URL written to `.pipeline/ui.url`, usually starting at http://localhost:4600).
+A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → Handoff → Reporter** — with a live local dashboard (URL written to `.pipeline/ui.url`, usually starting at http://localhost:4600).
 
 Install the skill with `npx skills add orchestrator`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor, Claude Code, Codex, Gemini, or Antigravity (or run `bash .pipeline/orchestrate.sh` from any agent). From an IDE chat, the **current chat session is the driver** — stages are completed in that chat, not by spawning an external agent CLI. The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
 
@@ -53,7 +53,7 @@ Point-in-time "AI writes code" tools stop at generation. This pipeline is built 
 Two production-grade patterns are fused into one pipeline instead of run as separate tools:
 
 - **Builder–Checker self-healing loop** — the Coder doesn't just write code once; it iterates against deterministic (non-LLM) verification until checks pass, with hard guardrails against infinite loops and silent regressions.
-- **Planner → (optional Designer) → Coder → Tester → Reviewer → (optional Handoff) waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step.
+- **Planner → (optional Designer) → Coder → Tester → Reviewer → Handoff → Reporter waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step. Handoff and Reporter are not optional: every completed run always produces a continuation document for the next agent and a plain-language report for the human who asked for the work — work never stops for lack of either.
 
 ## Architecture
 
@@ -66,7 +66,8 @@ flowchart LR
     C -->|changes.md| Te[Tester]
     Te -->|test_suite.md| R[Reviewer]
     R -->|review_report.md| V[Verdict]
-    V -.->|APPROVED, optional| Ho["Handoff<br/>(--handoff, optional)"]
+    V -->|APPROVED| Ho["Handoff<br/>(mandatory)"]
+    Ho -->|handoff.md| Rp["Reporter<br/>(mandatory)"]
 
     subgraph SH["Self-healing loop up to N cycles"]
         direction TB
@@ -101,10 +102,12 @@ sequenceDiagram
     A-->>O: test_suite.md
     O->>A: Reviewer prompt read-only
     A-->>O: review_report.md
-    Note over O,A: Handoff runs only after an APPROVED verdict, with --handoff (optional)
+    Note over O,A: Handoff and Reporter always run after an APPROVED verdict — mandatory, not opt-in
     O->>A: Handoff prompt
     A-->>O: handoff.md
-    O-->>U: status.json and verdict
+    O->>A: Reporter prompt read-only
+    A-->>O: reporter.md
+    O-->>U: status.json, verdict, and the compiled report
 ```
 
 Everything the agents produce is a plain file under `.pipeline/`. The orchestrator is the only thing that reads/writes `status.json` and `events.jsonl`; the dashboard only ever reads them (plus two small control endpoints to start/stop/extend a run). This means you can run the whole pipeline with **no dashboard running at all** — `orchestrate.sh` and `orchestrator.mjs` work standalone from any terminal or CI job.
@@ -324,9 +327,14 @@ You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, a
 | Stage        | Prompt                                                                         | Reads                                                   | Writes                       | Can loop?                                           |
 | ------------ | ------------------------------------------------------------------------------ | ------------------------------------------------------- | ---------------------------- | --------------------------------------------------- |
 | **Planner**  | [.pipeline/prompts/planner_prompt.txt](.pipeline/prompts/planner_prompt.txt)   | the task, the codebase                                  | `specs.md`                   | no                                                  |
+| **Designer** *(optional, `--design`)* | [.pipeline/prompts/designer_prompt.txt](.pipeline/prompts/designer_prompt.txt) | `specs.md`                                              | `design.md`                  | no                                                  |
 | **Coder**    | [.pipeline/prompts/coder_prompt.txt](.pipeline/prompts/coder_prompt.txt)       | `specs.md`, or `checker_report.md` on retry             | `changes.md` + actual code   | **yes** — self-healing loop                         |
 | **Tester**   | [.pipeline/prompts/tester_prompt.txt](.pipeline/prompts/tester_prompt.txt)     | `specs.md`, `changes.md`                                | `test_suite.md` + test files | no (but can trigger a second Coder loop, see below) |
 | **Reviewer** | [.pipeline/prompts/reviewer_prompt.txt](.pipeline/prompts/reviewer_prompt.txt) | `specs.md`, `changes.md`, `test_suite.md`, `diff.patch` | `review_report.md` **only**  | no — read-only                                      |
+| **Handoff** *(mandatory)* | [.pipeline/prompts/handoff_prompt.txt](.pipeline/prompts/handoff_prompt.txt) | every artifact above                                    | `handoff.md` **only**        | no — read-only                                      |
+| **Reporter** *(mandatory)* | [.pipeline/prompts/reporter_prompt.txt](.pipeline/prompts/reporter_prompt.txt) | every artifact above, `diff.patch`                      | `reporter.md` **only**       | no — read-only                                      |
+
+Handoff and Reporter always run after an `APPROVED` verdict — they are not gated by a flag. Handoff writes for the *next agent*: an exhaustive, technical continuation document so work never stalls for lack of context. Reporter writes for the *human* who asked for the work: a plain-language summary plus explicit review guidance, compiled into `reports/work-done.html` alongside data the engine measures itself.
 
 Every stage in `status.json` carries a lifecycle you can watch live:
 
@@ -425,7 +433,7 @@ node pipeline/orchestrator.mjs --task "description" \
   [--host-client claude|cursor|codex|antigravity] \
   [--model-profile auto|manual] \
   [--models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'] \
-  [--approve-plan] [--design] [--handoff] \
+  [--approve-plan] [--design] \
   [--sandbox] [--allow-self] \
   [--max-cycles N] \
   [--max-post-tester-cycles N]
@@ -443,7 +451,7 @@ node pipeline/orchestrator.mjs --resume --extend N [--runner ...]
 `.pipeline/orchestrate.sh` wraps the same forms and additionally boots the dashboard:
 
 ```
-bash .pipeline/orchestrate.sh "description" [--runner ...] [--mode chat|cli] [--host-client ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--sandbox] [--allow-self] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
+bash .pipeline/orchestrate.sh "description" [--runner ...] [--mode chat|cli] [--host-client ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--sandbox] [--allow-self] [--max-cycles N] [--max-post-tester-cycles N] [--no-ui]
 bash .pipeline/orchestrate.sh --continue
 bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 ```
@@ -457,7 +465,6 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 | `--models <json>`              | new run                    | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`.                                                                                                                                                                             |
 | `--approve-plan`               | new run                    | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`.                                                                                                         |
 | `--design`                     | new run                    | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`.                                                                                                                                                                       |
-| `--handoff`                    | new run                    | Run an optional Handoff stage after an `APPROVED` review, producing `.pipeline/handoff.md`.                                                                                                                                                                      |
 | `--sandbox`                    | new run                    | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge.                                                                                                          |
 | `--allow-self`                 | both                       | Override the [self-repo guard](#self-repo-guard) (maintainers only). Also settable via `ORCH_ALLOW_SELF=1`.                                                                                                                                                      |
 | `--max-cycles N`               | new run                    | Override `maxCoderCycles` for this run only.                                                                                                                                                                                                                     |
@@ -552,10 +559,12 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
     "tester": "medium",
     "reviewer": "high",
     "handoff": "low",
+    "reporter": "low",
   },
   "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
   "designStage": false, // run the optional Designer stage (see --design)
-  "handoffStage": false, // run the optional Handoff stage (see --handoff)
+  // Handoff and Reporter have no config toggle — they are mandatory and
+  // always run after an APPROVED review.
   "autoUpdate": false,  // opt in to refreshing the scaffold from upstream before a new run.
                         // Off by default: a run should not let a remote change the engine and
                         // stage prompts underneath it. Updates are otherwise explicit, via
@@ -698,14 +707,25 @@ rather than a failed run.
 
 ## Work-done reports
 
-With `--report` (or `reportStage: true`), a run compiles
-`reports/work-done.html` — a standalone, theme-aware page describing what was
-built. The narrative comes from an agent; **every figure is measured by the
-engine** from the run's own diff and artifacts: files changed, specification
-coverage, the test trend, decisions taken, the verdict. A narrative that
-overstates what happened cannot change the numbers beside it.
+Every run compiles `reports/work-done.html` — a standalone, theme-aware page
+describing what was built, for the human who asked for it. This is not
+optional: the Reporter stage is mandatory, so a report always exists once a
+run finishes, whether it was approved or halted. The narrative (Summary, What
+Changed, Key Decisions & Deviations, Rough Edges & Follow-ups, Review
+Guidance) comes from an agent reading the run's own artifacts; **every figure
+is measured by the engine** from the run's own diff and artifacts: files
+changed, specification coverage, the test trend, decisions taken, the
+verdict. A narrative that overstates what happened cannot change the numbers
+beside it.
 
 The markdown twin, `work-done.md`, is used as the pull request body.
+
+The Handoff stage runs alongside it, for the *next agent* rather than the
+human: `.pipeline/handoff.md` is an exhaustive, technical continuation
+document — what was built with file:line citations, every deviation and
+rough edge, verification state, open questions, and how to resume — so a
+fresh agent session with zero memory of this run can pick the work up
+without re-reading the whole codebase.
 
 ## Guardrails and safety
 
@@ -738,7 +758,7 @@ Every file below lives under `.pipeline/` and is gitignored (only the prompts, `
 | `status.json`                                                                                                 | The live state machine snapshot the dashboard polls/streams                                                                                                   |
 | `events.jsonl`                                                                                                | Append-only, newline-delimited event log (every stage transition and agent output line)                                                                       |
 | `logs/<stage>.log`                                                                                            | Human-readable verbose transcript per stage                                                                                                                   |
-| `specs.md`, `design.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md`, `handoff.md` | The stages' artifacts (`design.md` and `handoff.md` only when `--design` / `--handoff` are enabled; `handoff.md` is also written automatically on every halt) |
+| `specs.md`, `design.md`, `changes.md`, `checker_report.md`, `test_suite.md`, `review_report.md`, `handoff.md`, `reporter.md` | The stages' artifacts (`design.md` only when `--design` is enabled; `handoff.md` and `reporter.md` are mandatory and always written after an `APPROVED` verdict; `handoff.md` is also written automatically — deterministically, with no agent call — on every halt) |
 | `diff.patch`                                                                                                  | Base-to-HEAD diff (committed + uncommitted) snapshotted just before the Reviewer runs. Covers every repo in scope — the run root's own repo plus any clone or submodule found beneath it — as one `## repo <label>` section each, so a run rooted at a folder of sibling clones is still reviewable |
 | `test_history.json`                                                                                           | Pass/fail counts per cycle, used for regression detection                                                                                                     |
 | `followups/<stage>.txt`                                                                                       | Queued human notes awaiting injection                                                                                                                         |

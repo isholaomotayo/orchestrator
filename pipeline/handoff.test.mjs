@@ -72,6 +72,34 @@ test('compileHaltHandoff renders an approved-run fallback without claiming a hal
   assert.match(doc, /## 1\. Summary of Final State/);
 });
 
+test('compileHaltHandoff names the run, feature and ticket so a pool-mode handoff is not anonymous', () => {
+  const s = haltedStatus('AGENT_ERROR', { runId: 'r1', featureId: 'F1', ticketId: 'T2' });
+  const doc = compileHaltHandoff({ status: s });
+  assert.match(doc, /run `r1`, feature `F1`, ticket `T2`/);
+});
+
+test('compileHaltHandoff flags a transient halt reason as likely resumable as-is', () => {
+  const s = haltedStatus('MAX_CYCLES', { haltTransient: true });
+  const doc = compileHaltHandoff({ status: s });
+  assert.match(doc, /classified as transient/);
+});
+
+test('compileHaltHandoff surfaces every stage’s own detail, not only the failing one', () => {
+  const s = haltedStatus('MAX_CYCLES', { haltedPhase: 'coder' });
+  s.stages.find((x) => x.name === 'planner').detail = 'wrote a thinner spec than usual';
+  s.stages.find((x) => x.name === 'coder').status = 'failed';
+  s.stages.find((x) => x.name === 'coder').detail = 'exceeded max cycles';
+  const doc = compileHaltHandoff({ status: s });
+  assert.match(doc, /\| planner \| pending \| 0 \| — \| wrote a thinner spec than usual \|/);
+  assert.match(doc, /\| coder \| failed \|.*\| exceeded max cycles \|/);
+});
+
+test('compileHaltHandoff points to test_suite.md and diff.patch, not just changes.md', () => {
+  const doc = compileHaltHandoff({ status: haltedStatus('AGENT_ERROR') });
+  assert.match(doc, /test_suite\.md/);
+  assert.match(doc, /diff\.patch/);
+});
+
 test('collectGitInfo returns branch/dirty inside a repo and null outside', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ho-git-'));
   assert.equal(collectGitInfo(dir), null);

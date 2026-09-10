@@ -3,14 +3,14 @@
 ## Workspace skill: `/orchestrate`
 
 This repository ships a portable multi-agent pipeline declared in `.pipeline/skill.json`.
-It runs: **Planner → (optional Designer) → Coder (self-healing builder-checker loop) → Tester → Reviewer (or Review Panel) → (optional Handoff)**, writing artifacts to `.pipeline/*.md` with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
+It runs: **Planner → (optional Designer) → Coder (self-healing builder-checker loop) → Tester → Reviewer (or Review Panel) → Handoff → Reporter**, writing artifacts to `.pipeline/*.md` with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift. Handoff and Reporter are mandatory — every run that reaches an `APPROVED` verdict always produces both, with no flag to disable either.
 
 Use it only when the user **explicitly** asks for it — they type `/orchestrate`, or clearly ask to "orchestrate this", "run the pipeline", "use the multi-agent pipeline", or similar. Do NOT infer an implicit request from an ordinary "build this feature" / "fix this bug" / "refactor this" ask; do those directly. Never invoke it on your own initiative, and never as a way to hand off a task you were asked to do yourself.
 
 When it has been explicitly requested:
 
 1. Once a run IS active, do not plan and hand-edit the same files yourself alongside it — the run owns the working tree until it finishes or halts. This is a concurrency rule, not a mandate to route work through the pipeline.
-2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--host-client claude|cursor|codex|antigravity`, `--runner claude|cursor|codex|antigravity|host`, `--model-profile auto|manual`, `--models JSON`, `--approve-plan`, `--design`, `--handoff`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`, `--no-ui`).
+2. Invoke: `bash .pipeline/orchestrate.sh "<user requirements>"` (flags: `--mode chat|cli`, `--host-client claude|cursor|codex|antigravity`, `--runner claude|cursor|codex|antigravity|host`, `--model-profile auto|manual`, `--models JSON`, `--approve-plan`, `--design`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`, `--no-ui`).
 3. **If YOU are a chat session** (any IDE): always invoke with `--mode chat --host-client <your-client>` (claude, cursor, codex, antigravity). Never pass `--runner`. Never spawn or delegate to another agent CLI — YOU complete each stage from `.pipeline/stage-handoff.json`, then run `--continue`.
 4. **Before starting** (slash command / chat): ask the user whether to use automatic cost-optimized per-stage models or manual model selection. This is the only pre-run question. Then pass `--model-profile auto` or `--model-profile manual --models '...'`.
 5. **Tell the user** to open the live dashboard URL from the script output or `.pipeline/ui.url` (always read this dynamically rather than hardcoding 4600, as the port drifts if occupied or in multi-repo setups) so they can follow stage progress.

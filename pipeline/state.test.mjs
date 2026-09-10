@@ -55,20 +55,25 @@ test('pidAlive reports true for the current process and false for pid 0', () => 
   assert.equal(pidAlive(0), false);
 });
 
-test('newStatus builds every stage and marks optional ones skipped by default', () => {
+test('newStatus builds every stage; only Designer is skipped by default', () => {
   const s = newStatus('t');
   assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']);
   assert.equal(s.stages.find((x) => x.name === 'designer').status, 'skipped');
-  assert.equal(s.stages.find((x) => x.name === 'handoff').status, 'skipped');
-  assert.equal(s.stages.find((x) => x.name === 'reporter').status, 'skipped');
   assert.equal(s.stages.find((x) => x.name === 'planner').status, 'pending');
 });
 
-test('newStatus enables optional stages via flags', () => {
-  const s = newStatus('t', { design: true, handoff: true, reporter: true });
+test('newStatus enables Designer via its flag', () => {
+  const s = newStatus('t', { design: true });
   assert.equal(s.stages.find((x) => x.name === 'designer').status, 'pending');
-  assert.equal(s.stages.find((x) => x.name === 'handoff').status, 'pending');
-  assert.equal(s.stages.find((x) => x.name === 'reporter').status, 'pending');
+});
+
+test('newStatus never skips Handoff or Reporter — they are mandatory, not flag-gated', () => {
+  const withoutFlags = newStatus('t');
+  const withIgnoredLegacyFlags = newStatus('t', { design: false, handoff: false, reporter: false });
+  for (const s of [withoutFlags, withIgnoredLegacyFlags]) {
+    assert.equal(s.stages.find((x) => x.name === 'handoff').status, 'pending');
+    assert.equal(s.stages.find((x) => x.name === 'reporter').status, 'pending');
+  }
 });
 
 test('ensureStageEntries backfills a legacy 4-stage status as skipped, in canonical order', () => {
@@ -97,11 +102,15 @@ test('pipelinePaths exposes design and handoffDoc artifacts', () => {
   assert.equal(STAGE_ARTIFACT_FILES.handoff, 'handoff.md');
 });
 
-test('loadConfig defaults new stage toggles to false', () => {
+test('loadConfig defaults the remaining (real) stage toggle to false', () => {
   const cfg = loadConfig({ config: '/nonexistent/path/config.json' });
   assert.equal(cfg.approvePlan, false);
   assert.equal(cfg.designStage, false);
-  assert.equal(cfg.handoffStage, false);
+  // handoffStage/reportStage are no longer read anywhere — Handoff and
+  // Reporter are mandatory, not flag-gated — so loadConfig no longer defines
+  // them at all.
+  assert.equal(cfg.handoffStage, undefined);
+  assert.equal(cfg.reportStage, undefined);
 });
 
 // ---- v2: run-scoped paths, lock helper, append helper ----------------------

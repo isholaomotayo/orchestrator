@@ -5,8 +5,10 @@ Repository: https://github.com/isholaomotayo/orchestrator
 ## Architecture
 
 ```
-Task → Planner → (optional Designer) → Coder ↔ Checker → Tester → Reviewer → Verdict → (optional Handoff)
+Task → Planner → (optional Designer) → Coder ↔ Checker → Tester → Reviewer → Verdict → Handoff → Reporter
 ```
+
+Handoff and Reporter are mandatory: every run reaching `APPROVED` always produces both `handoff.md` (for the next agent) and `reporter.md` / `reports/work-done.html` (for the human who asked for the work). Neither has a flag — there is nothing to opt into.
 
 ## Install via skills CLI
 
@@ -87,7 +89,7 @@ version is written beside it as `<file>.new`. `.pipeline/config.json` and run st
 ## Direct CLI
 
 ```bash
-bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--handoff] [--review-panel] [--sandbox]
+bash .pipeline/orchestrate.sh "task description" [--runner ...] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--review-panel] [--sandbox]
 bash .pipeline/orchestrate.sh --task-file .pipeline/task.txt [same flags as above]
 bash .pipeline/orchestrate.sh --resume [--extend 5]
 node pipeline/orchestrator.mjs --task "description" --model-profile auto
@@ -105,7 +107,7 @@ the agent constructs.
 |---|---|---|---|
 | `--approve-plan` | `approvePlan` | `false` | After the Planner produces `specs.md`, halt with status `awaiting_plan_approval` until a human approves (or queues a revision note in `.pipeline/followups/planner.txt`) and resumes with `--continue`. |
 | `--design` | `designStage` | `false` | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`. |
-| `--handoff` | `handoffStage` | `false` | After an `APPROVED` review, run an optional Handoff stage producing `.pipeline/handoff.md`. |
+| — (mandatory) | — | — | Handoff and Reporter always run after an `APPROVED` review, producing `.pipeline/handoff.md` and `.pipeline/reporter.md`. There is no flag or config key for either — see "Work-done reports" below. |
 | `--host-client <name>` | env `PIPELINE_HOST_CLIENT` | auto-detected | Names the IDE chat client hosting the run (`claude`, `cursor`, `codex`, `antigravity`; aliases `agy`, `gemini`, `claude-code`, `cursor-agent`). Implies `--mode chat`, drives dashboard/log attribution (`status.hostClient`, `stage-handoff.json.hostClient`/`hostNote`), and selects environment-aware auto models. |
 | `--review-panel` | `reviewPanel` | `false` | Replace the single Reviewer with three concurrent read-only lenses (spec/correctness, security, architecture). Verdict is the **strictest** of the three, so a lone security finding cannot be outvoted; per-lens reports land in `.pipeline/review_{correctness,security,architecture}.md`. CLI mode only — a chat host runs one stage at a time. |
 | — | `agentRetries` | `2` | Bounded retries for **transient** agent failures (429/5xx/overloaded/network/timeout) with exponential backoff. Auth, quota, and bad-model failures are fatal and never retried. Set `0` to disable. |
@@ -294,7 +296,8 @@ Exit codes: `0` ok, `1` error, `2` usage, `3` self-target guard, `4` no supervis
 | `--changes-file <path>` | seed the Coder artifact (used by integration runs) |
 | `--start-at tester` | begin at verification over work that is already committed |
 | `--plan-only` | run the Planner and stop, producing the specification tickets are sliced from |
-| `--report` | compile the work-done report after an approved review |
+
+Handoff and Reporter are mandatory for every ticket and integration run too — there is no `--report`/`--handoff` flag in pool mode either; `ticketFlags`/`integrationFlags` below now only carry `reviewPanel`.
 
 ## Feature and run state
 
@@ -328,7 +331,7 @@ Contracts: `orchestrator-roadmap.v1`, `orchestrator-run-meta.v1`,
   "serializeOnFileOverlap": true,
   "featurePlanApproval": true,
   "ticketFlags": { "reviewPanel": false },
-  "integrationFlags": { "reviewPanel": true, "report": true }
+  "integrationFlags": { "reviewPanel": true }
 },
 "merge": {
   "mode": "pr",                  // pr | local-only
@@ -338,7 +341,6 @@ Contracts: `orchestrator-roadmap.v1`, `orchestrator-run-meta.v1`,
   "autoMerge": false,            // still performs the live check
   "cleanupOnMerge": true
 },
-"reportStage": false,
 "reports": { "diagrams": true, "archifyTimeoutMs": 120000 },
 "skills": [ /* see below */ ]
 ```

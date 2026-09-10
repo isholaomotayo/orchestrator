@@ -408,7 +408,6 @@ export function createSupervisor({
         ...(changesFile ? ['--changes-file', changesFile] : []),
         '--start-at', 'tester',
         ...(poolCfg.integrationFlags.reviewPanel ? ['--review-panel'] : []),
-        ...(poolCfg.integrationFlags.report ? ['--report'] : []),
       ],
     });
     saveRoadmap(setFeatureStatus(roadmap(), feature.id, 'reviewing', { integrationRunId: runId }));

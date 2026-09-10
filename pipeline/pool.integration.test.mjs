@@ -64,6 +64,27 @@ if (/technical specification|Alignment Log|tracer-bullet/i.test(task)) {
     '| ID | Test | Location |', '|---|---|---|', \`| E1 | \${name} | added-\${name}.test.mjs:1 |\`, '',
     '## Uncovered / Deferred Coverage', 'Nothing deferred.', '',
   ].join('\\n'));
+} else if (/continuation handoff document/i.test(task)) {
+  // Mandatory since Handoff is no longer opt-in.
+  w('handoff.md', [
+    '# Pipeline Handoff — fixture', '',
+    '## 1. What Was Built', 'The alpha and beta modules, per the specification.', '',
+    '## 2. Key Decisions & Deviations', 'None.', '',
+    '## 3. Gotchas & Rough Edges', 'None.', '',
+    '## 4. Verification State', 'Tests, lint, and typecheck all passed.', '',
+    '## 5. Suggested Next Steps', 'None — the feature is complete.', '',
+    '## 6. How to Resume', 'This run is finished; nothing to resume.', '',
+  ].join('\\n'));
+} else if (/human-facing narrative/i.test(task)) {
+  // Mandatory since Reporter is no longer opt-in.
+  w('reporter.md', [
+    '# Work Done — fixture', '',
+    '## Summary', 'Added the alpha and beta modules; both are tested and reviewed.', '',
+    '## What Changed', '- alpha.mjs', '- beta.mjs', '',
+    '## Key Decisions & Deviations', 'None.', '',
+    '## Rough Edges & Follow-ups', 'None.', '',
+    '## Diagrams', 'None.', '',
+  ].join('\\n'));
 } else {
   // Coder: write the module this ticket names, so two tickets touch two files.
   const which = /beta/i.test(task) ? 'beta' : 'alpha';
@@ -163,6 +184,28 @@ function driveHostTicket(root, runId, which) {
         '| ID | Status | Evidence |', '|---|---|---|', '| E1 | covered | added.test.mjs:1 |', '',
         '## 5. Summary', 'The work matches the specification and is covered by tests.', '',
       ].join('\n'));
+    } else if (handoff.stage === 'handoff') {
+      // Mandatory since Handoff is no longer opt-in: a real chat host would
+      // compile this from specs/changes/tests/review — the fixture just needs
+      // something long enough to pass validation.
+      fs.writeFileSync(p.handoffDoc, [
+        `# Pipeline Handoff — ${which}`, '',
+        '## 1. What Was Built', `Added \`${which}.mjs\` per the ticket.`, '',
+        '## 2. Key Decisions & Deviations', 'None.', '',
+        '## 3. Gotchas & Rough Edges', 'None.', '',
+        '## 4. Verification State', 'Tests, lint, and typecheck all passed.', '',
+        '## 5. Suggested Next Steps', 'None — the ticket is complete.', '',
+        '## 6. How to Resume', 'This run is finished; nothing to resume.', '',
+      ].join('\n'));
+    } else if (handoff.stage === 'reporter') {
+      fs.writeFileSync(p.reporterDoc, [
+        `# Work Done — ${which}`, '',
+        '## Summary', `Added the \`${which}\` module as the ticket required; it is tested and reviewed.`, '',
+        '## What Changed', `- \`${which}.mjs\``, '',
+        '## Key Decisions & Deviations', 'None.', '',
+        '## Rough Edges & Follow-ups', 'None.', '',
+        '## Diagrams', 'None.', '',
+      ].join('\n'));
     } else {
       throw new Error(`driveHostTicket does not know stage "${handoff.stage}"`);
     }
@@ -227,6 +270,13 @@ test('a roadmap runs features in order, tickets in parallel, and lands each one'
   assert.ok(f1.integrationRunId, 'an integration run reviewed the whole feature');
   const integration = JSON.parse(fs.readFileSync(pipelinePaths(root, { runId: f1.integrationRunId }).status, 'utf8'));
   assert.equal(integration.verdict, 'APPROVED');
+  // Handoff and Reporter are mandatory now, not opt-in: an approved run always
+  // produces both, with no --handoff/--report flag involved anywhere above.
+  assert.equal(integration.stages.find((s) => s.name === 'handoff').status, 'passed');
+  assert.equal(integration.stages.find((s) => s.name === 'reporter').status, 'passed');
+  const integrationPaths = pipelinePaths(root, { runId: f1.integrationRunId });
+  assert.match(fs.readFileSync(integrationPaths.handoffDoc, 'utf8'), /Pipeline Handoff/);
+  assert.match(fs.readFileSync(integrationPaths.reporterDoc, 'utf8'), /## Summary/);
 
   // Both tickets' work is on the feature branch, merged, before any approval.
   const featureFiles = git(root, 'ls-tree', '-r', '--name-only', f1.branch).split('\n');

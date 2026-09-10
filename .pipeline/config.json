@@ -15,7 +15,6 @@
   "maxDiffBytes": 2000000,
   "approvePlan": false,
   "designStage": false,
-  "handoffStage": false,
   "modelProfiles": {
     "auto": {
       "host": {

@@ -1,8 +1,8 @@
 ---
 name: orchestrate
-description: Runs a self-healing multi-agent pipeline for one task (Planner → optional Designer → Coder fix loop → Tester → Reviewer → optional Handoff → optional Reporter), or a whole roadmap of features as a pool of parallel workers, with approval gates and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or run a roadmap. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
+description: Runs a self-healing multi-agent pipeline for one task (Planner → optional Designer → Coder fix loop → Tester → Reviewer → Handoff → Reporter, the last two mandatory), or a whole roadmap of features as a pool of parallel workers, with approval gates and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or run a roadmap. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
 when_to_use: Trigger only on explicit phrases like "/orchestrate", "orchestrate this", "run the pipeline", "use the multi-agent pipeline", or when the user provides a task directly after /orchestrate. Do not trigger on generic build/implement/refactor requests, and never trigger while already completing a stage handoff for an active run.
-argument-hint: "[task] [--roadmap <file>] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--approve-plan] [--design] [--handoff] [--report] [--allow-self]"
+argument-hint: "[task] [--roadmap <file>] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--approve-plan] [--design] [--allow-self]"
 arguments:
   - task
   - model-profile
@@ -14,7 +14,7 @@ allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool.mjs
 
 # Orchestrate
 
-Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (builder-checker loop) → Tester → Reviewer → (optional Handoff)**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift.
+Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (builder-checker loop) → Tester → Reviewer → Handoff → Reporter**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift. Handoff and Reporter are mandatory: every run that reaches an `APPROVED` verdict always produces a continuation document for the next agent and a human-facing report — there is no flag to skip either.
 
 ## Current environment
 
@@ -75,7 +75,7 @@ Write `$task` to `.pipeline/task.txt` using the Write tool (not by embedding it 
 bash .pipeline/orchestrate.sh --task-file .pipeline/task.txt \
   --mode chat --host-client <your-client> \
   --model-profile auto \
-  [--approve-plan] [--design] [--handoff]
+  [--approve-plan] [--design]
 ```
 
 - **Chat Mode** (you, an IDE session — the default driver): You complete each stage in the handoff loop. The orchestrator updates `.pipeline/stage-handoff.json` and waits for `bash .pipeline/orchestrate.sh --continue`. `--host-client` attributes the run to your IDE (dashboard, logs) and adapts suggested models to your environment (e.g. Gemini-family in Antigravity, `current-chat` when unknown).
@@ -97,7 +97,7 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 
 1. Read the handoff file and its referenced prompt.
 2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model.
-3. Work on the assigned pipeline stage in this session (specs, design, code, tests, or review). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set). **While you work**, this session is "the currently running agent" that the dashboard's chat box targets — the orchestrator process has already exited for this handoff and won't check for you. Periodically (between tool calls, or every couple of minutes on a longer stage) check `.pipeline/followups/<stage>.txt` for the stage you're on; if it has content, that's a live note from the dashboard — read it, apply it to your current work immediately, then delete the file so it isn't reapplied when this stage runs again. Also publish concise progress so the dashboard has a transcript (do not scrape the IDE chat): run `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one) as you go.
+3. Work on the assigned pipeline stage in this session (specs, design, code, tests, review, handoff, or reporter — Handoff and Reporter are mandatory stages that always run after an `APPROVED` review, same as any other stage in this loop). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set). **While you work**, this session is "the currently running agent" that the dashboard's chat box targets — the orchestrator process has already exited for this handoff and won't check for you. Periodically (between tool calls, or every couple of minutes on a longer stage) check `.pipeline/followups/<stage>.txt` for the stage you're on; if it has content, that's a live note from the dashboard — read it, apply it to your current work immediately, then delete the file so it isn't reapplied when this stage runs again. Also publish concise progress so the dashboard has a transcript (do not scrape the IDE chat): run `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one) as you go.
 4. Set `"actualModel": "your model name"` in `stage-handoff.json`.
 5. Resume:
    ```bash

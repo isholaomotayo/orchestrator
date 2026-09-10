@@ -2,7 +2,7 @@
 
 Google Antigravity (the `agy` CLI and IDE) still reads this file. The Gemini CLI has been deprecated; use `--host-client antigravity` and runner `antigravity`.
 
-This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → optional Handoff, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift).
+This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → Handoff → Reporter, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift). Handoff and Reporter are mandatory — every run that reaches an `APPROVED` verdict always produces both, with no flag to disable either.
 
 Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestrate this", "run the pipeline", "use the multi-agent pipeline"). Do NOT infer an implicit request from an ordinary "build this feature" / "fix this bug" / "refactor this" ask — do those directly. Never self-invoke, and never use it to hand off a task you were asked to do yourself.
 
@@ -18,7 +18,7 @@ Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestra
    ```bash
    bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client antigravity --model-profile auto
    ```
-   Additional optional flags: `--approve-plan`, `--design`, `--handoff`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`.
+   Additional optional flags: `--approve-plan`, `--design`, `--review-panel`, `--sandbox`, `--allow-self`, `--max-cycles n`, `--max-post-tester-cycles n`, `--max-review-cycles n`.
 4. **Tell the user** to open the live dashboard URL from `.pipeline/ui.url` (do not hardcode 4600).
 5. When it exits, read `.pipeline/review_report.md` and report the verdict.
 

@@ -47,7 +47,7 @@ export function poolConfig(config) {
     // auth on the machine by default.
     defaultRunner: raw.defaultRunner ?? (config.runner && config.runner !== 'auto' ? config.runner : 'auto'),
     ticketFlags: raw.ticketFlags || {},
-    integrationFlags: raw.integrationFlags || { reviewPanel: true, report: true },
+    integrationFlags: raw.integrationFlags || { reviewPanel: true },
   };
 }
 

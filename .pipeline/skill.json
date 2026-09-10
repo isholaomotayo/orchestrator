@@ -1,7 +1,7 @@
 {
   "name": "orchestrate",
   "slash_command": "/orchestrate",
-  "description": "Runs a self-healing multi-agent pipeline for one task (Planner \u2192 optional Designer \u2192 Coder fix loop \u2192 Tester \u2192 Reviewer \u2192 optional Handoff \u2192 optional Reporter), or a whole roadmap of features as a pool of parallel workers with approval gates and a live control room. Invoke via /orchestrate or bash .pipeline/orchestrate.sh. Chat sessions pass --mode chat --host-client <name> for single runs and act as the coordinator in roadmap mode, never spawning workers themselves. Refuses to target the orchestrator source repo (exit 3) unless --allow-self / ORCH_ALLOW_SELF=1.",
+  "description": "Runs a self-healing multi-agent pipeline for one task (Planner \u2192 optional Designer \u2192 Coder fix loop \u2192 Tester \u2192 Reviewer \u2192 Handoff \u2192 Reporter, the last two mandatory), or a whole roadmap of features as a pool of parallel workers with approval gates and a live control room. Invoke via /orchestrate or bash .pipeline/orchestrate.sh. Chat sessions pass --mode chat --host-client <name> for single runs and act as the coordinator in roadmap mode, never spawning workers themselves. Refuses to target the orchestrator source repo (exit 3) unless --allow-self / ORCH_ALLOW_SELF=1.",
   "command": "bash .pipeline/orchestrate.sh",
   "repository": "https://github.com/isholaomotayo/orchestrator",
   "arguments": {

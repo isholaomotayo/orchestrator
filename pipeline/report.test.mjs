@@ -68,6 +68,9 @@ Used integers for money.
 
 ## Rough Edges & Follow-ups
 Currency validation is not asserted yet.
+
+## Review Guidance
+Check the rounding logic in \`src/invoice.js\` — it is the riskiest change.
 `;
 
 // ---- escaping and markdown -------------------------------------------------
@@ -182,6 +185,21 @@ test('the report carries the narrative, the numbers and the verdict', () => {
   assert.match(html, /Money type\?/);
   assert.match(html, /2 passed \/ 1 failed/);
   assert.match(html, /example\.test\/pr\/1/);
+});
+
+test('review guidance from the narrative reaches both the html and the markdown', () => {
+  const { html, md } = compileWorkDoneReport(payload());
+  assert.match(html, /Review guidance/);
+  assert.match(html, /rounding logic/);
+  assert.match(md, /## Review guidance/);
+  assert.match(md, /rounding logic/);
+});
+
+test('review guidance is omitted entirely when the narrative has none', () => {
+  const noGuidance = { ...payload(), narrative: NARRATIVE.replace(/## Review Guidance[\s\S]*$/, '') };
+  const { html, md } = compileWorkDoneReport(noGuidance);
+  assert.ok(!html.includes('Review guidance'));
+  assert.ok(!md.includes('Review guidance'));
 });
 
 test('the numbers come from the diff, not from the narrative', () => {
