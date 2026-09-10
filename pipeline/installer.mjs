@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { hashFile } from './integrity.mjs';
 import { atomicWrite, pidAlive, readLock, pipelinePaths } from './state.mjs';
 import { isOrchestratorSourceRepo } from './self-guard.mjs';
+import { HOSTS as HOOK_HOSTS, installHooks, uninstallHooks, hookStatus } from './hook-install.mjs';
 
 export const INSTALL_FILE = '.pipeline/install.json';
 export const CHECK_FILE = '.pipeline/update-check.json';
@@ -485,6 +486,22 @@ function main(argv) {
     return 3;
   }
 
+  if (argv.includes('--hooks')) {
+    const action = flagValue(argv, '--hooks', '');
+    const hosts = argv.includes('--host') ? [flagValue(argv, '--host', '')] : HOOK_HOSTS;
+    if (!['install', 'uninstall', 'status'].includes(action)) {
+      console.error('Usage: node pipeline/installer.mjs --hooks install|uninstall|status [--host claude|codex|cursor|antigravity]');
+      return 2;
+    }
+    for (const host of hosts) {
+      if (!HOOK_HOSTS.includes(host)) { console.error(`[installer] Unknown host: ${host}`); return 1; }
+      if (action === 'install') console.log(`[installer] ${host}: ${JSON.stringify(installHooks(repoRoot, host))}`);
+      else if (action === 'uninstall') console.log(`[installer] ${host}: ${JSON.stringify(uninstallHooks(repoRoot, host))}`);
+      else console.log(`[installer] ${host}: ${hookStatus(repoRoot, host)}`);
+    }
+    return 0;
+  }
+
   if (argv.includes('--write-manifest')) {
     const srcRoot = path.resolve(flagValue(argv, '--src', repoRoot));
     if (!isValidSource(srcRoot)) { console.error(`[installer] Not an orchestrator source tree: ${srcRoot}`); return 1; }
@@ -577,7 +594,7 @@ function main(argv) {
     return 0;
   }
 
-  console.error('Usage: node pipeline/installer.mjs --check | --plan --src <dir> | --apply [--src <dir>] [--ref <tag>] [--skip-verify] [--force] | --self-update | --write-manifest --src <dir>');
+  console.error('Usage: node pipeline/installer.mjs --check | --plan --src <dir> | --apply [--src <dir>] [--ref <tag>] [--skip-verify] [--force] | --self-update | --write-manifest --src <dir> | --hooks install|uninstall|status [--host claude|codex|cursor|antigravity]');
   return 2;
 }
 
