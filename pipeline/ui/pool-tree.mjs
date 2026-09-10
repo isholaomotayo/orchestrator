@@ -15,6 +15,7 @@ const STATE_DOT = {
 };
 
 const FEATURE_DOT = {
+  accepted: 'done',
   landed: 'done',
   merging: 'run',
   merge_approved: 'run',
@@ -42,6 +43,7 @@ const FEATURE_LABEL = {
   awaiting_merge_approval: 'ready to merge',
   merge_approved: 'merging',
   merging: 'merging',
+  accepted: 'accepted onto roadmap branch',
   landed: 'landed',
   failed: 'failed',
   held: 'on hold',
@@ -84,7 +86,7 @@ export function buildTree(snapshot) {
 
   const features = snapshot.roadmap?.features ?? [];
   const inProgress = features
-    .filter((f) => !['queued', 'landed', 'skipped'].includes(f.status))
+    .filter((f) => !['queued', 'accepted', 'landed', 'skipped'].includes(f.status))
     .map((f) => ({
       id: f.id,
       kind: 'feature',
@@ -142,7 +144,7 @@ export function buildTree(snapshot) {
           id: f.featureId,
           kind: 'feature',
           label: `${f.featureId}: ${f.title}`,
-          sub: f.pr?.url ? 'merged · pull request' : 'merged',
+          sub: f.status === 'accepted' ? `accepted · ${f.deliveryBranch || 'roadmap branch'}` : f.pr?.url ? 'merged · pull request' : 'landed',
           dot: 'done',
           reportRel: f.reportRel ?? null,
           pr: f.pr ?? null,

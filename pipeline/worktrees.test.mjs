@@ -206,13 +206,18 @@ test('an already-prepared worktree is adopted, not rebuilt', () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-test('a worktree on a different branch is rebuilt rather than silently reused', () => {
+test('a worktree on a different branch is refused rather than force-rebuilt', () => {
   const root = tmpRepo();
   const paths = pipelinePaths(root, { runId: 'r9' });
   fs.mkdirSync(paths.dir, { recursive: true });
   createRunWorktree({ repoRoot: root, runDir: paths.dir, worktreePath: paths.worktree, branch: 'pipeline/work/a', baseRef: currentSha(root) });
-  const res = createRunWorktree({ repoRoot: root, runDir: paths.dir, worktreePath: paths.worktree, branch: 'pipeline/work/b', baseRef: currentSha(root) });
-  assert.equal(res.adopted, false);
-  assert.equal(git(paths.worktree, 'rev-parse', '--abbrev-ref', 'HEAD'), 'pipeline/work/b');
+  // Recovery must never force-remove an existing worktree or delete its branch
+  // merely to reuse a run ID — a mismatched branch means a human must inspect
+  // and recover it explicitly, not have it silently discarded and rebuilt.
+  assert.throws(
+    () => createRunWorktree({ repoRoot: root, runDir: paths.dir, worktreePath: paths.worktree, branch: 'pipeline/work/b', baseRef: currentSha(root) }),
+    /Refusing to replace an existing worktree or branch/,
+  );
+  assert.equal(git(paths.worktree, 'rev-parse', '--abbrev-ref', 'HEAD'), 'pipeline/work/a', 'the original worktree is untouched');
   fs.rmSync(root, { recursive: true, force: true });
 });

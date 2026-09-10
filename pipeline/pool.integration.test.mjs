@@ -379,10 +379,13 @@ test('review: end accepts features onto a working branch and waits for a final l
   const sup = createSupervisor({ repoRoot: root });
   fs.writeFileSync(paths.supervisorPid, String(process.pid));
 
-  const f1 = await until(sup, (rm) => rm.features[0].status === 'landed', { limit: 500 });
+  // review: end distinguishes acceptance onto the working (roadmap) branch from
+  // landing on the target branch — a feature's own status stops at 'accepted'
+  // until the whole roadmap is approved and merged into base.
+  const f1 = await until(sup, (rm) => rm.features[0].status === 'accepted', { limit: 500 });
   const init = git(root, 'rev-parse', 'HEAD');
   assert.equal(git(root, 'rev-parse', 'main'), init, 'review: end must not touch the base when F1 is accepted');
-  assert.equal(f1.features[0].status, 'landed');
+  assert.equal(f1.features[0].status, 'accepted');
   const working = f1.workingBranch;
   assert.ok(working, 'a working branch was recorded');
   const workingFiles = git(root, 'ls-tree', '-r', '--name-only', working).split('\n');
@@ -391,7 +394,7 @@ test('review: end accepts features onto a working branch and waits for a final l
   const f2started = await until(sup, (rm) => rm.features[1].status !== 'queued');
   assert.equal(f2started.features[1].baseRef, f1.features[0].landedSha, 'F2 starts from the accepted F1 sha');
 
-  const both = await until(sup, (rm) => rm.features[1].status === 'landed' && rm.roadmapStatus === 'awaiting_final_review', { limit: 600 });
+  const both = await until(sup, (rm) => rm.features[1].status === 'accepted' && rm.roadmapStatus === 'awaiting_final_review', { limit: 600 });
   assert.equal(git(root, 'rev-parse', 'main'), init, 'the base is still untouched after every feature is accepted');
   assert.equal(both.roadmapStatus, 'awaiting_final_review');
   const decisions = pool.openDecisions(paths);

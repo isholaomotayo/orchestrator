@@ -5,6 +5,9 @@
 // change notifications over Server-Sent Events by watching .pipeline/.
 // Binds to 127.0.0.1 only — the dashboard exposes code, diffs, and controls.
 import fs from 'node:fs';
+import { bridgeCommand, inspectBridge } from './bridge.mjs';
+import { isValidRunId } from './run-registry.mjs';
+import { readUsage } from './usage.mjs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -133,7 +136,7 @@ getOrCreateProject(defaultRepoRoot);
 
 function runDir(project, runId) {
   if (!runId) return project.paths.dir;
-  if (!/^[\w.-]+$/.test(runId)) return null;
+  if (!isValidRunId(runId)) return null;
   const dir = path.join(project.paths.runs, runId);
   return fs.existsSync(dir) ? dir : null;
 }
@@ -295,10 +298,10 @@ function readState(project, runId) {
     } catch { return null; }
   })();
   return {
-    status, artifacts, events: byStage,
+    status, artifacts, events: byStage, bridge: inspectBridge(project.repoRoot, runId || null),
     followups: readFollowups(dir),
     live, stale, runId: runId || null, isRoot, goal,
-    totals: { costUsd: totalCost, costPartial: !!costPartial },
+    totals: { ...readUsage(path.join(dir,'events.jsonl')), costPartial: readUsage(path.join(dir,'events.jsonl')).partial },
     canCancel, canExtend, canResume, canApprovePlan, canContinue,
     stageReady,
     ...engineInfo(project),
@@ -324,7 +327,7 @@ function listRuns(project) {
     let s = null;
     try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
     return {
-      id, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall,
+      id, featureId:s?.featureId, ticketId:s?.ticketId, host:s?.hostClient || s?.runner, stage:s?.awaitingStage || s?.stages?.find(x=>x.status==='running')?.name, reportRel:fs.existsSync(path.join(project.paths.runs,id,'reports/work-done.html')) ? `.pipeline/runs/${id}/reports/work-done.html` : null, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
       verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt,
       live: s?.overall === 'running' || s?.overall === 'awaiting_chat' || s?.overall === 'awaiting_plan_approval',
     };
@@ -335,7 +338,7 @@ function listRuns(project) {
   // id '' is deliberate: /api/state with a falsy run param serves the root dir.
   let primary = null;
   try { primary = JSON.parse(fs.readFileSync(path.join(project.paths.dir, 'status.json'), 'utf8')); } catch {}
-  if (primary) {
+  if (primary && !primary.pool) {
     runs.unshift({
       id: '', kind: 'single', task: primary.task || '(unknown)', overall: primary.overall,
       verdict: primary.verdict, haltReason: primary.haltReason, startedAt: primary.startedAt,
@@ -581,6 +584,7 @@ function getProjectForRequest(req, url) {
   if (projectPath) {
     const proj = getOrCreateProject(projectPath);
     if (proj) return proj;
+    return null;
   }
   return getOrCreateProject(defaultRepoRoot);
 }
@@ -597,6 +601,32 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   if (req.method === 'POST' && isGuardedPost(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
+  }
+  if (url.pathname === '/api/bridge' && req.method === 'GET') {
+    const project = getProjectForRequest(req,url);
+    if (!project) return json(res,{error:'invalid project'},400);
+    try { return json(res,bridgeCommand('bridge.inspect',{project:project.repoRoot})); }
+    catch (err) { return json(res,{error:err.message},409); }
+  }
+  if (url.pathname === '/api/messages' && req.method === 'POST') {
+    const project = getProjectForRequest(req,url);
+    if (!project) return json(res,{error:'invalid project'},400);
+    return readBody(req, body => {
+      try { if (!body || !Object.hasOwn(body,'runId')) throw new Error('runId required');
+        return json(res,bridgeCommand('message.queue',{...body,project:project.repoRoot}));
+      } catch (err) { return json(res,{error:err.message},409); }
+    });
+  }
+  if (url.pathname === '/api/pool/action' && req.method === 'POST') {
+    const project = getProjectForRequest(req,url);
+    if (!project) return json(res,{error:'invalid project'},400);
+    return readBody(req, body => {
+      try {
+        const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature};
+        if (!actions[body?.action]) throw new Error('Unknown action');
+        return json(res,actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action'));
+      } catch (err) { return json(res,{error:err.message},409); }
+    });
   }
   if (req.method === 'POST' && url.pathname === '/api/register') {
     readBody(req, (body) => {
@@ -626,7 +656,7 @@ const server = http.createServer((req, res) => {
         return json(res, { error: `stage "${body.stage}" is not active on this run (active: ${active})` }, 409);
       }
       try {
-        json(res, queueStageNote(runPaths, body.stage, body.text.trim()));
+        json(res, status.bridgeRequired ? bridgeCommand('message.queue',{project:project.repoRoot,runId:body.run || null,stage:body.stage,text:body.text.trim(),priority:body.priority || 'priority',handoffId:body.handoffId,commandId:body.commandId}) : queueStageNote(runPaths, body.stage, body.text.trim()));
       } catch (err) {
         json(res, { error: err.message }, 400);
       }

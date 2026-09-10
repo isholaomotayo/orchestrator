@@ -33,7 +33,7 @@ import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } 
 import { classifyEvent, appendAttention, openDecision, openDecisions, readDecisions } from './attention.mjs';
 import * as pool from './pool.mjs';
 import {
-  createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles,
+  createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles, branchExists,
 } from './worktrees.mjs';
 import {
   mergeTransition, openPullRequest, checkMergeable, mergePullRequest, prBodyFrom, detectForge,
@@ -56,8 +56,14 @@ export function createSupervisor({
   // re-escalate on every tick.
   const seen = new Map();
   let resumingThisTick = new Set();
+  let schedulingOffset = 0;
 
   function roadmap() { return pool.readRoadmap(paths); }
+  // Before the first feature is accepted, `rm.workingBranch` is only a name —
+  // the git ref itself materializes on the first `acceptOntoWorkingBranch`.
+  function targetRef(rm) {
+    return rm.review === 'end' && branchExists(repoRoot, rm.workingBranch) ? rm.workingBranch : rm.base;
+  }
   function saveRoadmap(next) { return pool.writeRoadmap(paths, next); }
 
   // First candidate that names an actual runner rather than deferring
@@ -107,8 +113,8 @@ export function createSupervisor({
     });
   }
 
-  function alreadyPending(runId, kind) {
-    return pool.pendingAttention(paths).some((item) => item.runId === runId && item.kind === kind);
+  function alreadyPending(runId, kind, handoffId = null) {
+    return pool.pendingAttention(paths).some((item) => item.runId === runId && item.kind === kind && (!handoffId || item.handoffId === handoffId));
   }
 
   function raiseAttention(item) {
@@ -218,13 +224,16 @@ export function createSupervisor({
 
   // ---- feature lifecycle ---------------------------------------------------
 
+  function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).length); }
+
   function startFeature(rm, feature) {
+    if (!availableSlots()) return;
     if (feature.specRunId) {
       let existing = null;
       try { existing = JSON.parse(fs.readFileSync(pipelinePaths(repoRoot, { runId: feature.specRunId }).status, 'utf8')); } catch { /* gone */ }
       if (existing && !['done', 'halted'].includes(existing.overall)) return;
     }
-    const baseRef = feature.baseRef || currentSha(repoRoot, rm.base);
+    const baseRef = feature.baseRef || currentSha(repoRoot, targetRef(rm));
     const runId = newRunId({ featureId: feature.id, kind: 'plan' });
     const brief = writeBrief({
       runId, title: feature.title, featureId: feature.id, ticketId: null,
@@ -269,13 +278,15 @@ export function createSupervisor({
 
     const wave = scheduleTickets(tickets, {
       done, running,
-      maxParallel: feature.maxParallel || poolCfg.maxParallel,
+      maxParallel: Math.min(feature.maxParallel || poolCfg.maxParallel, running.length + availableSlots()),
       runningFiles,
       serializeOnFileOverlap: poolCfg.serializeOnFileOverlap,
     });
 
     const updated = [...recorded];
     for (const ticket of wave) {
+      const foreign = pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
+      if (poolCfg.serializeOnFileOverlap && foreign.some(r => !ticket.files.length || !r.meta?.files?.length || ticket.files.some(f => r.meta.files.some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
       const runId = newRunId({ featureId: feature.id, ticketId: ticket.id, kind: 'ticket' });
       const sliceFile = path.join(paths.briefs, `${runId}.specs.md`);
       fs.mkdirSync(paths.briefs, { recursive: true });
@@ -285,9 +296,25 @@ export function createSupervisor({
         mode: feature.mode, base: feature.baseRef, branch: `pipeline/work/${feature.id}/${runId}`,
         body: ticket.body || feature.description,
       });
+      const dependencyRows = ticket.dependsOn.map(id => recorded.find(t => t.id === id));
+      const inputShas = dependencyRows.map(t => t?.runId && readRunMeta(pipelinePaths(repoRoot,{runId:t.runId}))?.committedSha);
+      if (inputShas.some(sha => !sha)) { escalate(feature,null,'dependency-missing',`Prerequisite commit missing for ${ticket.id}`); continue; }
+      let ticketBase = feature.baseRef;
+      if (inputShas.length) {
+        const target = pipelinePaths(repoRoot,{runId});
+        createRunWorktree({repoRoot,runDir:target.dir,worktreePath:target.worktree,branch:`pipeline/work/${feature.id}/${runId}`,baseRef:ticketBase});
+        for (const sha of inputShas) {
+          const merged = tryMerge(target.worktree,sha);
+          if (!merged.ok) { escalate(feature,{runId},'dependency-conflict',`Cannot combine prerequisites for ${ticket.id}`); return; }
+        }
+        ticketBase = currentSha(target.worktree);
+      }
+      const runPaths = pipelinePaths(repoRoot,{runId});
+      fs.mkdirSync(runPaths.dir, {recursive:true});
+      writeRunMeta(runPaths,{files:ticket.files,inputShas});
       const spawned = spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
-        brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: feature.baseRef,
+        brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: ticketBase,
         runner: resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner)),
         extra: [
           '--specs-file', sliceFile,
@@ -321,15 +348,20 @@ export function createSupervisor({
 
   /** Every ticket committed: merge them onto the feature branch and review it. */
   function integrateFeature(rm, feature) {
+    if (!availableSlots()) return;
+    const validatedTarget = currentSha(repoRoot, targetRef(rm));
     const runId = newRunId({ featureId: feature.id, kind: 'integration' });
     const runPaths = pipelinePaths(repoRoot, { runId });
     fs.mkdirSync(runPaths.dir, { recursive: true });
 
+    const branchTaken = gitIn(repoRoot,['show-ref','--verify','--quiet',`refs/heads/${feature.branch}`]).status === 0;
+    if (branchTaken) feature = {...feature,branch:`${feature.branch}-retry-${runId.slice(-8)}`};
+    saveRoadmap(setFeatureStatus(roadmap(),feature.id,'integrating',{branch:feature.branch,validatedTarget}));
     // The feature branch starts where the feature started, then each ticket
     // branch is merged onto it in ticket order.
     createRunWorktree({
       repoRoot, runDir: runPaths.dir, worktreePath: runPaths.worktree,
-      branch: feature.branch, baseRef: feature.baseRef,
+      branch: feature.branch, baseRef: validatedTarget,
     });
 
     for (const ticket of feature.tickets || []) {
@@ -405,10 +437,15 @@ export function createSupervisor({
 
   // ---- landing -------------------------------------------------------------
 
-  function acceptOntoWorkingBranch(sha) {
+  function acceptOntoWorkingBranch(sha, expected) {
     const rm = roadmap();
     const branch = rm.workingBranch;
-    gitIn(repoRoot, ['update-ref', `refs/heads/${branch}`, sha]);
+    // The working branch doesn't exist until the first feature is accepted onto
+    // it; git's compare-and-swap needs the all-zero SHA as "oldvalue" to assert
+    // that, rather than the base commit `expected` was actually computed from.
+    const oldval = branchExists(repoRoot, branch) ? expected : '0'.repeat(40);
+    const updated = gitIn(repoRoot, ['update-ref', `refs/heads/${branch}`, sha, oldval]);
+    if (updated.status !== 0) throw new Error('Roadmap target moved before acceptance.');
     saveRoadmap({ ...roadmap(), workingBranch: branch, workingSha: sha });
     return sha;
   }
@@ -438,7 +475,10 @@ export function createSupervisor({
       });
       const sha = res.sha ?? currentSha(runPaths.worktree);
       if (roadmap().review === 'end') {
-        acceptOntoWorkingBranch(sha);
+        if (currentSha(repoRoot,targetRef(roadmap())) !== feature.validatedTarget) {
+          integrateFeature(roadmap(),feature); return;
+        }
+        acceptOntoWorkingBranch(sha,feature.validatedTarget);
         finishLanding(feature, sha, { deferred: true });
         return;
       }
@@ -506,6 +546,11 @@ export function createSupervisor({
   }
 
   function performMerge(rm, feature) {
+    const target = currentSha(repoRoot,rm.base);
+    if (feature.validatedTarget && (target !== feature.validatedTarget || (feature.mergeApproval?.head && currentSha(repoRoot,feature.branch) !== feature.mergeApproval.head))) {
+      escalate(feature,{runId:feature.integrationRunId},'approval-stale','Target or candidate changed; integration and approval must be repeated.');
+      integrateFeature(rm,{...feature,mergeApproval:null}); return;
+    }
     if (mergeCfg.mode === 'pr' && feature.pr?.url) {
       const check = checkMergeable({
         cwd: repoRoot, provider: feature.pr.provider || 'github', url: feature.pr.url,
@@ -529,6 +574,7 @@ export function createSupervisor({
       return;
     }
 
+    if (gitIn(repoRoot,['branch','--show-current']).stdout.trim() !== rm.base) { escalate(feature,{runId:feature.integrationRunId},'wrong-branch',`Check out ${rm.base} before local landing.`); return; }
     // local-only: merge the feature branch into the base in this repository.
     const merged = gitIn(repoRoot, ['merge', '--no-ff', '--no-edit', feature.branch]);
     if (merged.status !== 0) {
@@ -540,6 +586,10 @@ export function createSupervisor({
   }
 
   function performRoadmapMerge(rm) {
+    if (rm.validatedTarget && (currentSha(repoRoot,rm.base) !== rm.validatedTarget || rm.mergeApproval?.head !== currentSha(repoRoot,rm.workingBranch))) {
+      saveRoadmap(setRoadmapStatus(rm,'awaiting_final_review',{mergeApproval:null,mergeState:'target-moved'}));
+      escalate(null,null,'approval-stale','Roadmap target moved. Revalidate the combined working branch before a new approval.'); return;
+    }
     const branch = rm.workingBranch;
     const fakeFeature = { id: 'roadmap', title: rm.title, integrationRunId: null, branch };
     if (mergeCfg.mode === 'pr') {
@@ -593,6 +643,7 @@ export function createSupervisor({
       return;
     }
 
+    if (gitIn(repoRoot,['branch','--show-current']).stdout.trim() !== rm.base) { escalate(fakeFeature,null,'wrong-branch',`Check out ${rm.base} before local landing.`); return; }
     const merged = gitIn(repoRoot, ['merge', '--no-ff', '--no-edit', branch]);
     if (merged.status !== 0) {
       escalate(fakeFeature, null, 'merge_failed', `Local merge of ${branch} failed: ${merged.stderr.trim()}`);
@@ -615,7 +666,7 @@ export function createSupervisor({
     if (['awaiting_final_review', 'merge_approved', 'landed'].includes(rm.roadmapStatus)) return;
     const features = rm.features || [];
     if (!features.length) return;
-    if (features.some((f) => !['landed', 'skipped'].includes(f.status))) return;
+    if (features.some((f) => !['accepted', 'landed', 'skipped'].includes(f.status))) return;
     if (openDecisions(paths).some((d) => d.kind === 'roadmap-merge')) {
       saveRoadmap(setRoadmapStatus(rm, 'awaiting_final_review', {}));
       return;
@@ -631,24 +682,22 @@ export function createSupervisor({
       kind: 'roadmap-merge', decisionId: decision.id, escalate: true,
       summary: `Roadmap "${rm.title}" is ready for a final review — land with \`pool approve-merge\` or \`pool land-roadmap\`.`,
     });
-    saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', {}));
+    saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', {validatedTarget:currentSha(repoRoot,rm.base)}));
   }
 
   function finishLanding(feature, landedSha, { deferred = false } = {}) {
     const runPaths = feature.integrationRunId ? pipelinePaths(repoRoot, { runId: feature.integrationRunId }) : null;
     if (runPaths) appendRunVerb(runPaths, 'landed', landedSha?.slice(0, 8) || '');
-    let rm = setFeatureStatus(roadmap(), feature.id, 'landed', {
-      mergeState: 'landed',
+    let rm = setFeatureStatus(roadmap(), feature.id, deferred ? 'accepted' : 'landed', {
+      mergeState: deferred ? 'accepted' : 'landed',
+      acceptedSha: deferred ? landedSha : null,
+      deliveryBranch: deferred ? roadmap().workingBranch : roadmap().base,
       landedSha,
       landedAt: new Date(now()).toISOString(),
       reportRel: runPaths && fs.existsSync(path.join(runPaths.reports, 'work-done.html'))
         ? path.relative(repoRoot, path.join(runPaths.reports, 'work-done.html'))
         : null,
     });
-    // The next feature starts from what actually landed, not from where this
-    // one started.
-    const upcoming = nextFeature(rm);
-    if (upcoming) rm = setFeatureStatus(rm, upcoming.id, 'queued', { baseRef: landedSha });
     saveRoadmap(rm);
     const branch = rm.workingBranch;
     appendAttention(paths, {
@@ -708,7 +757,7 @@ export function createSupervisor({
         staleSince: run.lastOutputAt, verbSince: run.verbSince, now: now(),
       }, poolCfg);
       if (event) {
-        if (event.escalate && !alreadyPending(run.runId, event.kind)) {
+        if (event.escalate && !alreadyPending(run.runId, event.kind, event.handoffId)) {
           const decisionId = event.kind === 'plan-approval'
             ? openDecision(paths, {
               runId: run.runId, featureId: run.featureId, kind: 'plan-approval', stage: 'planner',
@@ -721,7 +770,7 @@ export function createSupervisor({
         }
         log(`${run.runId}: ${event.kind} — ${event.summary}`);
       }
-      seen.set(run.runId, { state: run.state, verb: run.verb });
+      seen.set(run.runId, { state: run.state, verb: run.verb, handoffId: run.status?.handoffId, stage: run.status?.awaitingStage });
     }
 
     // 2. Honour resume/extend requests, then auto-resume recoverable halts.
@@ -759,7 +808,7 @@ export function createSupervisor({
     }
 
     // 3. Advance the feature currently in flight.
-    if (!paused) advanceFeature(rm, runs);
+    if (!paused) advanceFeatures();
 
     // 4. Publish state for the dashboard and the coordinator.
     const snap = pool.snapshot(paths, { config, now: new Date(now()) });
@@ -767,6 +816,24 @@ export function createSupervisor({
     pool.writePrimaryMirror(paths, { snap, runs, config });
     touchHeartbeat();
     return { ok: true, snapshot: snap, runs };
+  }
+
+  function advanceFeatures() {
+    let rm = roadmap();
+    if (rm.roadmapStatus === 'merge_approved') { performRoadmapMerge(rm); return; }
+    if (['awaiting_final_review','landed'].includes(rm.roadmapStatus)) return;
+    const active = rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status));
+    const ordered = active.slice(schedulingOffset % Math.max(1,active.length)).concat(active.slice(0,schedulingOffset % Math.max(1,active.length)));
+    schedulingOffset++;
+    for (const feature of ordered) advanceFeature({...roadmap(),currentFeatureId:feature.id},pool.listRunStates(paths,poolCfg,now()));
+    rm = roadmap();
+    let slots = poolCfg.maxActiveFeatures - rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status)).length;
+    for (const feature of rm.features) {
+      if (slots <= 0 || !availableSlots()) break;
+      if (feature.status !== 'queued' || !(feature.dependsOn || []).every(id => ['accepted','landed','skipped'].includes(roadmap().features.find(f=>f.id===id)?.status))) continue;
+      startFeature(roadmap(),feature); slots--;
+    }
+    maybeEnterFinalReview(roadmap());
   }
 
   function advanceFeature(rm, runs) {
@@ -777,7 +844,7 @@ export function createSupervisor({
     if (rm.roadmapStatus === 'awaiting_final_review' || rm.roadmapStatus === 'landed') return;
 
     const current = rm.features.find((f) => f.id === rm.currentFeatureId)
-      ?? rm.features.find((f) => !['landed', 'skipped', 'failed', 'held', 'queued'].includes(f.status));
+      ?? rm.features.find((f) => !['accepted', 'landed', 'skipped', 'failed', 'held', 'queued'].includes(f.status));
 
     if (!current) {
       const upcoming = nextFeature(rm);
@@ -808,8 +875,9 @@ export function createSupervisor({
           const run = byRun(ticket.runId);
           if (!run) continue;
           if (run.status?.overall === 'done') {
-            commitTicket(current, ticket, run);
-            ticket.status = 'committed';
+            const committed = commitTicket(current, ticket, run);
+            ticket.status = committed.ok ? 'committed' : 'failed';
+            if (!committed.ok) escalate(current, run, 'commit-failed', committed.reason);
             changed = true;
           } else if (run.status?.overall === 'halted' && !isRetrying(run)) {
             ticket.status = 'failed';

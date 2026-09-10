@@ -6,6 +6,8 @@
 // next. Keeping that boundary is what makes the agent's judgment auditable —
 // it can be wrong about a recommendation, but it cannot be wrong about state.
 import fs from 'node:fs';
+import { readUsage } from './usage.mjs';
+import { inspectBridge, bridgeCommand } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -28,6 +30,7 @@ export function poolConfig(config) {
   const raw = config.pool || {};
   return {
     maxParallel: raw.maxParallel ?? 3,
+    maxActiveFeatures: raw.maxActiveFeatures ?? 2,
     pollMs: raw.pollMs ?? 2000,
     heartbeatMs: raw.heartbeatMs ?? 300_000,
     staleAfterMs: raw.staleAfterMs ?? DEFAULT_THRESHOLDS.staleAfterMs,
@@ -120,7 +123,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
     let lastOutputAt = null;
     try { lastOutputAt = new Date(fs.statSync(runPaths.events).mtimeMs).toISOString(); } catch { /* no events yet */ }
 
-    const running = status?.stages?.find((s) => s.status === 'running');
+    const running = status?.stages?.find(s => s.name === status.awaitingStage) || status?.stages?.find(s => ['running', 'awaiting_host'].includes(s.status));
     runs.push({
       runId,
       paths: runPaths,
@@ -148,7 +151,9 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
         meta,
         now,
       }, thresholds),
-      costUsd: 0,
+      ...readUsage(runPaths.events),
+      owner: inspectBridge(paths.root, runId).owner,
+      handoffId: status?.handoffId ?? null,
     });
   }
   return runs;
@@ -187,11 +192,11 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
   const roadmap = readRoadmap(paths);
   const snap = buildSnapshot({
     roadmap,
-    runs: activeRuns(runs).map((r) => ({
+    runs: runs.map((r) => ({
       runId: r.runId, featureId: r.featureId, ticketId: r.ticketId, kind: r.kind,
       stage: r.stage, cycle: r.cycle, maxCycles: r.maxCycles, state: r.state,
       verb: r.verb, lastOutputAt: r.lastOutputAt, worktree: r.worktree,
-      branch: r.branch, costUsd: r.costUsd,
+      branch: r.branch, costUsd: r.costUsd, costPartial: r.partial, owner: r.owner, handoffId: r.handoffId, overall: r.status?.overall, haltReason: r.status?.haltReason,
     })),
     decisions: readDecisions(paths),
     attention: pendingAttention(paths),
@@ -251,7 +256,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   }
   ensureStageEntries(status);
 
-  const featuresSettled = roadmap?.features?.every((f) => ['landed', 'skipped'].includes(f.status));
+  const featuresSettled = roadmap?.features?.every((f) => ['accepted', 'landed', 'skipped'].includes(f.status));
   const allDone = featuresSettled && (roadmap?.review !== 'end' || roadmap?.roadmapStatus === 'landed');
   const awaitingFinal = roadmap?.review === 'end' && roadmap?.roadmapStatus === 'awaiting_final_review';
   if (!snap.supervisor.alive) status.overall = 'halted', status.haltReason = 'POOL_STOPPED';
@@ -352,7 +357,7 @@ export function approveMerge(paths, featureId, { by = 'operator', via = 'cli', n
   const open = openDecisions(paths).find((d) => d.featureId === featureId && d.kind === 'merge-approval');
   if (open) resolveDecision(paths, open.decisionId, { decision: 'approve', note, by, via });
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'merge_approved', {
-    mergeApproval: { by, via, at: new Date().toISOString(), note },
+    mergeApproval: { by, via, at: new Date().toISOString(), note, head: feature.committedSha, target: feature.validatedTarget },
   }));
   return { featureId, approved: true };
 }
@@ -373,7 +378,7 @@ export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note 
   const open = openDecisions(paths).find((d) => d.kind === 'roadmap-merge');
   if (open) resolveDecision(paths, open.decisionId, { decision: 'approve', note, by, via });
   writeRoadmap(paths, setRoadmapStatus(roadmap, 'merge_approved', {
-    mergeApproval: { by, via, at: new Date().toISOString(), note },
+    mergeApproval: { by, via, at: new Date().toISOString(), note, head: roadmap.workingSha, target: roadmap.validatedTarget },
   }));
   return { roadmap: true, approved: true, workingBranch: roadmap.workingBranch ?? null };
 }
@@ -457,7 +462,8 @@ export function addNote(paths, { kind = 'learning', text, runId = null, featureI
  * human (or any attending chat agent, in any client) needs to pick it up and
  * complete that stage exactly as in single-run chat mode.
  */
-export function claim(paths, runId) {
+export function claim(paths, runId, credentials = null) {
+  if (credentials) return bridgeCommand('run.claim', {project:paths.root,runId,...credentials});
   const runPaths = pipelinePaths(paths.root, { runId });
   let status;
   try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); }

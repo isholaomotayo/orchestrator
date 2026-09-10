@@ -128,6 +128,13 @@ export function parseReviewCoverage(review) {
 }
 
 /** Join what the spec asked for with what the review says was covered. */
+export function coverageStatus(value) {
+  const v = String(value).trim().toLowerCase().replace(/[*_]/g, '');
+  if (['covered', 'pass', 'passed', 'yes', 'done'].includes(v)) return 'covered';
+  if (['partial', 'partially covered'].includes(v)) return 'partial';
+  return 'missing';
+}
+
 export function coverageTable(specs, review) {
   const { failureModes } = parseSpecItems(specs);
   const rows = parseReviewCoverage(review);
@@ -135,13 +142,13 @@ export function coverageTable(specs, review) {
   const joined = failureModes.map((item) => {
     const row = byId.get(item.id.toUpperCase());
     const status = row
-      ? (/cover|pass|yes|done/i.test(row.status) ? 'covered' : /partial/i.test(row.status) ? 'partial' : 'missing')
+      ? coverageStatus(row.status)
       : 'unmentioned';
     return { id: item.id, name: item.name, status, evidence: row?.evidence ?? '' };
   });
   for (const row of rows) {
     if (!failureModes.some((f) => f.id.toUpperCase() === row.id.toUpperCase())) {
-      joined.push({ id: row.id, name: '', status: /cover|pass|yes|done/i.test(row.status) ? 'covered' : 'partial', evidence: row.evidence });
+      joined.push({ id: row.id, name: '', status: coverageStatus(row.status), evidence: row.evidence });
     }
   }
   return joined;
@@ -211,7 +218,7 @@ function narrativeSection(narrative, heading) {
 export function compileWorkDoneReport({
   title, status = {}, runId = null, feature = null, narrative = '',
   specs = '', review = '', testSuite = '', diff = '', history = null,
-  decisions = [], pr = null, diagrams = [], generatedAt = new Date(),
+  decisions = [], pr = null, diagrams = [], operations = null, generatedAt = new Date(),
 }) {
   const verdict = status.verdict || 'UNKNOWN';
   const files = diffStats(diff);
@@ -237,6 +244,7 @@ export function compileWorkDoneReport({
 
     section('Summary', narrativeSection(narrative, 'Summary') || '<p class="note">No narrative was recorded for this run.</p>'),
     section('What changed', narrativeSection(narrative, 'What Changed')),
+    operations ? section('Operational record', `<pre>${escapeHtml(JSON.stringify(operations,null,2))}</pre>`) : '',
 
     files.length ? section('Files', [
       '<table><thead><tr><th>File</th><th>Change</th><th>+</th><th>&minus;</th></tr></thead><tbody>',
@@ -251,7 +259,7 @@ export function compileWorkDoneReport({
     ].join('\n')) : '',
 
     trend.length ? section('Verification', [
-      `<p>${trend.map((t) => `${t.passed} passed / ${t.failed} failed`).join(' &rarr; ')}</p>`,
+      `<p>${trend.map((t) => `${t.passed ?? 'unknown'} passed / ${t.failed ?? 'unknown'} failed`).join(' &rarr; ')}</p>`,
       status.stages?.find((s) => s.name === 'tester')?.checks
         ? `<p class="meta">Final: ${status.stages.find((s) => s.name === 'tester').checks.passedCount} passing.</p>` : '',
     ].join('\n')) : '',
@@ -280,6 +288,7 @@ export function compileWorkDoneReport({
     `# ${title}`, '',
     `${feature?.id ? `Feature ${feature.id} · ` : ''}Review verdict: **${verdict}**`, '',
     plain(narrativeSection(narrative, 'Summary')) || '_No narrative was recorded._', '',
+    operations ? `## Operational record\n\n${JSON.stringify(operations,null,2)}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',
     plain(narrativeSection(narrative, 'Rough Edges & Follow-ups')) ? `## Rough edges and follow-ups\n\n${plain(narrativeSection(narrative, 'Rough Edges & Follow-ups'))}\n` : '',
@@ -313,4 +322,17 @@ export function writeWorkDoneReport(paths, payload) {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+export function writeTerminalReport(paths, status, history = null, messages = []) {
+  const read = file => { try { return fs.readFileSync(file,'utf8'); } catch { return ''; } };
+  const events = read(paths.events).split('\n').filter(Boolean).flatMap(line => {try{return [JSON.parse(line)]}catch{return []}});
+  const operations = { outcome:status.overall, haltReason:status.haltReason, task:status.task, intent:status.intent || null, startedAt:status.startedAt, endedAt:status.endedAt,
+    delivery:{branch:status.branch || null,baseRef:status.baseRef || null}, stages:status.stages,
+    checks:[...(history?.coder || []),...(history?.postTester || [])],
+    activity:events.filter(e => ['agent_retry','agent_timeout','integrity_violation','check_end'].includes(e.type) || e.kind === 'err'), messages,
+    limitations:['Coverage describes reviewer assertions; check results are recorded separately.', ...(!events.some(e => e.host || e.type === 'agent_output') ? ['No agent activity was recorded.'] : [])] };
+  const written = writeWorkDoneReport(paths,{title:`Run report — ${String(status.task || 'Untitled').split('\n')[0]}`,status,runId:status.runId,feature:status.featureId ? {id:status.featureId}:null,narrative:read(paths.reporterDoc),specs:read(paths.specs),review:read(paths.reviewReport),testSuite:read(paths.testSuite),diff:read(paths.diff),history,operations});
+  if (written.ok) atomicWrite(path.join(paths.reports,'operations.json'),JSON.stringify(operations,null,2));
+  return written;
 }

@@ -93,17 +93,24 @@ export function buildSnapshot({
     });
   }
 
+  for (const run of runs) {
+    const kind = run.overall === 'halted' ? 'halted' : ['dead','unknown','stale'].includes(run.state) ? run.state : run.state === 'awaiting' ? 'claim-run' : null;
+    if (!kind || needsDecision.some(d => d.runId === run.runId)) continue;
+    if (kind === 'halted' && features.some(f => f.id === run.featureId && ['landed','accepted'].includes(f.status))) continue;
+    needsDecision.push({decisionId:null,kind,runId:run.runId,featureId:run.featureId,handoffId:run.handoffId,question:kind === 'claim-run' ? `Connect an agent to ${run.stage || 'the pending stage'}` : `Inspect ${run.haltReason || kind}`,options:[],artifacts:[]});
+  }
+
   const recentlyLanded = features
-    .filter((f) => f.status === 'landed')
+    .filter((f) => ['landed','accepted'].includes(f.status))
     .sort((a, b) => String(b.landedAt || '').localeCompare(String(a.landedAt || '')))
     .slice(0, LANDED_LIMIT)
     .map((f) => ({
-      featureId: f.id, title: f.title, pr: f.pr ?? null,
+      featureId: f.id, title: f.title, status:f.status, deliveryBranch:f.deliveryBranch, pr: f.pr ?? null,
       landedSha: f.landedSha ?? null, landedAt: f.landedAt ?? null,
       reportRel: f.reportRel ?? null,
     }));
 
-  const inProgress = runs.map((r) => {
+  const inProgress = runs.filter(r => !['done','halted'].includes(r.overall)).map((r) => {
     const feature = byFeature.get(r.featureId);
     const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(r.featureId))
       || features.find((f) => f.status === 'queued');
@@ -121,7 +128,8 @@ export function buildSnapshot({
       lastOutputAt: r.lastOutputAt ?? null,
       worktree: r.worktree ?? null,
       branch: r.branch ?? null,
-      costUsd: r.costUsd ?? 0,
+      costUsd: r.costUsd ?? null,
+      owner: r.owner ?? null, handoffId: r.handoffId ?? null,
       goal: feature
         ? {
           featureId: feature.id,
@@ -145,7 +153,7 @@ export function buildSnapshot({
     .map((f) => ({
       featureId: f.id,
       title: f.title,
-      blockedBy: (f.dependsOn || []).filter((d) => !['landed', 'skipped'].includes(byFeature.get(d)?.status)),
+      blockedBy: (f.dependsOn || []).filter((d) => !['accepted', 'landed', 'skipped'].includes(byFeature.get(d)?.status)),
     }));
 
   const costUsd = Number(runs.reduce((sum, r) => sum + (Number(r.costUsd) || 0), 0).toFixed(6));
@@ -188,11 +196,17 @@ export function buildSnapshot({
     upNext,
     skills: skills.map((s) => ({ name: s.name, status: s.status })),
     attentionPending: attention.length,
-    totals: { costUsd, runsActive: inProgress.filter((r) => r.state === 'busy' || r.state === 'stale').length },
+    history: runs.filter(r => ['done','halted'].includes(r.overall)),
+    totals: { costUsd: runs.some(r => r.costUsd != null) ? costUsd : null, costPartial: runs.some(r => r.costUsd == null || r.costPartial), runsActive: inProgress.filter((r) => r.state === 'busy' || r.state === 'stale').length },
     counts: {
+      executing: inProgress.filter(r => r.state === 'busy').length,
+      awaitingAgent: inProgress.filter(r => r.state === 'awaiting' && !r.owner).length,
+      disconnected: inProgress.filter(r => r.owner?.capability === 'disconnected').length,
+      blocked: runs.filter(r => r.overall === 'halted' || ['dead','unknown','stale'].includes(r.state)).length,
+      awaitingUser: needsDecision.filter(d => d.kind !== 'claim-run').length,
       inProgress: inProgress.length,
       decisions: needsDecision.length,
-      landed: features.filter((f) => f.status === 'landed').length,
+      landed: features.filter((f) => ['landed','accepted'].includes(f.status)).length,
       queued: upNext.length,
     },
   };

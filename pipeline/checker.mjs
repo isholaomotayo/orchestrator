@@ -10,6 +10,8 @@ import { appendEvent } from './state.mjs';
 // is required so config authors can write real shell (`npm test && npm run x`).
 // Treat .pipeline/config.json with the same care as CI workflow files.
 function runCommand(cmd, cwd, timeoutMs) {
+  const started = Date.now();
+  const revision = spawnSync('git', ['rev-parse', 'HEAD'], {cwd, encoding:'utf8'}).stdout?.trim() || null;
   const res = spawnSync(cmd, {
     cwd,
     shell: true,
@@ -20,6 +22,7 @@ function runCommand(cmd, cwd, timeoutMs) {
   });
   const output = [res.stdout || '', res.stderr || ''].filter(Boolean).join('\n').trim();
   return {
+    command: cmd, cwd, revision, startedAt: new Date(started).toISOString(), durationMs: Date.now() - started, skipped: false,
     ok: res.status === 0 && !res.error,
     exitCode: res.status,
     timedOut: res.error?.code === 'ETIMEDOUT',
@@ -77,7 +80,7 @@ export function runChecks({ cwd, config, paths, stage = 'coder' }) {
       type: 'check_end',
       check: name,
       ok: results[name].ok,
-      exitCode: results[name].exitCode,
+      exitCode: results[name].exitCode, durationMs: results[name].durationMs, cwd, revision: results[name].revision,
     });
   }
 
@@ -85,14 +88,14 @@ export function runChecks({ cwd, config, paths, stage = 'coder' }) {
   const isPassed = results.lint.ok && results.typecheck.ok && results.test.ok;
   // If the runner didn't emit counts, fall back to a binary signal so the
   // regression guardrail still has something monotonic to compare.
-  const passedCount = counts.passedCount ?? (results.test.ok ? 1 : 0);
-  const failedCount = counts.failedCount ?? (results.test.ok ? 0 : 1);
+  const passedCount = counts.passedCount;
+  const failedCount = counts.failedCount;
 
   const report = [
     '## Verification Status',
     `- Overall Status: ${isPassed ? 'PASS' : 'FAIL'}`,
-    `- Total Tests Passed: ${passedCount}`,
-    `- Total Tests Failed: ${failedCount}`,
+    `- Total Tests Passed: ${passedCount ?? 'unknown'}`,
+    `- Total Tests Failed: ${failedCount ?? 'unknown'}`,
     '',
     '## Test Executions',
     '### Linter Output',

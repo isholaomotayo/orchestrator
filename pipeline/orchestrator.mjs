@@ -9,6 +9,7 @@
 // re-running Planner or discarding prior progress. State is mirrored to
 // .pipeline/status.json and .pipeline/events.jsonl for the live dashboard.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile } from './state.mjs';
@@ -26,8 +27,10 @@ import { LENSES, aggregatePanel } from './review-panel.mjs';
 import { isValidRunId, parseBrief, appendRunVerb, writeRunMeta } from './run-registry.mjs';
 import { createRunWorktree } from './worktrees.mjs';
 import { resolveSkills, renderSkillsPromptSection, skillToolAllowances, extractDiagramSpecs, stripDiagramSpecs, renderDiagrams } from './skills.mjs';
-import { writeWorkDoneReport } from './report.mjs';
+import { writeWorkDoneReport, writeTerminalReport } from './report.mjs';
 import { readDecisions } from './attention.mjs';
+import { validateCompletion, commitCompletion, bindHandoff, inspectBridge } from './bridge.mjs';
+let pendingCompletion = null;
 
 function parseArgs(argv) {
   const args = {
@@ -279,6 +282,17 @@ if (args.continue) {
     console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff or plan approval.');
     haltAndExit(1);
   }
+  // Completion is only gated on the bridge protocol once some session has
+  // actually claimed this run through it (bridge-cli/bridge-mcp always claim
+  // before completing). A bare `--continue` that no session ever claimed is
+  // the legacy/compat path the plan calls for and skips the gate entirely.
+  if (onDisk.bridgeRequired && !planApprovalPending && inspectBridge(repoRoot, args.runId).owner) {
+    try {
+      const credentials = JSON.parse(process.env.ORCHESTRATOR_COMPLETION || '{}');
+      validateCompletion(repoRoot, args.runId, onDisk, credentials);
+      pendingCompletion = { previous: structuredClone(onDisk), credentials, handoff: fs.readFileSync(paths.stageHandoff, 'utf8') };
+    } catch (err) { console.error(`[Bridge] ${err.message} Use stage.complete through MCP or bridge-cli.`); haltAndExit(1); }
+  }
   status = onDisk;
   ensureStageEntries(status);
   ensureRunDefaults(status);
@@ -450,7 +464,9 @@ if (args.continue) {
     console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
   }
   status = newStatus(args.task, { design: runFlags.design, handoff: runFlags.handoff, reporter: runFlags.report });
-  status.flags = runFlags;
+  status.bridgeRequired = executionSurface === 'host-handoff' && config.bridge?.required !== false;
+  status.flags = { ...runFlags, planOnly: args.planOnly };
+  status.intent = { version: 2, kind: args.planOnly ? 'plan' : args.startAt === 'tester' ? 'integration' : 'ticket', planOnly: args.planOnly, startAt: args.startAt, executionSurface, enabledStages: status.stages.filter(s => s.status !== 'skipped').map(s => s.name) };
   status.planApproved = false;
   status.executionSurface = executionSurface;
   status.invocationMode = executionSurface === 'host-handoff' ? 'chat' : invocationMode;
@@ -531,8 +547,25 @@ function setStage(name, patch) {
     }
   }
 }
+function commitPendingCompletion() {
+  if (!pendingCompletion) return;
+  const saved = pendingCompletion;
+  try {
+    commitCompletion(repoRoot, args.runId, saved.previous, saved.credentials, status);
+    pendingCompletion = null;
+  } catch (err) {
+    status = saved.previous;
+    if (status.integrity) status.integrity.cpBefore = snapshotControlPlane(paths);
+    status.completionBlocked = err.message;
+    writeStatus(paths, status);
+    fs.writeFileSync(paths.stageHandoff, saved.handoff);
+    console.error(`[Bridge] ${err.message}`);
+    haltAndExit(1);
+  }
+}
 function finalize() {
-  status.endedAt = new Date().toISOString();
+  if (status.overall === 'done') commitPendingCompletion();
+  status.endedAt = ['done', 'halted'].includes(status.overall) ? new Date().toISOString() : null;
   writeStatus(paths, status);
   appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_end', overall: status.overall, verdict: status.verdict, haltReason: status.haltReason });
   if (status.overall === 'done') {
@@ -541,6 +574,10 @@ function finalize() {
   } else if (status.overall === 'halted') {
     appendRunVerb(paths, 'failed', status.haltReason || 'halted');
     writeRunMeta(paths, { phase: 'failed' });
+  }
+  if (['done','halted'].includes(status.overall)) {
+    const report = writeTerminalReport(paths,status,history,inspectBridge(repoRoot,args.runId).messages);
+    if (!report.ok) { status.reportError = report.error; writeStatus(paths,status); }
   }
 }
 function halt(stageName, reason, detail, extra = {}) {
@@ -585,6 +622,10 @@ function requireArtifact(stageName, file) {
 }
 
 function requestChatHandoff(stageName, chatResume) {
+  commitPendingCompletion();
+  status.handoffId = crypto.randomUUID();
+  bindHandoff(repoRoot, args.runId, status.handoffId, stageName);
+  try { const h = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')); h.handoffId = status.handoffId; h.runId = status.runId; fs.writeFileSync(paths.stageHandoff, JSON.stringify(h, null, 2)); } catch {}
   status.chatResume = chatResume;
   status.overall = 'awaiting_chat';
   status.awaitingStage = stageName;
@@ -620,6 +661,7 @@ function requestChatHandoff(stageName, chatResume) {
 // specs.md before any code is written. Approval = `orchestrate.sh --continue`;
 // queueing a planner follow-up note first triggers one re-plan instead.
 function requestPlanApproval() {
+  commitPendingCompletion();
   status.overall = 'awaiting_plan_approval';
   status.awaitingStage = 'planner';
   status.resumePoint = { step: 'plan_approval', context: {} };
@@ -646,6 +688,12 @@ async function runCoderOnward() {
 // continues, and interrupted resumes so the approval gate cannot be bypassed
 // by any one path. (Task 7 inserts the Designer stage here.)
 async function continueAfterPlanner() {
+  if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval();
+  if (status.intent?.planOnly || status.flags?.planOnly) {
+    requireArtifact('planner', paths.specs);
+    status.overall = 'done'; status.awaitingStage = null; status.chatResume = null;
+    finalize(); return;
+  }
   if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval(); // exits the process
   await runDesignerStage();
   await runCoderOnward();
@@ -675,12 +723,13 @@ function consumeFollowups(name) {
 }
 
 async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false } = {}) {
+  commitPendingCompletion();
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const stageModel = modelForStage(models, name);
   const stageEffort = effortForStage(models, name);
-  setStage(name, { model: stageModel, effort: stageEffort });
+  setStage(name, { model: stageModel, requestedModel: stageModel, effort: stageEffort });
   // Integrity baseline: taken before the agent starts so the comparison covers
   // everything it did, regardless of whether its runner can enforce anything.
   // Only verified skills are attached; a rejected one is recorded so the run
@@ -1318,7 +1367,7 @@ async function chatContinueRun() {
     if (handoff.actualModel) actualModel = handoff.actualModel;
   } catch {}
 
-  try { fs.unlinkSync(paths.stageHandoff); } catch {}
+  if (!pendingCompletion) { try { fs.unlinkSync(paths.stageHandoff); } catch {} }
 
   enforceHandoffIntegrity(); // halts if the host session touched what it must not
 
@@ -1332,7 +1381,12 @@ async function chatContinueRun() {
                         step === 'after_reviewer' ? 'reviewer' :
                         step === 'after_handoff' ? 'handoff' : null;
   if (completedStage && actualModel) {
-    setStage(completedStage, { model: actualModel });
+    setStage(completedStage, { actualModel, modelSource: 'host-reported' });
+  }
+
+  if (completedStage && pendingCompletion) {
+    const owner = inspectBridge(repoRoot, args.runId).owner;
+    setStage(completedStage, { actualModel: owner?.actualModel || actualModel, modelSource: owner?.actualModel ? 'host-observed' : 'unknown', detail: null });
   }
 
   // status.chatResume.step is always one of the after_X checkpoints below (set
@@ -1368,17 +1422,6 @@ async function freshRun() {
     return;
   }
   await runPlannerStage();
-  if (args.planOnly) {
-    // A planning run exists to produce the specification a feature's tickets are
-    // sliced from. It writes no code, so it finishes here rather than falling
-    // through to the Coder.
-    requireArtifact('planner', paths.specs);
-    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
-    status.overall = 'done';
-    finalize();
-    console.log('\n[Orchestrator] Planning complete. Specification: ' + path.relative(repoRoot, paths.specs));
-    haltAndExit(0);
-  }
   await continueAfterPlanner();
 }
 
@@ -1451,7 +1494,8 @@ async function dispatchResumeStep(step, context = {}) {
 
   if (step === 'after_planner') {
     requireArtifact('planner', paths.specs);
-    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md', detail: null });
+    status.awaitingStage = null;
     await continueAfterPlanner();
     return;
   }

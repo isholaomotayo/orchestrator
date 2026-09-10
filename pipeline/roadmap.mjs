@@ -35,6 +35,7 @@ export const FEATURE_STATUSES = [
   // mergeability read before touching the base branch.
   'merge_approved',
   'merging',
+  'accepted',
   'landed',
   'failed',
   'held',
@@ -44,7 +45,7 @@ export const FEATURE_STATUSES = [
 // A dependency is satisfied when it landed, or when the operator deliberately
 // skipped it. "held" and "failed" must block: continuing past them would build
 // on work the operator has not accepted.
-const SATISFIED_STATUSES = ['landed', 'skipped'];
+const SATISFIED_STATUSES = ['accepted', 'landed', 'skipped'];
 
 export const FEATURE_MODES = ['build', 'research'];
 export const MERGE_MODES = ['pr', 'local-only'];
@@ -297,7 +298,7 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
 }
 
 function currentFeatureId(json) {
-  const active = json.features.find((f) => !['landed', 'skipped', 'failed'].includes(f.status) && f.status !== 'queued');
+  const active = json.features.find((f) => !['accepted', 'landed', 'skipped', 'failed'].includes(f.status) && f.status !== 'queued');
   if (active) return active.id;
   return nextFeature(json)?.id ?? null;
 }
@@ -309,7 +310,7 @@ function currentFeatureId(json) {
 export function nextFeature(json) {
   const byId = new Map(json.features.map((f) => [f.id, f]));
   // A feature already in flight means nothing new may start.
-  if (json.features.some((f) => !['queued', 'landed', 'skipped', 'failed', 'held'].includes(f.status))) return null;
+  if (json.features.some((f) => !['queued', 'accepted', 'landed', 'skipped', 'failed', 'held'].includes(f.status))) return null;
   for (const f of json.features) {
     if (f.status !== 'queued') continue;
     const ready = (f.dependsOn || []).every((d) => SATISFIED_STATUSES.includes(byId.get(d)?.status));

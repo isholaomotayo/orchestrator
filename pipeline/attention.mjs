@@ -70,8 +70,8 @@ export function classifyEvent({
   staleSince = null, verbSince = null, now = Date.now(),
 }, thresholds = DEFAULT_THRESHOLDS) {
   const at = new Date(now).toISOString();
-  const make = (kind, escalate, summary) => ({ kind, escalate, summary, runId, featureId, at });
-  const changed = previous.state !== current.state || previous.verb !== current.verb;
+  const make = (kind, escalate, summary) => ({ kind, escalate, summary, runId, featureId, at, handoffId: current.status?.handoffId ?? null });
+  const changed = previous.state !== current.state || previous.verb !== current.verb || previous.handoffId !== current.status?.handoffId || (previous.stage != null && previous.stage !== current.status?.awaitingStage);
 
   // A run that finished, either way.
   if (current.state === 'idle' && changed) {

@@ -14,14 +14,24 @@ const TICKET_SECTION_RE = /^##\s+3\.\s*Tracer-Bullet Tickets\s*$/im;
 const TICKET_HEADING_RE = /^###\s*Ticket\s+(\d+)\s*:\s*(.+?)\s*$/gim;
 
 function fieldValue(body, label) {
-  const re = new RegExp(`^\\s*[-*]\\s*\\*\\*${label}:?\\*\\*\\s*(.+)$`, 'im');
-  return re.exec(body)?.[1]?.trim() ?? '';
+  const lines = body.split('\n');
+  const re = new RegExp(`^\\s*[-*]\\s*\\*\\*${label}:?\\*\\*[ \t]*(.*)$`, 'i');
+  const index = lines.findIndex(line => re.test(line));
+  if (index < 0) return '';
+  const first = re.exec(lines[index])[1].trim();
+  if (first) return first;
+  const values = [];
+  for (const line of lines.slice(index + 1)) {
+    if (/^\s*[-*]\s*\*\*|^#{2,}|^---/.test(line)) break;
+    if (line.trim()) values.push(line.trim().replace(/^[-*]\s+/, ''));
+  }
+  return values.join(', ');
 }
 
 function splitList(value) {
   return value
     .split(/[,;]/)
-    .map((v) => v.trim().replace(/^`|`$/g, ''))
+    .map((v) => v.trim().replace(/^`|`$/g, '').replace(/\\/g, '/').replace(/^\.\//, ''))
     .filter((v) => v && !/^\[.*\]$/.test(v));
 }
 
@@ -36,7 +46,7 @@ export function parseTickets(specs) {
   const section = text.slice(sectionStart.index);
 
   const headings = [...section.matchAll(TICKET_HEADING_RE)];
-  return headings.map((heading, i) => {
+  const result = headings.map((heading, i) => {
     const start = heading.index;
     const end = i + 1 < headings.length ? headings[i + 1].index : section.length;
     const block = section.slice(start, end);
@@ -50,7 +60,7 @@ export function parseTickets(specs) {
       // to wait for. Anything else is read as a list of ticket numbers.
       dependsOn: /^\s*(none)?\s*$/i.test(deps)
         ? []
-        : [...deps.matchAll(/ticket\s*(\d+)/gi)].map((m) => `T${m[1]}`),
+        : [...deps.matchAll(/(?:ticket\s*|\bT)(\d+)/gi)].map((m) => `T${m[1]}`),
       // Optional per-ticket override of the feature's runner. Inert until a
       // Planner or a human writes a "**Runner:**" line into specs.md — no
       // prompt change required for it to take effect.
@@ -59,6 +69,27 @@ export function parseTickets(specs) {
       block: block.trim(),
     };
   });
+  validateTickets(result);
+  return result;
+}
+
+export function validateTickets(tickets) {
+  const ids = new Set();
+  for (const t of tickets) {
+    if (ids.has(t.id)) throw new Error(`Duplicate ticket ${t.id}`);
+    ids.add(t.id);
+    for (const file of t.files) if (file.startsWith('/') || file.split('/').includes('..') || /[`\n]/.test(file)) throw new Error(`Invalid file scope for ${t.id}: ${file}`);
+  }
+  const visiting = new Set(), visited = new Set();
+  function visit(id) {
+    if (!ids.has(id)) throw new Error(`Unknown ticket dependency ${id}`);
+    if (visiting.has(id)) throw new Error(`Ticket dependency cycle at ${id}`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dep of tickets.find(t => t.id === id).dependsOn) visit(dep);
+    visiting.delete(id); visited.add(id);
+  }
+  tickets.forEach(t => visit(t.id));
 }
 
 /**
@@ -104,7 +135,7 @@ export function scheduleTickets(tickets, {
     if (ready.length >= slots) break;
     if (doneSet.has(ticket.id) || runningSet.has(ticket.id)) continue;
     if (!ticket.dependsOn.every((d) => doneSet.has(d))) continue;
-    if (serializeOnFileOverlap && ticket.files.some((f) => busyFiles.has(f))) continue;
+    if (serializeOnFileOverlap && ((running.length || ready.length) && (!ticket.files.length || Object.values(runningFiles).some(f => !f.length)) || ticket.files.some(f => [...busyFiles].some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
     ready.push(ticket);
     // Treat this ticket's files as busy for the rest of the wave, so two
     // tickets picked in the same tick cannot collide with each other either.

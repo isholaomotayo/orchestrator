@@ -405,8 +405,9 @@ async function viewRun(wrap, tab) {
   const byName = new Map((status.stages || []).map((s) => [s.name, s]));
   const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
   const active = tab.stage
-    || stages.find((s) => s.status === 'running')?.name
-    || [...stages].reverse().find((s) => s.status !== 'pending')?.name
+    || status.awaitingStage
+    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
+    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
     || 'planner';
   const meta = agentMeta(active);
   const remount = wrap.dataset.stage !== active || wrap.dataset.subject !== String(tab.subject || '');

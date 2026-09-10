@@ -60,10 +60,9 @@ export function createRunWorktree({ repoRoot, runDir, worktreePath, branch, base
     return { worktreePath, branch, baseRef, adopted: true };
   }
 
-  // Clear any remnant of a previous run with this id before reusing the path.
-  git(repoRoot, ['worktree', 'remove', worktreePath, '--force'], { check: false });
-  git(repoRoot, ['worktree', 'prune'], { check: false });
-  if (branchExists(repoRoot, branch)) git(repoRoot, ['branch', '-D', branch], { check: false });
+  if (fs.existsSync(worktreePath) || branchExists(repoRoot, branch)) {
+    throw new Error('Refusing to replace an existing worktree or branch; inspect and recover it explicitly.');
+  }
   git(repoRoot, ['worktree', 'add', worktreePath, '-b', branch, baseRef]);
   linkRunPipeline({ repoRoot, runDir, worktreePath });
   return { worktreePath, branch, baseRef, adopted: false };
