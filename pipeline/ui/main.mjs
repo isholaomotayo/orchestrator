@@ -23,6 +23,7 @@ import {
   visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
 } from './feed.mjs';
 import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
+import { unavailableReason } from './actions.mjs';
 
 const $ = (id) => document.getElementById(id);
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
@@ -761,36 +762,48 @@ function fillGoal(wrap, goal) {
   if (goal.acceptance) host.append(el('div', { class: 'meta', text: goal.acceptance }));
 }
 
+
 function fillControls(wrap, tab, data) {
   const host = wrap.querySelector('[data-role="controls"]');
   if (!host) return;
-  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue].join();
+  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue, data.status?.overall, data.status?.haltReason, !!data.live, !!data.stale].join();
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
-  if (!(data.canCancel || data.canResume || data.canExtend || data.canContinue)) return;
-  const controls = el('div', { class: 'row', style: 'margin:2px 0 16px' });
   const run = tab.subject || undefined;
-  if (data.canContinue) controls.append(el('button', {
-    class: 'btn', text: 'Continue',
+  const list = el('div', { style: 'margin:2px 0 16px' });
+
+  const row = (available, button, reason) => list.append(el('div', { class: 'row', style: 'margin-bottom:6px;align-items:center' }, [
+    button,
+    !available && reason ? el('span', { class: 'meta', text: reason }) : null,
+  ]));
+
+  row(data.canContinue, el('button', {
+    class: 'btn', text: 'Continue', disabled: !data.canContinue,
     onclick: async () => { try { await api.continueRun(false, run); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
-  }));
-  if (data.canResume) controls.append(el('button', {
-    class: 'btn ghost', text: 'Resume',
+  }), unavailableReason('continue', data));
+
+  row(data.canResume, el('button', {
+    class: 'btn ghost', text: 'Resume', disabled: !data.canResume,
     onclick: async () => { try { await api.resumeRun(run); toast('Asked the run to resume.'); refresh(); } catch (err) { toast(err.message); } },
-  }));
-  if (data.canExtend) {
-    const cycles = el('input', { type: 'text', value: '5', style: 'width:52px' });
-    controls.append(cycles, el('button', {
-      class: 'btn ghost', text: 'Extend',
+  }), unavailableReason('resume', data));
+
+  const cycles = el('input', { type: 'text', value: '5', style: 'width:52px', disabled: !data.canExtend });
+  list.append(el('div', { class: 'row', style: 'margin-bottom:6px;align-items:center' }, [
+    cycles,
+    el('button', {
+      class: 'btn ghost', text: 'Extend', disabled: !data.canExtend,
       onclick: async () => { try { await api.extendRun(cycles.value, run); toast('Extended.'); refresh(); } catch (err) { toast(err.message); } },
-    }));
-  }
-  if (data.canCancel) controls.append(el('button', {
-    class: 'btn danger', text: 'Stop run',
+    }),
+    !data.canExtend ? el('span', { class: 'meta', text: unavailableReason('extend', data) }) : null,
+  ]));
+
+  row(data.canCancel, el('button', {
+    class: 'btn danger', text: 'Stop run', disabled: !data.canCancel,
     onclick: async () => { try { await api.cancelRun(run); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
-  }));
-  host.append(controls);
+  }), unavailableReason('cancel', data));
+
+  host.append(list);
 }
 
 function fillBanners(wrap, status) {
