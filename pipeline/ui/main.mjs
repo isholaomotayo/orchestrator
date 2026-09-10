@@ -359,12 +359,19 @@ function viewFeature(wrap, tab) {
   wrap.append(el('p', { class: 'sub', text: featureLabel(feature.status) }));
   if (feature.pr?.url) wrap.append(el('p', {}, el('a', { href: feature.pr.url, text: feature.pr.url, target: '_blank', rel: 'noreferrer' })));
   wrap.append(el('h2', { text: 'Runs' }));
-  const runs = (state.pool?.snapshot?.inProgress || []).filter((r) => r.featureId === feature.id);
-  if (!runs.length) wrap.append(el('div', { class: 'empty', text: 'No runs are active for this feature.' }));
+  // A run's own directory (status, events, reports) outlives its worktree —
+  // cleanup on merge only removes the worktree. So a landed/accepted feature's
+  // past attempts still belong here, not just whatever is currently active:
+  // `inProgress` alone would make every run vanish from view the moment it
+  // finishes, even though its history is still on disk.
+  const live = (state.pool?.snapshot?.inProgress || []).filter((r) => r.featureId === feature.id);
+  const done = (state.pool?.snapshot?.history || []).filter((r) => r.featureId === feature.id);
+  const runs = [...live, ...done];
+  if (!runs.length) wrap.append(el('div', { class: 'empty', text: 'No runs recorded for this feature.' }));
   for (const run of runs) {
     wrap.append(el('div', { class: 'card' }, [
       el('h4', { text: run.ticketId || run.kind }),
-      el('div', { class: 'meta', text: `${run.state}${run.stage ? ` · ${run.stage}` : ''}` }),
+      el('div', { class: 'meta', text: `${run.overall ?? run.state}${run.stage ? ` · ${run.stage}` : ''}${run.haltReason ? ` · ${run.haltReason}` : ''}` }),
       el('button', { class: 'btn ghost', text: 'Open', onclick: () => open({ kind: 'run', subject: run.runId, title: run.ticketId || run.runId }) }),
     ]));
   }
@@ -770,9 +777,14 @@ function viewReport(wrap, tab) {
   if (wrap.querySelector('iframe.report')) return;
   wrap.replaceChildren();
   wrap.append(el('h1', { text: tab.title || 'Report' }));
-  const params = tab.file?.startsWith('runs/')
-    // A roadmap records a repo-relative path; the endpoint wants run + file.
-    ? { run: tab.file.split('/')[1], file: tab.file.split('/').slice(3).join('/') }
+  // A roadmap records a repo-relative path (`.pipeline/runs/<runId>/reports/<file>`);
+  // the endpoint wants the run id and the file relative to that run's reports
+  // dir, so its root survives the run's worktree being cleaned up after landing
+  // — a run's own directory (and its reports) are never removed, only its
+  // worktree is.
+  const runReport = /^\.pipeline\/runs\/([^/]+)\/reports\/(.+)$/.exec(tab.file || '');
+  const params = runReport
+    ? { run: runReport[1], file: runReport[2] }
     : { feature: tab.subject, file: tab.file || 'work-done.html' };
   const src = api.reportUrl(params);
   wrap.append(el('p', { class: 'sub' }, el('a', { href: src, target: '_blank', rel: 'noreferrer', text: 'Open in a new tab' })));
