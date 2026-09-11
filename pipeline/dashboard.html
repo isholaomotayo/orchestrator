@@ -1172,6 +1172,92 @@ function unavailableReason(action, data) {
 }
 
 
+// ===== patch.mjs =====
+// Two small, framework-free rendering primitives that replace an unconditional
+// `wrap.replaceChildren()` with "only touch what actually changed."
+//
+// This generalizes two patterns that already existed ad hoc in this codebase —
+// viewRun's per-field dataset.sig checks (fillGoal/fillControls/fillBanners/
+// fillArtifact) and viewRuns' hand-rolled signature+patch closure — into
+// something every view can reach for, instead of re-deriving the same fix
+// per view. The bug both patterns exist to prevent: a background refresh (an
+// SSE event, the 15s poll) rebuilding a region from scratch destroys any live
+// state inside it — a focused input, a typed-but-unsent textarea, scroll
+// position — with no way to recover it. Untouched DOM nodes keep all of that
+// for free; recreated ones lose it, silently.
+
+/**
+ * Re-render a region only if what it should show has actually changed.
+ *
+ * @param {HTMLElement} host   a stable container the caller creates once (on
+ *                             first mount) and never recreates — only this
+ *                             function empties/refills it.
+ * @param {string} sig         a cheap string describing "what would be
+ *                             rendered this time" — build it the same way
+ *                             fillControls already does, e.g.
+ *                             `[a, b, c].join('|')` or `JSON.stringify([...])`.
+ * @param {(host: HTMLElement) => void} render  called with `host` already
+ *                             emptied; appends whatever this region should show.
+ * @returns {boolean} true if it actually re-rendered, false if it was a no-op.
+ */
+function patchRegion(host, sig, render) {
+  if (!host || host.dataset.sig === sig) return false;
+  host.dataset.sig = sig;
+  host.replaceChildren();
+  render(host);
+  return true;
+}
+
+/**
+ * Reconcile a list of items against persistent DOM nodes by a stable key,
+ * instead of tearing the whole list down on every refresh.
+ *
+ * - An item whose key already has a node AND whose signature is unchanged is
+ *   left completely untouched — any live input inside it (a decision card's
+ *   <textarea>, its focus, its cursor position) survives.
+ * - An item whose signature changed gets its node replaced via `replaceWith`,
+ *   which does not disturb sibling nodes.
+ * - A new key gets rendered and inserted in list order.
+ * - A key no longer present gets removed.
+ * - Existing, unchanged nodes are reordered in place (`insertBefore`) to
+ *   match new item order, never recreated — moving a node this way does not
+ *   reset its focus or an input's value.
+ *
+ * @param {HTMLElement} host   the persistent list container.
+ * @param {any[]} items
+ * @param {{ key: (item: any) => string|number, sig: (item: any) => string, render: (item: any) => HTMLElement }} opts
+ * @returns {void}
+ */
+function patchList(host, items, { key, sig, render }) {
+  const existing = new Map();
+  for (const child of Array.from(host.children)) {
+    if (child.dataset.key != null) existing.set(child.dataset.key, child);
+  }
+  const seen = new Set();
+  let cursor = host.firstChild;
+  for (const item of items) {
+    const k = String(key(item));
+    seen.add(k);
+    const wantSig = String(sig(item));
+    let node = existing.get(k);
+    if (!node) {
+      node = render(item);
+      node.dataset.key = k;
+      node.dataset.sig = wantSig;
+    } else if (node.dataset.sig !== wantSig) {
+      const fresh = render(item);
+      fresh.dataset.key = k;
+      fresh.dataset.sig = wantSig;
+      node.replaceWith(fresh);
+      node = fresh;
+    }
+    if (cursor !== node) host.insertBefore(node, cursor);
+    cursor = node.nextSibling;
+  }
+  for (const [k, node] of existing) if (!seen.has(k)) node.remove();
+}
+
+
 // ===== main.mjs =====
 // The control room.
 //
@@ -1186,6 +1272,7 @@ function unavailableReason(action, data) {
 //  - Nothing is dressed up. A stuck run looks stuck; a failed feature says so.
 //  - No feature is hidden when there is no pool: a plain single-run project
 //    gets the same tabs with a runs list instead of a roadmap.
+
 
 
 
@@ -1463,77 +1550,121 @@ const DESTINATIONS = [
   { kind: 'reports', title: 'Reports' },
 ];
 
+// The six overview stat tiles. Module-level so both viewOverview and its
+// signature computation share one definition.
+const OVERVIEW_TILES = [
+  { key: 'executing', label: 'Executing', filter: { bucket: 'executing' } },
+  { key: 'awaitingAgent', label: 'Awaiting agent', filter: { bucket: 'awaiting-agent' } },
+  { key: 'awaitingUser', label: 'Awaiting you', cls: 'warn', dest: 'attention' },
+  { key: 'blocked', label: 'Blocked', cls: 'fail', filter: { bucket: 'blocked' } },
+  { key: 'disconnected', label: 'Disconnected', cls: 'warn', filter: { bucket: 'disconnected' } },
+  // Queued features have no run yet, so there is nothing for the Runs table
+  // to filter to — the count here just mirrors the Roadmap list below.
+  { key: 'queued', label: 'Queued', dest: null },
+];
+
+// A decision's identity and "what would render" signature, shared by Overview
+// and Attention so patching one list keeps both consistent — see pool-tree.mjs
+// for the same decisionId-or-kind:featureId/runId scheme used in the sidebar.
+function decisionKey(d) { return d.decisionId ?? `${d.kind}:${d.featureId ?? d.runId ?? ''}`; }
+function decisionSig(d) { return JSON.stringify([d.question, d.options, d.recommended, d.artifacts, d.decisionId]); }
+
+// Patches a persistent decisions-list container against `items` — the shared
+// fix behind both Overview and Attention: a decision an operator is mid-typing
+// an answer into keeps its exact DOM node (and that typed text) across any
+// unrelated background refresh, instead of being torn down and rebuilt.
+function renderDecisionList(host, items) {
+  patchList(host, items, { key: decisionKey, sig: decisionSig, render: decisionCard });
+}
+
 function viewOverview(wrap) {
-  wrap.replaceChildren();
   const snap = state.pool?.snapshot;
   if (!snap) {
-    wrap.append(el('h1', { text: 'Orchestrator' }));
-    wrap.append(el('p', { class: 'sub', text: 'No roadmap is running in this project. Open a run from the sidebar, or start one with the orchestrate command.' }));
+    if (wrap.dataset.view !== 'overview-empty') {
+      wrap.dataset.view = 'overview-empty';
+      wrap.replaceChildren();
+      wrap.append(el('h1', { text: 'Orchestrator' }));
+      wrap.append(el('p', { class: 'sub', text: 'No roadmap is running in this project. Open a run from the sidebar, or start one with the orchestrate command.' }));
+    }
     return;
   }
-  wrap.append(el('h1', { text: snap.roadmap?.title || 'Pool' }));
-  wrap.append(el('p', {
-    class: 'sub',
-    text: `${snap.counts.landed} landed so far`,
-  }));
+
+  // Mount the static shell once; every call below only patches the region
+  // whose own signature actually changed — so a decision card mid-typed-into
+  // (or, once Phase 4 lands, a roadmap card) survives a background refresh
+  // that touches an unrelated part of the page.
+  if (wrap.dataset.view !== 'overview-pool') {
+    wrap.dataset.view = 'overview-pool';
+    wrap.replaceChildren();
+    wrap.append(el('h1', { 'data-role': 'title' }));
+    wrap.append(el('p', { class: 'sub', 'data-role': 'sub' }));
+    wrap.append(el('div', { 'data-role': 'tiles' }));
+    wrap.append(el('div', { 'data-role': 'banners' }));
+    wrap.append(el('h2', { text: 'Needs your decision', 'data-role': 'decisions-heading' }));
+    wrap.append(el('div', { 'data-role': 'decisions' }));
+    wrap.append(el('h2', { text: 'Roadmap' }));
+    wrap.append(el('div', { 'data-role': 'roadmap' }));
+  }
+
+  const title = snap.roadmap?.title || 'Pool';
+  const titleEl = wrap.querySelector('[data-role="title"]');
+  if (titleEl.textContent !== title) titleEl.textContent = title;
+
+  patchRegion(wrap.querySelector('[data-role="sub"]'), String(snap.counts.landed), (h) => {
+    h.textContent = `${snap.counts.landed} landed so far`;
+  });
 
   // Six buckets, each its own thing a person might need to do: work is moving
   // (executing), a host is between checkpoints (awaiting-agent), a human is
   // needed (awaiting-user), nobody is currently driving it (disconnected), it
   // is stuck (blocked), or it has not started (queued). A single "N runs" tally
   // hides which of these is actually true.
-  const TILES = [
-    { key: 'executing', label: 'Executing', filter: { bucket: 'executing' } },
-    { key: 'awaitingAgent', label: 'Awaiting agent', filter: { bucket: 'awaiting-agent' } },
-    { key: 'awaitingUser', label: 'Awaiting you', cls: 'warn', dest: 'attention' },
-    { key: 'blocked', label: 'Blocked', cls: 'fail', filter: { bucket: 'blocked' } },
-    { key: 'disconnected', label: 'Disconnected', cls: 'warn', filter: { bucket: 'disconnected' } },
-    // Queued features have no run yet, so there is nothing for the Runs table
-    // to filter to — the count here just mirrors the Roadmap list below.
-    { key: 'queued', label: 'Queued', dest: null },
-  ];
-  const grid = el('div', { class: 'stat-grid' });
-  for (const t of TILES) {
-    const n = snap.counts[t.key] ?? 0;
-    const dest = t.dest === null ? null : t.dest || 'runs';
-    grid.append(el('button', {
-      class: `stat-tile${t.cls && n ? ` ${t.cls}` : ''}`,
-      disabled: dest === null,
-      onclick: dest ? () => open({ kind: dest, title: dest === 'attention' ? 'Attention' : 'Runs', runsFilter: t.filter || null }) : null,
-    }, [el('span', { class: 'n', text: String(n) }), el('span', { class: 'lbl', text: t.label })]));
-  }
-  wrap.append(grid);
+  const tileCounts = OVERVIEW_TILES.map((t) => snap.counts[t.key] ?? 0);
+  patchRegion(wrap.querySelector('[data-role="tiles"]'), JSON.stringify(tileCounts), (h) => {
+    h.className = 'stat-grid';
+    OVERVIEW_TILES.forEach((t, i) => {
+      const n = tileCounts[i];
+      const dest = t.dest === null ? null : t.dest || 'runs';
+      h.append(el('button', {
+        class: `stat-tile${t.cls && n ? ` ${t.cls}` : ''}`,
+        disabled: dest === null,
+        onclick: dest ? () => open({ kind: dest, title: dest === 'attention' ? 'Attention' : 'Runs', runsFilter: t.filter || null }) : null,
+      }, [el('span', { class: 'n', text: String(n) }), el('span', { class: 'lbl', text: t.label })]));
+    });
+  });
 
-  if (!snap.supervisor.alive) {
-    wrap.append(el('div', { class: 'banner fail', html: 'The supervisor is not running, so nothing will advance. Start it with <code>bash .pipeline/orchestrate.sh pool start</code>.' }));
-  } else if (snap.supervisor.paused) {
-    wrap.append(el('div', { class: 'banner warn', text: 'The pool is paused. Running workers will finish their current stage and stop there.' }));
-  }
+  const nonVerifiedSkills = (snap.skills || []).filter((s) => s.status !== 'verified');
+  const bannerSig = JSON.stringify([snap.supervisor.alive, snap.supervisor.paused, nonVerifiedSkills]);
+  patchRegion(wrap.querySelector('[data-role="banners"]'), bannerSig, (h) => {
+    if (!snap.supervisor.alive) {
+      h.append(el('div', { class: 'banner fail', html: 'The supervisor is not running, so nothing will advance. Start it with <code>bash .pipeline/orchestrate.sh pool start</code>.' }));
+    } else if (snap.supervisor.paused) {
+      h.append(el('div', { class: 'banner warn', text: 'The pool is paused. Running workers will finish their current stage and stop there.' }));
+    }
+    for (const skill of nonVerifiedSkills) {
+      h.append(el('div', {
+        class: 'banner warn',
+        html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
+      }));
+    }
+  });
 
-  for (const skill of snap.skills || []) {
-    if (skill.status === 'verified') continue;
-    wrap.append(el('div', {
-      class: 'banner warn',
-      html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
-    }));
-  }
+  wrap.querySelector('[data-role="decisions-heading"]').hidden = !snap.needsDecision.length;
+  renderDecisionList(wrap.querySelector('[data-role="decisions"]'), snap.needsDecision);
 
-  if (snap.needsDecision.length) {
-    wrap.append(el('h2', { text: 'Needs your decision' }));
-    for (const item of snap.needsDecision) wrap.append(decisionCard(item));
-  }
-
-  wrap.append(el('h2', { text: 'Roadmap' }));
-  for (const feature of snap.roadmap?.features || []) {
-    wrap.append(el('div', { class: 'card' }, [
-      el('h4', { text: `${feature.id}: ${feature.title}` }),
-      el('div', { class: 'meta', text: featureLabel(feature.status) + (feature.pr?.url ? ' · pull request open' : '') }),
-      el('div', { class: 'row', style: 'margin-top:8px' }, [
-        feature.reportRel ? el('button', { class: 'btn ghost', text: 'Report', onclick: () => open({ kind: 'report', subject: feature.id, file: feature.reportRel, title: `${feature.id} report` }) }) : null,
-        feature.runIds?.length ? el('button', { class: 'btn ghost', text: 'Runs', onclick: () => open({ kind: 'feature', subject: feature.id, title: `${feature.id}: ${feature.title}` }) }) : null,
-      ]),
-    ]));
-  }
+  const roadmapSig = JSON.stringify((snap.roadmap?.features || []).map((f) => [f.id, f.status, f.pr?.url, f.reportRel]));
+  patchRegion(wrap.querySelector('[data-role="roadmap"]'), roadmapSig, (h) => {
+    for (const feature of snap.roadmap?.features || []) {
+      h.append(el('div', { class: 'card' }, [
+        el('h4', { text: `${feature.id}: ${feature.title}` }),
+        el('div', { class: 'meta', text: featureLabel(feature.status) + (feature.pr?.url ? ' · pull request open' : '') }),
+        el('div', { class: 'row', style: 'margin-top:8px' }, [
+          feature.reportRel ? el('button', { class: 'btn ghost', text: 'Report', onclick: () => open({ kind: 'report', subject: feature.id, file: feature.reportRel, title: `${feature.id} report` }) }) : null,
+          feature.runIds?.length ? el('button', { class: 'btn ghost', text: 'Runs', onclick: () => open({ kind: 'feature', subject: feature.id, title: `${feature.id}: ${feature.title}` }) }) : null,
+        ]),
+      ]));
+    }
+  });
 }
 
 // A feature stuck on 'failed' or 'held' synthesizes its own needsDecision
@@ -1595,12 +1726,18 @@ function decisionCard(item) {
 }
 
 function viewAttention(wrap) {
-  wrap.replaceChildren();
-  wrap.append(el('h1', { text: 'Attention' }));
+  if (!wrap.querySelector('[data-role="decisions"]')) {
+    wrap.replaceChildren();
+    wrap.append(el('h1', { text: 'Attention' }));
+    wrap.append(el('p', { class: 'sub', 'data-role': 'sub' }));
+    wrap.append(el('div', { class: 'empty', 'data-role': 'empty', text: 'Nothing is waiting for you.' }));
+    wrap.append(el('div', { 'data-role': 'decisions' }));
+  }
   const items = state.pool?.snapshot?.needsDecision || [];
-  if (!items.length) return wrap.append(el('div', { class: 'empty', text: 'Nothing is waiting for you.' }));
-  wrap.append(el('p', { class: 'sub', text: 'Every open question and escalation, oldest first. Answering one lets its run continue.' }));
-  for (const item of items) wrap.append(decisionCard(item));
+  wrap.querySelector('[data-role="sub"]').hidden = !items.length;
+  wrap.querySelector('[data-role="sub"]').textContent = 'Every open question and escalation, oldest first. Answering one lets its run continue.';
+  wrap.querySelector('[data-role="empty"]').hidden = !!items.length;
+  renderDecisionList(wrap.querySelector('[data-role="decisions"]'), items);
 }
 
 function viewFeature(wrap, tab) {
@@ -1710,48 +1847,77 @@ function viewRuns(wrap, tab) {
   }
 }
 
+function messageRow(m) {
+  return el('tr', {}, [
+    el('td', { text: m.createdAt ? new Date(m.createdAt).toLocaleString() : '—' }),
+    el('td', {}, m.runId ? el('a', { href: '#', text: m.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: m.runId, title: m.runId }); } }) : el('span', { text: '(root run)' })),
+    el('td', { text: m.stage || '—' }),
+    el('td', {}, el('span', { class: `chip${m.priority === 'priority' ? ' warn' : ''}`, text: m.priority || 'normal' })),
+    el('td', {}, el('span', { class: `chip${['deferred', 'rejected'].includes(m.status) ? ' fail' : m.status === 'addressed' ? ' done' : ''}`, text: m.status })),
+    el('td', { text: m.text ? (m.text.length > 140 ? `${m.text.slice(0, 140)}…` : m.text) : '' }),
+    el('td', { text: m.reason || '—' }),
+  ]);
+}
+
 function viewMessages(wrap, tab) {
   tab._msgFilter = tab._msgFilter || '';
-  wrap.replaceChildren();
-  wrap.append(el('h1', { text: 'Messages' }));
-  wrap.append(el('p', { class: 'sub', text: 'Every operator note sent to an agent through the bridge, and its delivery status.' }));
 
-  const filters = el('div', { class: 'filters' });
-  const statusSel = el('select', {}, [
-    ['', 'Any status'], ['queued', 'Queued'], ['delivered', 'Delivered'], ['acknowledged', 'Acknowledged'],
-    ['addressed', 'Addressed'], ['deferred', 'Deferred'], ['rejected', 'Rejected'],
-  ].map(([v, label]) => el('option', { value: v, text: label, selected: tab._msgFilter === v })));
-  statusSel.onchange = () => { tab._msgFilter = statusSel.value; renderMessagesBody(); };
-  filters.append(statusSel);
-  wrap.append(filters);
-  const body = el('div', { text: 'Loading…' });
-  wrap.append(body);
-
-  function renderMessagesBody() {
-    const all = (tab._messages || []).slice().sort((a, b) => (b.sequence || 0) - (a.sequence || 0));
-    const filtered = tab._msgFilter ? all.filter((m) => m.status === tab._msgFilter) : all;
-    if (!filtered.length) return body.replaceChildren(el('div', { class: 'empty', text: all.length ? 'No messages match this filter.' : 'No messages have been sent yet.' }));
-    const table = el('table', { class: 'tbl' }, [
-      el('thead', {}, el('tr', {}, ['When', 'Run', 'Stage', 'Priority', 'Status', 'Text', 'Reason'].map((h) => el('th', { text: h })))),
-    ]);
-    const tbody = el('tbody');
-    for (const m of filtered) {
-      tbody.append(el('tr', {}, [
-        el('td', { text: m.createdAt ? new Date(m.createdAt).toLocaleString() : '—' }),
-        el('td', {}, m.runId ? el('a', { href: '#', text: m.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: m.runId, title: m.runId }); } }) : el('span', { text: '(root run)' })),
-        el('td', { text: m.stage || '—' }),
-        el('td', {}, el('span', { class: `chip${m.priority === 'priority' ? ' warn' : ''}`, text: m.priority || 'normal' })),
-        el('td', {}, el('span', { class: `chip${['deferred', 'rejected'].includes(m.status) ? ' fail' : m.status === 'addressed' ? ' done' : ''}`, text: m.status })),
-        el('td', { text: m.text ? (m.text.length > 140 ? `${m.text.slice(0, 140)}…` : m.text) : '' }),
-        el('td', { text: m.reason || '—' }),
-      ]));
-    }
-    table.append(tbody);
-    body.replaceChildren(table);
+  if (!wrap.querySelector('[data-role="results"]')) {
+    wrap.replaceChildren();
+    wrap.append(el('h1', { text: 'Messages' }));
+    wrap.append(el('p', { class: 'sub', text: 'Every operator note sent to an agent through the bridge, and its delivery status.' }));
+    const filters = el('div', { class: 'filters' });
+    const statusSel = el('select', {}, [
+      ['', 'Any status'], ['queued', 'Queued'], ['delivered', 'Delivered'], ['acknowledged', 'Acknowledged'],
+      ['addressed', 'Addressed'], ['deferred', 'Deferred'], ['rejected', 'Rejected'],
+    ].map(([v, label]) => el('option', { value: v, text: label })));
+    statusSel.onchange = () => { tab._msgFilter = statusSel.value; renderResults(wrap, tab); };
+    filters.append(statusSel);
+    wrap.append(filters);
+    wrap.append(el('div', { 'data-role': 'results', text: 'Loading…' }));
   }
+  wrap.querySelector('select').value = tab._msgFilter;
 
-  api.bridge().then((data) => { tab._messages = data.messages || []; renderMessagesBody(); })
-    .catch((err) => body.replaceChildren(el('div', { class: 'empty', text: err.message })));
+  tab._msgFetchGen = (tab._msgFetchGen || 0) + 1;
+  const gen = tab._msgFetchGen;
+  api.bridge().then((data) => {
+    if (isStaleRefresh(tab._msgFetchGen, gen) || tabs.activeId() !== tab.id) return;
+    tab._messages = data.messages || [];
+    renderResults(wrap, tab);
+  }).catch((err) => {
+    if (isStaleRefresh(tab._msgFetchGen, gen)) return;
+    patchRegion(wrap.querySelector('[data-role="results"]'), `error:${err.message}`, (h) => {
+      h.append(el('div', { class: 'empty', text: err.message }));
+    });
+  });
+}
+
+// Patches only the rows that changed instead of rebuilding the whole table on
+// every refresh — a message's own delivery status is the only thing that
+// ever changes for an existing row, so patchList leaves everything else alone.
+function renderResults(wrap, tab) {
+  const results = wrap.querySelector('[data-role="results"]');
+  const all = (tab._messages || []).slice().sort((a, b) => (b.sequence || 0) - (a.sequence || 0));
+  const filtered = tab._msgFilter ? all.filter((m) => m.status === tab._msgFilter) : all;
+
+  const emptySig = filtered.length ? '' : (all.length ? 'no-match' : 'no-messages');
+  if (!filtered.length) {
+    patchRegion(results, `empty:${emptySig}`, (h) => {
+      h.append(el('div', { class: 'empty', text: all.length ? 'No messages match this filter.' : 'No messages have been sent yet.' }));
+    });
+    return;
+  }
+  patchRegion(results, 'table', (h) => {
+    h.append(el('table', { class: 'tbl' }, [
+      el('thead', {}, el('tr', {}, ['When', 'Run', 'Stage', 'Priority', 'Status', 'Text', 'Reason'].map((label) => el('th', { text: label })))),
+      el('tbody'),
+    ]));
+  });
+  patchList(results.querySelector('tbody'), filtered, {
+    key: (m) => m.id,
+    sig: (m) => JSON.stringify([m.status, m.reason, m.text]),
+    render: messageRow,
+  });
 }
 
 function viewReports(wrap) {
@@ -2115,58 +2281,90 @@ function eventBlock(ev) {
 
 // ---- review view ----------------------------------------------------------
 
-async function viewReview(wrap, tab) {
-  wrap.replaceChildren();
-  wrap.append(el('h1', { text: tab.title || `Review ${tab.subject}` }));
-  const sub = el('p', { class: 'sub', text: 'Loading…' });
-  wrap.append(sub);
-  const body = el('div');
-  wrap.append(body);
+// Every review lens the panel produced, then the tests — the order someone
+// actually reviews in: verdict first, evidence after. Module-level since
+// viewReview's patchList needs the same list identity across calls.
+const REVIEW_SECTION_DEFS = [
+  ['review_report.md', 'Review'],
+  ['review_correctness.md', 'Correctness'],
+  ['review_security.md', 'Security'],
+  ['review_architecture.md', 'Architecture'],
+  ['test_suite.md', 'Tests'],
+];
 
+async function viewReview(wrap, tab) {
+  const firstMount = !wrap.querySelector('[data-role="body"]');
+  if (firstMount) {
+    wrap.replaceChildren();
+    wrap.append(el('h1', { text: tab.title || `Review ${tab.subject}` }));
+    wrap.append(el('p', { class: 'sub', 'data-role': 'sub', text: 'Loading…' }));
+    wrap.append(el('div', { 'data-role': 'body' }, [
+      el('div', { 'data-role': 'sections' }),
+      el('div', { 'data-role': 'diff' }),
+      el('div', { class: 'empty', 'data-role': 'empty', text: 'This run has no review to show yet.', hidden: true }),
+      el('div', { 'data-role': 'decision' }),
+    ]));
+  }
+
+  // A background refresh must not clobber this tab mid-fetch with an older
+  // response that resolves after a newer one — same guard viewRun uses.
+  tab._reviewFetchGen = (tab._reviewFetchGen || 0) + 1;
+  const gen = tab._reviewFetchGen;
   let data;
-  try { data = await api.state(tab.subject); } catch (err) { sub.textContent = err.message; return; }
-  if (tabs.activeId() !== tab.id) return;
+  try { data = await api.state(tab.subject); }
+  catch (err) { if (firstMount) wrap.querySelector('[data-role="sub"]').textContent = err.message; return; }
+  if (isStaleRefresh(tab._reviewFetchGen, gen) || tabs.activeId() !== tab.id) return;
+
   const status = data.status || {};
   const feature = tab.feature || status.featureId;
-  sub.textContent = [status.verdict ? `verdict ${status.verdict}` : null, feature, status.branch].filter(Boolean).join(' · ');
+  wrap.querySelector('[data-role="sub"]').textContent =
+    [status.verdict ? `verdict ${status.verdict}` : null, feature, status.branch].filter(Boolean).join(' · ');
 
   const present = new Set(data.artifacts || []);
-  // Every review lens the panel produced, then the tests, then the diff — the
-  // order someone actually reviews in: verdict first, evidence after.
-  const sections = [
-    ['review_report.md', 'Review'],
-    ['review_correctness.md', 'Correctness'],
-    ['review_security.md', 'Security'],
-    ['review_architecture.md', 'Architecture'],
-    ['test_suite.md', 'Tests'],
-  ].filter(([name]) => present.has(name));
+  const sections = REVIEW_SECTION_DEFS.filter(([name]) => present.has(name));
 
-  for (const [name, heading] of sections) {
-    body.append(el('h2', { text: heading }));
-    const card = el('div', { class: 'card', text: 'Loading…' });
-    body.append(card);
-    api.artifact(name, tab.subject)
-      .then((a) => { card.innerHTML = renderMd(a.content || ''); })
-      .catch(() => { card.textContent = `Could not read ${name}.`; });
-  }
-  if (present.has('diff.patch')) {
-    body.append(el('h2', { text: 'Diff' }));
+  // Each section is fetched once (its content never changes once written for
+  // this run) — patchList only calls render() for a name it hasn't seen yet,
+  // so an unrelated background refresh does not re-fetch or re-render it.
+  patchList(wrap.querySelector('[data-role="sections"]'), sections, {
+    key: ([name]) => name,
+    sig: () => 'present',
+    render: ([name, heading]) => {
+      const section = el('div', {}, [
+        el('h2', { text: heading }),
+        el('div', { class: 'card', text: 'Loading…' }),
+      ]);
+      const card = section.querySelector('.card');
+      api.artifact(name, tab.subject)
+        .then((a) => { card.innerHTML = renderMd(a.content || ''); })
+        .catch(() => { card.textContent = `Could not read ${name}.`; });
+      return section;
+    },
+  });
+
+  patchRegion(wrap.querySelector('[data-role="diff"]'), String(present.has('diff.patch')), (h) => {
+    if (!present.has('diff.patch')) return;
+    h.append(el('h2', { text: 'Diff' }));
     const holder = el('div', { text: 'Loading…' });
-    body.append(holder);
+    h.append(holder);
     api.artifact('diff.patch', tab.subject)
       .then((a) => { holder.innerHTML = renderDiff(a.content || ''); })
       .catch(() => { holder.textContent = 'Could not read the diff.'; });
-  }
-  if (!sections.length && !present.has('diff.patch')) {
-    body.append(el('div', { class: 'empty', text: 'This run has no review to show yet.' }));
-  }
+  });
 
-  // The decision this review exists to support.
+  wrap.querySelector('[data-role="empty"]').hidden = !!(sections.length || present.has('diff.patch'));
+
+  // The decision this review exists to support. Patched (not rebuilt every
+  // call) so an operator's in-progress "Request changes" text survives any
+  // unrelated background refresh — only actually re-rendered if the pending
+  // decision itself changed (opened, resolved, or its question changed).
   const pending = (state.pool?.snapshot?.needsDecision || []).find((d) => d.featureId === feature && d.kind === 'merge-approval');
-  if (feature) {
+  const decisionSig = JSON.stringify([feature, pending?.decisionId ?? null, pending?.question ?? null, pending?.options ?? null]);
+  patchRegion(wrap.querySelector('[data-role="decision"]'), decisionSig, (h) => {
+    if (!feature) return;
     const changes = el('textarea', { placeholder: 'What should change? This goes to the coder and reopens review.' });
-    body.append(el('h2', { text: 'Decision' }));
-    body.append(el('div', { class: 'card' }, [
+    h.append(el('h2', { text: 'Decision' }));
+    h.append(el('div', { class: 'card' }, [
       el('div', { class: 'meta', text: pending ? pending.question : `Feature ${feature}` }),
       changes,
       el('div', { class: 'row', style: 'margin-top:8px' }, [
@@ -2188,7 +2386,7 @@ async function viewReview(wrap, tab) {
       ]),
       pending ? null : el('div', { class: 'meta', style: 'margin-top:6px', text: 'Approving is available once the feature is reviewed and waiting for you.' }),
     ]));
-  }
+  });
 }
 
 // ---- report view ----------------------------------------------------------
