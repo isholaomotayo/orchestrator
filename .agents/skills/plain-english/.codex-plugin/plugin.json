@@ -1,0 +1,40 @@
+{
+  "name": "plain-english",
+  "version": "0.6.0",
+  "description": "Tighten prose or write unambiguous technical documentation with two complementary writing skills.",
+  "author": {
+    "name": "b1rdmania",
+    "url": "https://github.com/b1rdmania"
+  },
+  "homepage": "https://github.com/b1rdmania/claude-plain-english-skill",
+  "repository": "https://github.com/b1rdmania/claude-plain-english-skill",
+  "license": "MIT",
+  "keywords": [
+    "plain-english",
+    "writing",
+    "editing",
+    "ai-writing"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Plain English",
+    "shortDescription": "Clear prose and unambiguous technical docs.",
+    "longDescription": "Use Plain English for voice-led prose and Simple English for technical documentation governed by ASD-STE100-derived rules.",
+    "developerName": "b1rdmania",
+    "category": "Productivity",
+    "capabilities": [
+      "Write"
+    ],
+    "brandColor": "#E53924",
+    "composerIcon": "./assets/plain-english-logo.png",
+    "logo": "./assets/plain-english-logo.png",
+    "websiteURL": "https://github.com/b1rdmania/claude-plain-english-skill",
+    "privacyPolicyURL": "https://github.com/b1rdmania/claude-plain-english-skill/blob/main/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/b1rdmania/claude-plain-english-skill/blob/main/TERMS.md",
+    "defaultPrompt": [
+      "Rewrite this in plain English without changing its meaning.",
+      "Audit this prose for bloat and common AI-writing tics.",
+      "Rewrite these technical instructions in Simplified Technical English."
+    ]
+  }
+}

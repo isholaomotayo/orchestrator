@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "skills": {
+    "plain-english": {
+      "source": "b1rdmania/claude-plain-english-skill",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "28d97dd1ff16c37a257f6914be541e3e5effb12e8035eafd7f2a50d5138f864c"
+    },
+    "simple-english": {
+      "source": "b1rdmania/claude-plain-english-skill",
+      "sourceType": "github",
+      "skillPath": "skills/simple-english/SKILL.md",
+      "computedHash": "6340107b4d34505ac5e152d4e55caa1234018d7f9b50e65a6a91153baa67b472"
+    }
+  }
+}

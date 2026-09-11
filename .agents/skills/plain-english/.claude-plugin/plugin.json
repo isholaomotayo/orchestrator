@@ -1,0 +1,17 @@
+{
+  "name": "plain-english",
+  "version": "0.6.0",
+  "description": "Tighten prose or write unambiguous technical documentation with two complementary writing skills.",
+  "author": {
+    "name": "b1rdmania"
+  },
+  "homepage": "https://github.com/b1rdmania/claude-plain-english-skill",
+  "repository": "https://github.com/b1rdmania/claude-plain-english-skill",
+  "license": "MIT",
+  "keywords": [
+    "plain-english",
+    "writing",
+    "editing",
+    "ai-writing"
+  ]
+}
