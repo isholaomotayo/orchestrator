@@ -17,6 +17,7 @@
 // host's config, it does not interpret hook input/output.
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWrite } from './state.mjs';
 
 export const HOSTS = ['claude', 'codex', 'cursor', 'antigravity'];
 
@@ -40,11 +41,16 @@ const CONFIG_REL = {
 };
 
 function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  const value = JSON.parse(text);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid hook configuration in ${file}: expected a JSON object.`);
+  return value;
 }
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
+  atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 function commandSignature(entry) {
   return [entry?.command, ...(entry?.args || [])].filter(Boolean).join(' ');
@@ -53,7 +59,14 @@ function isOurs(entry) {
   return commandSignature(entry).includes(MARKER);
 }
 function scriptEntry(projectRoot, host, event) {
-  return { type: 'command', command: 'node', args: [path.join(projectRoot, 'pipeline', 'host-hooks.mjs'), host, projectRoot, event] };
+  const args = [path.join(projectRoot, 'pipeline', 'host-hooks.mjs'), host, projectRoot, event];
+  // Codex and Cursor document shell command strings, not exec-form args.
+  // Quote each argument so project paths remain data even with shell syntax.
+  if (host === 'codex' || host === 'cursor') {
+    const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+    return { type: 'command', command: ['node', ...args.map(quote)].join(' ') };
+  }
+  return { type: 'command', command: 'node', args };
 }
 
 export function configPath(projectRoot, host) {
@@ -146,7 +159,7 @@ const STRATEGY = {
 export function installHooks(projectRoot, host) {
   const file = configPath(projectRoot, host);
   const before = readJson(file) || {};
-  const after = STRATEGY[host].install(projectRoot, host, before);
+  const after = STRATEGY[host].install(projectRoot, host, STRATEGY[host].uninstall(before));
   writeJson(file, after);
   return { installed: true, file };
 }

@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
 import {
   bridgeCommand, inspectBridge, readBridge, assertMessagesSettled,
@@ -387,4 +389,51 @@ test('inspectBridge reports checkpoint-only for a session with no hooks capabili
   const session = bridgeCommand('session.register', { project: root, host: 'codex', conversationId: 'c', capabilities: {} });
   claim(root, runId, session.sessionId);
   assert.equal(inspectBridge(root, runId).capability, 'checkpoint-only');
+});
+
+test('release cannot downgrade an enrolled run to ungated legacy continuation', () => {
+  const root = project(), runId = 'r1';
+  awaitingRun(root, runId);
+  assert.equal(inspectBridge(root, runId).ownershipRequired, false);
+  const session = register(root);
+  const claimed = claim(root, runId, session.sessionId);
+  bridgeCommand('run.release', { project: root, runId, sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId });
+  assert.equal(inspectBridge(root, runId).owner, null);
+  assert.equal(inspectBridge(root, runId).ownershipRequired, true);
+});
+
+test('priority instructions require ownership even before the first claim', () => {
+  const root = project(), runId = 'r1';
+  awaitingRun(root, runId);
+  bridgeCommand('message.queue', { project: root, runId, text: 'Wait for the operator.' });
+  assert.equal(inspectBridge(root, runId).ownershipRequired, true);
+});
+
+test('completion refuses a lease that expired during verification without changing status', () => {
+  const root = project(), runId = 'r1';
+  const { p, status } = awaitingRun(root, runId);
+  const session = register(root);
+  const claimed = bridgeCommand('run.claim', { project: root, runId, sessionId: session.sessionId }, { now: Date.now() - 300000 });
+  assert.throws(() => commitCompletion(root, runId, status, {
+    sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId,
+  }, { ...status, overall: 'done' }), /lease expired/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(p.status)), status);
+});
+
+
+test('the engine refuses bare continuation after a claimed run is released', () => {
+  const root = project(), runId = 'r1';
+  const { p, status } = awaitingRun(root, runId);
+  status.bridgeRequired = true;
+  status.chatResume = { step: 'after_coder' };
+  fs.writeFileSync(p.status, JSON.stringify(status));
+  const session = register(root);
+  const claimed = claim(root, runId, session.sessionId);
+  bridgeCommand('message.queue', { project: root, runId, text: 'Do not advance before addressing this.' });
+  bridgeCommand('run.release', { project: root, runId, sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId });
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./orchestrator.mjs', import.meta.url)), '--continue', '--run-id', runId], { cwd: root, encoding: 'utf8' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /does not own the run/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(p.status)), status);
+  assert.equal(inspectBridge(root, runId).messages[0].status, 'queued');
 });

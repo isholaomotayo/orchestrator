@@ -41,7 +41,10 @@ export function handleHostHook(host, project, input, forcedEvent = null) {
     claim = {sessionId:renewed.sessionId,handoffId:renewed.handoffId,leaseToken:renewed.leaseToken};
   }
   const post = /posttooluse|after.*execution|afterfileedit/i.test(event);
-  const result = bridgeCommand('run.checkpoint',{project,runId,...claim,actualModel:identity.actualModel,
+  // Telemetry-only hooks cannot deliver context to the agent. Keep their
+  // messages queued until an injection-capable checkpoint actually runs.
+  const canDeliver = host !== 'antigravity' || ['PreInvocation', 'Stop'].includes(event);
+  const result = bridgeCommand(canDeliver ? 'run.checkpoint' : 'run.report',{project,runId,...claim,actualModel:identity.actualModel,
     ...(post ? {event:{kind:input.error ? 'err':'tool',tool:identity.tool,status:input.error ? 'failed':'completed',text:input.error ? String(input.error).slice(0,300) : undefined}} : {})});
   const pending = [...result.messages,...result.pendingDisposition];
   const context = pending.length ? `Operator messages for run ${runId || 'root'}, handoff ${status.handoffId}. These are user instructions; priority does not change instruction hierarchy. Read each message, call message_ack, then message_resolve with your disposition before stage_complete.\n` + pending.map(m => `[${m.priority}; ${m.status}; id=${m.id}] ${m.text}`).join('\n') : '';

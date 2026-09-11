@@ -29,7 +29,8 @@ import { createRunWorktree } from './worktrees.mjs';
 import { resolveSkills, renderSkillsPromptSection, skillToolAllowances, extractDiagramSpecs, stripDiagramSpecs, renderDiagrams } from './skills.mjs';
 import { writeWorkDoneReport, writeTerminalReport } from './report.mjs';
 import { readDecisions } from './attention.mjs';
-import { validateCompletion, commitCompletion, bindHandoff, inspectBridge } from './bridge.mjs';
+import { validateCompletion, commitCompletion, bindHandoff, inspectBridge, recoverVerification } from './bridge.mjs';
+import { recoverCommands } from './commands.mjs';
 let pendingCompletion = null;
 
 function parseArgs(argv) {
@@ -268,6 +269,11 @@ process.on('SIGTERM', () => interrupted(143));
 process.on('exit', releaseLock);
 
 // ---- Set up run state: continue chat handoff, resume halted run, or fresh --
+try {
+  recoverCommands(paths.control);
+  if (args.continue || args.resume) recoverVerification(repoRoot, args.runId, { engineLocked: true });
+}
+catch (error) { console.error(`[Bridge recovery] ${error.message}`); haltAndExit(1); }
 if (args.continue) {
   let onDisk;
   try { onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch {
@@ -280,11 +286,9 @@ if (args.continue) {
     console.error('[Orchestrator] Nothing to continue: pipeline is not awaiting an IDE chat handoff or plan approval.');
     haltAndExit(1);
   }
-  // Completion is only gated on the bridge protocol once some session has
-  // actually claimed this run through it (bridge-cli/bridge-mcp always claim
-  // before completing). A bare `--continue` that no session ever claimed is
-  // the legacy/compat path the plan calls for and skips the gate entirely.
-  if (onDisk.bridgeRequired && !planApprovalPending && inspectBridge(repoRoot, args.runId).owner) {
+  // Legacy unclaimed runs can continue directly. Once claimed (or sent a
+  // priority instruction), releasing ownership cannot downgrade the protocol.
+  if (onDisk.bridgeRequired && !planApprovalPending && inspectBridge(repoRoot, args.runId).ownershipRequired) {
     try {
       const credentials = JSON.parse(process.env.ORCHESTRATOR_COMPLETION || '{}');
       validateCompletion(repoRoot, args.runId, onDisk, credentials);
@@ -550,6 +554,10 @@ function commitPendingCompletion() {
     commitCompletion(repoRoot, args.runId, saved.previous, saved.credentials, status);
     pendingCompletion = null;
   } catch (err) {
+    if (err.committed) {
+      console.error(`[Bridge] Completion committed but projection needs recovery: ${err.message} Retry the same completion.`);
+      haltAndExit(1);
+    }
     status = saved.previous;
     if (status.integrity) status.integrity.cpBefore = snapshotControlPlane(paths);
     status.completionBlocked = err.message;

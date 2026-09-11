@@ -24,3 +24,9 @@ jobs:
       # fails if someone edited a source module without rebuilding it.
       - run: pnpm run build:ui -- --check
       - run: pnpm test
+        env:
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: commit.gpgsign
+          GIT_CONFIG_VALUE_0: 'false'
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run test:browser

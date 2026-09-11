@@ -20,7 +20,8 @@
     "eval": "node evals/run.mjs",
     "build:ui": "node scripts/build-dashboard.mjs",
     "pool": "node pipeline/pool-cli.mjs",
-    "skills": "node pipeline/skills-cli.mjs"
+    "skills": "node pipeline/skills-cli.mjs",
+    "test:browser": "node --test tests/browser/*.test.mjs"
   },
   "devDependencies": {
     "playwright": "1.55.1"

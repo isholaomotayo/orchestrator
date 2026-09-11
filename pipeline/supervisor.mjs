@@ -584,10 +584,68 @@ export function createSupervisor({
     finishLanding(feature, currentSha(repoRoot));
   }
 
+  // A stale approval must lead to new evidence, never another approval of the
+  // same stale pair of commits. Keep every attempt in its own worktree.
+  function revalidateRoadmap(rm) {
+    const previous = rm.finalValidation;
+    if (previous?.state === 'running') {
+      const run = pool.listRunStates(paths, poolCfg, now()).find(r => r.runId === previous.runId);
+      if (!run || run.status?.overall !== 'done' || run.status?.verdict !== 'APPROVED') return;
+      const p = pipelinePaths(repoRoot, { runId: previous.runId });
+      try {
+        if (currentSha(repoRoot, rm.base) !== previous.target || currentSha(repoRoot, rm.workingBranch) !== previous.inputHead) {
+          saveRoadmap(setRoadmapStatus(rm, 'running', { finalValidation: { ...previous, state: 'superseded' }, mergeState: 'target-moved' }));
+          return;
+        }
+        const committed = commitRunWork({ worktreePath: p.worktree, message: `Validate combined roadmap: ${rm.title}` });
+        const sha = committed.sha || currentSha(p.worktree);
+        const updated = gitIn(repoRoot, ['update-ref', `refs/heads/${rm.workingBranch}`, sha, previous.inputHead]);
+        if (updated.status !== 0) throw new Error('Working branch moved during validation acceptance.');
+        saveRoadmap(setRoadmapStatus(roadmap(), 'running', {
+          workingSha: sha, validatedTarget: previous.target, mergeApproval: null, mergeState: null,
+          finalValidation: { ...previous, state: 'approved', sha },
+        }));
+        maybeEnterFinalReview(roadmap());
+      } catch (error) {
+        escalate(null, { runId: previous.runId }, 'validation-blocked', error.message);
+      }
+      return;
+    }
+    if (!availableSlots()) return;
+    const runId = newRunId({ featureId: 'roadmap', kind: 'integration' });
+    const p = pipelinePaths(repoRoot, { runId });
+    const target = currentSha(repoRoot, rm.base), inputHead = currentSha(repoRoot, rm.workingBranch);
+    const branch = `pipeline/roadmap-validation/${runId}`;
+    const validation = { runId, target, inputHead, state: 'running' };
+    saveRoadmap(setRoadmapStatus(rm, 'running', { mergeApproval: null, mergeState: 'revalidating', finalValidation: validation }));
+    try {
+      createRunWorktree({ repoRoot, runDir: p.dir, worktreePath: p.worktree, branch, baseRef: target });
+      const merged = tryMerge(p.worktree, inputHead);
+      if (!merged.ok) throw new Error(`Combined roadmap conflicts with target: ${merged.files.join(', ')}`);
+      const specs = path.join(p.dir, 'combined-specs.md');
+      const parts = rm.features.filter(f => f.status !== 'skipped').map(f => {
+        if (!f.specRunId) throw new Error(`Missing specification run for ${f.id}.`);
+        return fs.readFileSync(pipelinePaths(repoRoot, { runId: f.specRunId }).specs, 'utf8');
+      });
+      fs.writeFileSync(specs, parts.join('\n\n---\n\n'));
+      const brief = writeBrief({ runId, title: `Revalidate ${rm.title}`, featureId: 'roadmap', mode: 'integration', base: target, branch,
+        body: `Test and review the entire combined roadmap against target ${target}. Candidate input: ${inputHead}. Retain all accepted features. Human landing approval is still required.` });
+      spawnWorker({ runId, featureId: 'roadmap', kind: 'integration', brief, branch: null, baseRef: target,
+        runner: resolvePoolRunner(pickRunner(poolCfg.defaultRunner)),
+        extra: ['--worktree', path.relative(repoRoot, p.worktree), '--specs-file', specs, '--start-at', 'tester'],
+      });
+    } catch (error) {
+      persistRunRecord(p, { runId, featureId: 'roadmap', kind: 'integration', runner: 'host', branch, baseRef: target,
+        haltReason: 'INTEGRITY_ERROR', haltDetail: error.message, phase: 'failed' });
+      escalate(null, { runId }, 'validation-blocked', error.message);
+    }
+  }
+
   function performRoadmapMerge(rm) {
     if (rm.validatedTarget && (currentSha(repoRoot,rm.base) !== rm.validatedTarget || rm.mergeApproval?.head !== currentSha(repoRoot,rm.workingBranch))) {
-      saveRoadmap(setRoadmapStatus(rm,'awaiting_final_review',{mergeApproval:null,mergeState:'target-moved'}));
-      escalate(null,null,'approval-stale','Roadmap target moved. Revalidate the combined working branch before a new approval.'); return;
+      saveRoadmap(setRoadmapStatus(rm,'running',{mergeApproval:null,mergeState:'target-moved',finalValidation:null}));
+      escalate(null,null,'approval-stale','Roadmap target moved. Revalidating the combined working branch before a new approval.');
+      revalidateRoadmap(roadmap()); return;
     }
     const branch = rm.workingBranch;
     const fakeFeature = { id: 'roadmap', title: rm.title, integrationRunId: null, branch };
@@ -681,7 +739,7 @@ export function createSupervisor({
       kind: 'roadmap-merge', decisionId: decision.id, escalate: true,
       summary: `Roadmap "${rm.title}" is ready for a final review — land with \`pool approve-merge\` or \`pool land-roadmap\`.`,
     });
-    saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', {validatedTarget:currentSha(repoRoot,rm.base)}));
+    saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', {validatedTarget:rm.finalValidation?.state === 'approved' ? rm.finalValidation.target : currentSha(repoRoot,rm.base)}));
   }
 
   function finishLanding(feature, landedSha, { deferred = false } = {}) {
@@ -820,6 +878,7 @@ export function createSupervisor({
   function advanceFeatures() {
     let rm = roadmap();
     if (rm.roadmapStatus === 'merge_approved') { performRoadmapMerge(rm); return; }
+    if (rm.finalValidation?.state === 'running' || rm.mergeState === 'target-moved') { revalidateRoadmap(rm); return; }
     if (['awaiting_final_review','landed'].includes(rm.roadmapStatus)) return;
     const active = rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status));
     const ordered = active.slice(schedulingOffset % Math.max(1,active.length)).concat(active.slice(0,schedulingOffset % Math.max(1,active.length)));

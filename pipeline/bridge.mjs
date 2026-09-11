@@ -2,10 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { pipelinePaths, appendEvent, readLock, pidAlive, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, appendEvent, readLock, pidAlive, acquireLockFile, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
-import { transact, commandState } from './commands.mjs';
+import { transact, commandState, recoverCommands } from './commands.mjs';
 
 export const BRIDGE_VERSION = 2;
 export const HOSTS = ['codex', 'claude', 'cursor', 'antigravity'];
@@ -22,7 +22,11 @@ export function bridgePaths(project, runId) {
   if (runId && fs.existsSync(p.dir) && !fs.realpathSync(p.dir).startsWith(fs.realpathSync(p.runs) + path.sep)) throw new Error('Run path escapes project.');
   return p;
 }
-export function readBridge(project) { return commandState(bridgePaths(project).control); }
+export function readBridge(project) {
+  const dir = bridgePaths(project).control;
+  recoverCommands(dir);
+  return commandState(dir);
+}
 function loadStatus(p) {
   try { return JSON.parse(fs.readFileSync(p.status, 'utf8')); } catch { throw new Error('Missing or unreadable run status.'); }
 }
@@ -44,7 +48,7 @@ export function inspectBridge(project, runId = null, { now = Date.now() } = {}) 
   const capability = !owner ? 'disconnected' : Date.parse(owner.expiresAt) <= now ? 'disconnected'
     : session?.capabilities?.hooks ? 'connected' : 'checkpoint-only';
   return { revision: state.revision, status, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null,
-    capability, messages: state.messages.filter(m => m.runId === (runId || null)).map(messageView) };
+    capability, ownershipRequired: !!(owner || state.managedRuns?.[keyOf(runId)]), messages: state.messages.filter(m => m.runId === (runId || null)).map(messageView) };
 }
 export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   const p = bridgePaths(args.project, args.runId);
@@ -74,7 +78,9 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       if (args.handoffId && args.handoffId !== status.handoffId) throw new Error('Stale handoff; refresh before sending.');
       if (!['priority', 'normal'].includes(args.priority || 'priority')) throw new Error('Invalid message priority.');
       const message = { id: crypto.randomUUID(), runId: args.runId || null, handoffId: status.handoffId || null, stage, text: args.text.trim(), priority: args.priority || 'priority', author: 'operator', sequence: state.messages.length + 1, createdAt: stamp, status: 'queued', deliveries: [] };
-      state.messages.push(message); return { message };
+      state.messages.push(message);
+      if (message.priority === 'priority') (state.managedRuns ||= {})[key] = true;
+      return { message };
     }
     if (command === 'run.claim') {
       if (status.overall !== 'awaiting_chat' || !status.handoffId) throw new Error('Run is not awaiting a managed handoff; migrate legacy handoffs explicitly.');
@@ -86,6 +92,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       const same = prev?.sessionId === args.sessionId && prev.handoffId === status.handoffId && Date.parse(prev.expiresAt) > now;
       const owner = { sessionId: args.sessionId, handoffId: status.handoffId, token: same ? prev.token : crypto.randomUUID(), generation: same ? prev.generation : (prev?.generation || 0) + 1, claimedAt: same ? prev.claimedAt : stamp, expiresAt: new Date(now + LEASE_MS).toISOString(), lastActivityAt: same ? prev.lastActivityAt : null, lastCheckpointAt: stamp };
       state.runs[key] = owner;
+      (state.managedRuns ||= {})[key] = true;
       const handoff = JSON.parse(fs.readFileSync(p.stageHandoff, 'utf8'));
       return { runId: args.runId, sessionId: args.sessionId, handoffId: owner.handoffId, leaseToken: owner.token, expiresAt: owner.expiresAt, handoff, worktree: status.worktree ? path.resolve(p.root, status.worktree) : p.root };
     }
@@ -96,7 +103,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       if (args.text || args.event) owner.lastActivityAt = stamp;
       if (args.actualModel) { const session = state.sessions[args.sessionId]; session.actualModel = args.actualModel; session.modelSource = 'host-observed'; }
       if (args.text || args.event) appendEvent(p, { type: 'agent_output', host: true, stage: status.awaitingStage, handoffId: status.handoffId, sessionId: args.sessionId, kind: args.event?.kind || 'text', text: String(args.text || args.event?.text || '').slice(0, 2000), tool: args.event?.tool, status: args.event?.status, file: args.event?.file });
-      const messages = state.messages.filter(m => relevant(m, args, status) && ['queued', 'delivered'].includes(m.status)).sort((a,b) => (a.priority === 'priority' ? 0 : 1) - (b.priority === 'priority' ? 0 : 1) || a.sequence - b.sequence);
+      const messages = (command === 'run.report' ? [] : state.messages.filter(m => relevant(m, args, status) && ['queued', 'delivered'].includes(m.status))).sort((a,b) => (a.priority === 'priority' ? 0 : 1) - (b.priority === 'priority' ? 0 : 1) || a.sequence - b.sequence);
       for (const m of messages) { m.status = 'delivered'; m.deliveries.push({ sessionId: args.sessionId, at: stamp }); }
       return { messages, expiresAt: owner.expiresAt, pendingDisposition: state.messages.filter(m => relevant(m, args, status) && m.status === 'acknowledged') };
     }
@@ -118,7 +125,8 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       const file = path.join(p.dir, STAGE_ARTIFACT_FILES[status.awaitingStage] || 'invalid');
       const check = validateArtifactFile(status.awaitingStage, file);
       if (!check.ok) throw new Error(`Stage artifact is not ready: ${check.reason}`);
-      owner.completion = { id: args.commandId || crypto.randomUUID(), handoffId: status.handoffId, artifactHash: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), preparedAt: stamp };
+      owner.completion = { id: args.commandId || crypto.randomUUID(), handoffId: status.handoffId, artifactHash: crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'), preparedAt: stamp,
+        previousStatus: status, previousHandoff: fs.readFileSync(p.stageHandoff, 'utf8') };
       return { completion: owner.completion };
     }
     throw new Error(`Unknown bridge command ${command}`);
@@ -138,6 +146,8 @@ export function validateCompletion(project, runId, status, credentials) {
 }
 export function completeStage(args) {
   const p = bridgePaths(args.project, args.runId);
+  recoverCommands(p.control);
+  recoverVerification(args.project, args.runId);
   const commandId = args.commandId || crypto.randomUUID();
   // A previously committed handoff completion is replayable after a crash.
   const before = loadStatus(p);
@@ -150,19 +160,45 @@ export function completeStage(args) {
   return { ok: false, overall: after.overall, error: result.error?.message || result.stderr?.slice(-2000) || 'Stage did not advance; inspect run state.' };
 }
 
+// Verification writes intermediate engine status and may prepare the next
+// stage's handoff. If the engine dies before stage.commit, restore the parked
+// handoff from stage.prepare so the same completion can be retried safely.
+export function recoverVerification(project, runId, { engineLocked = false } = {}) {
+  const p = bridgePaths(project, runId);
+  const needsRecovery = state => {
+    const completion = state.runs[keyOf(runId)]?.completion;
+    const current = loadStatus(p);
+    return current.overall === 'running' && completion?.previousStatus
+      && current.handoffId === completion.handoffId
+      && !current.completedHandoffs?.[completion.handoffId] ? completion : null;
+  };
+  if (!fs.existsSync(p.status) || !needsRecovery(commandState(p.control))) return;
+  if (!engineLocked && !acquireLockFile(p.lock, { pid: process.pid, role: 'completion-recovery' })) throw new Error('Run engine is still active; retry completion after it exits.');
+  try {
+    return transact(p.control, 'stage.recover-verification', { runId }, (state, write) => {
+      const completion = needsRecovery(state);
+      if (!completion) return { recovered: false };
+      write(p.status, JSON.stringify(completion.previousStatus, null, 2));
+      write(p.stageHandoff, completion.previousHandoff);
+      return { recovered: true, handoffId: completion.handoffId };
+    });
+  } finally { if (!engineLocked) fs.unlinkSync(p.lock); }
+}
+
 // Called by the engine at the transition boundary after its checks. Sharing the
 // inbox lock makes a simultaneous message either block this completion or belong
 // to the next handoff, never vanish between the two.
 export function commitCompletion(project, runId, previous, credentials, next) {
   const p = bridgePaths(project, runId);
-  return transact(p.control, 'stage.commit', { runId, handoffId: previous.handoffId }, state => {
+  return transact(p.control, 'stage.commit', { runId, handoffId: previous.handoffId }, (state, projectWrite) => {
     const owner = state.runs[keyOf(runId)];
     if (!owner || owner.token !== credentials.leaseToken || owner.sessionId !== credentials.sessionId || owner.handoffId !== previous.handoffId) throw new Error('Completion ownership changed.');
+    owned(state, { ...credentials, runId }, previous, Date.now());
     assertMessagesSettled(state, runId, previous.handoffId);
     const result = { ok: true, runId, handoffId: previous.handoffId, completedAt: new Date().toISOString() };
     next.completedHandoffs = { ...next.completedHandoffs, [previous.handoffId]: result };
     next.handoffId = null;
-    fs.writeFileSync(p.status, JSON.stringify(next, null, 2));
+    projectWrite(p.status, JSON.stringify(next, null, 2));
     return result;
   }, { commandId: `commit-${previous.handoffId}` });
 }

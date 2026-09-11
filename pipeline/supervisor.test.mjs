@@ -195,3 +195,61 @@ test('status-less unknown runs are omitted from in-progress', () => {
   assert.equal(row.state, 'unknown');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a moved roadmap target starts combined validation and requires a fresh approval', () => {
+  const { root, paths } = tmpRepo();
+  const git = (...args) => {
+    const result = spawnSync('git', ['-c', 'user.name=test', '-c', 'user.email=test@example.test', ...args], { cwd: root, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  compile(paths);
+  const base = git('rev-parse', 'HEAD');
+  git('checkout', '-b', 'pipeline/combined');
+  fs.writeFileSync(path.join(root, 'feature.txt'), 'accepted work');
+  git('add', 'feature.txt'); git('commit', '-qm', 'feature');
+  const inputHead = git('rev-parse', 'HEAD');
+  git('checkout', 'main');
+  fs.writeFileSync(path.join(root, 'target.txt'), 'new target work');
+  git('add', 'target.txt'); git('commit', '-qm', 'target moved');
+  const target = git('rev-parse', 'HEAD');
+  const spec = pipelinePaths(root, { runId: 'spec-fixture' });
+  fs.mkdirSync(spec.dir, { recursive: true });
+  fs.writeFileSync(spec.specs, '# Specification\nKeep the accepted feature and verify the combined target.');
+  let rm = readRoadmap(paths);
+  rm = { ...rm, review: 'end', workingBranch: 'pipeline/combined', workingSha: inputHead,
+    validatedTarget: base, roadmapStatus: 'merge_approved', mergeApproval: { head: inputHead, target: base },
+    features: rm.features.map(f => ({ ...f, status: 'accepted', specRunId: 'spec-fixture' })) };
+  writeRoadmap(paths, rm);
+  const spawned = [];
+  const sup = createSupervisor({ repoRoot: root, spawnSync: (_bin, args) => {
+    spawned.push(args);
+    const runId = args[args.indexOf('--run-id') + 1];
+    const p = pipelinePaths(root, { runId });
+    const status = newStatus('Revalidate');
+    status.overall = 'awaiting_chat'; status.awaitingStage = 'tester';
+    writeStatus(p, status);
+    return { status: 0 };
+  } });
+  sup.tick();
+  rm = readRoadmap(paths);
+  assert.equal(spawned.length, 1);
+  assert.equal(rm.roadmapStatus, 'running');
+  assert.equal(rm.mergeApproval, null);
+  assert.equal(rm.finalValidation.target, target);
+  assert.equal(git('rev-parse', 'main'), target, 'validation must not land without approval');
+  const p = pipelinePaths(root, { runId: rm.finalValidation.runId });
+  assert.equal(fs.readFileSync(path.join(p.worktree, 'feature.txt'), 'utf8'), 'accepted work');
+  assert.equal(fs.readFileSync(path.join(p.worktree, 'target.txt'), 'utf8'), 'new target work');
+  const done = newStatus('Revalidated'); done.overall = 'done'; done.verdict = 'APPROVED';
+  writeStatus(p, done);
+  sup.tick();
+  rm = readRoadmap(paths);
+  assert.equal(rm.finalValidation.state, 'approved');
+  assert.equal(rm.roadmapStatus, 'awaiting_final_review');
+  assert.equal(rm.validatedTarget, target);
+  assert.equal(rm.mergeApproval, null);
+  assert.equal(git('rev-parse', 'main'), target);
+  assert.equal(rm.workingSha, git('rev-parse', 'pipeline/combined'));
+  fs.rmSync(root, { recursive: true, force: true });
+});

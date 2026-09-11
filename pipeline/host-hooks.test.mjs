@@ -117,3 +117,22 @@ test('handleHostHook renews an expired lease for the same conversation rather th
   const result = handleHostHook('claude', root, { session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name: 'Edit' });
   assert.match(result.hookSpecificOutput.additionalContext, /ping/);
 });
+
+test('Antigravity telemetry leaves messages queued until an injection-capable hook runs', () => {
+  const root = project(), runId = 'r1';
+  awaitingRun(root, runId);
+  const session = bridgeCommand('session.register', { project: root, host: 'antigravity', conversationId: 'conv-1' });
+  bridgeCommand('run.claim', { project: root, runId, sessionId: session.sessionId });
+  bridgeCommand('message.queue', { project: root, runId, text: 'Please verify the fix.' });
+  const input = { conversationId: 'conv-1', toolCall: { name: 'Edit' } };
+  assert.deepEqual(handleHostHook('antigravity', root, input, 'PostToolUse'), {});
+  const before = bridgeCommand('run.inspect', { project: root, runId });
+  assert.equal(before.messages[0].status, 'queued');
+  assert.equal(before.messages[0].deliveries.length, 0);
+  assert.ok(before.owner.lastActivityAt);
+  const result = handleHostHook('antigravity', root, input, 'PreInvocation');
+  assert.match(result.injectSteps[0].userMessage, /Please verify the fix/);
+  const after = bridgeCommand('run.inspect', { project: root, runId });
+  assert.equal(after.messages[0].status, 'delivered');
+  assert.equal(after.messages[0].deliveries.length, 1);
+});

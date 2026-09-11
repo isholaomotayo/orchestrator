@@ -140,3 +140,19 @@ test('two independently named command logs in the same directory do not interfer
   assert.equal(commandState(dir, 'one').runs.x, 1);
   assert.equal(commandState(dir, 'two').runs.x, 2);
 });
+
+test('valid JSON without a trailing newline is not a committed receipt or state', () => {
+  const dir = tmpDir();
+  transact(dir, 'first', {}, state => { state.runs.count = 1; });
+  const journal = path.join(dir, 'bridge.journal.jsonl');
+  const row = readJournal(journal)[0];
+  row.state.revision = 99;
+  row.state.runs.count = 99;
+  row.state.receipts.torn = { fingerprint: 'uncommitted', result: { ok: true } };
+  fs.appendFileSync(journal, JSON.stringify(row));
+  assert.equal(commandState(dir).revision, 1);
+  assert.equal(commandState(dir).receipts.torn, undefined);
+  transact(dir, 'second', {}, state => { state.runs.count++; });
+  assert.equal(commandState(dir).runs.count, 2);
+  assert.equal(readJournal(journal).length, 2);
+});

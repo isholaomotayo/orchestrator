@@ -466,14 +466,18 @@ function projectRuns() { return allRuns(state.pool?.snapshot, state.runs); }
 function viewRuns(wrap, tab) {
   tab.runsFilter = tab.runsFilter || {};
   const f = tab.runsFilter;
-  wrap.replaceChildren();
-  wrap.append(el('h1', { text: 'Runs' }));
-  wrap.append(el('p', { class: 'sub', text: 'Every attempt this project has a record of — including failed, orphaned, and historical runs.' }));
-
   const runs = projectRuns();
   const features = [...new Set(runs.map((r) => r.featureId).filter(Boolean))].sort();
   const hosts = [...new Set(runs.map((r) => r.runner).filter(Boolean))].sort();
 
+  const signature = JSON.stringify([features, hosts]);
+  if (tab._runsView?.wrap === wrap && tab._runsView.signature === signature) {
+    tab._runsView.update();
+    return;
+  }
+  wrap.replaceChildren();
+  wrap.append(el('h1', { text: 'Runs' }));
+  wrap.append(el('p', { class: 'sub', text: 'Every attempt this project has a record of — including failed, orphaned, and historical runs.' }));
   const filters = el('div', { class: 'filters' });
   const featureSel = el('select', {}, [
     el('option', { value: '', text: 'Any feature' }),
@@ -495,38 +499,45 @@ function viewRuns(wrap, tab) {
   ].map(([v, label]) => el('option', { value: v, text: label, selected: f.olderThanH === v })));
   ageSel.onchange = () => { f.olderThanH = ageSel.value || null; render(); };
   const q = el('input', { type: 'text', placeholder: 'Search run or ticket id…', value: f.q || '' });
-  q.oninput = () => { f.q = q.value; render(); };
+  q.oninput = () => { f.q = q.value; updateResults(); };
   filters.append(featureSel, hostSel, bucketSel, ageSel, q);
-  if (f.feature || f.host || f.bucket || f.olderThanH || f.q) {
-    filters.append(el('button', {
-      class: 'btn ghost', text: 'Clear filters',
-      onclick: () => { tab.runsFilter = {}; render(); },
-    }));
-  }
+  const clear = el('button', {
+    class: 'btn ghost', text: 'Clear filters',
+    onclick: () => { tab.runsFilter = {}; tab._runsView = null; render(); },
+  });
+  filters.append(clear);
   wrap.append(filters);
+  const results = el('div');
+  wrap.append(results);
+  tab._runsView = { wrap, signature, update: updateResults };
+  updateResults();
 
-  const filtered = filterRuns(runs, f);
+  function updateResults() {
+    clear.hidden = !(f.feature || f.host || f.bucket || f.olderThanH || f.q);
+    results.replaceChildren();
+    const current = projectRuns();
+    const filtered = filterRuns(current, f);
+    if (!filtered.length) return results.append(el('div', { class: 'empty', text: current.length ? 'No runs match these filters.' : 'No runs recorded yet.' }));
 
-  if (!filtered.length) return wrap.append(el('div', { class: 'empty', text: runs.length ? 'No runs match these filters.' : 'No runs recorded yet.' }));
-
-  const table = el('table', { class: 'tbl' }, [
-    el('thead', {}, el('tr', {}, ['Run', 'Feature', 'Host', 'State', 'Stage', 'Last activity', 'Age'].map((h) => el('th', { text: h })))),
-  ]);
-  const tbody = el('tbody');
-  for (const r of filtered) {
-    const bucket = runBucket(r);
-    tbody.append(el('tr', {}, [
-      el('td', {}, el('a', { href: '#', text: r.ticketId || r.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: r.runId, title: r.ticketId || r.runId }); } })),
-      el('td', { text: r.featureId || '—' }),
-      el('td', { text: r.runner || '—' }),
-      el('td', {}, el('span', { class: `chip${bucket === 'blocked' ? ' fail' : bucket === 'disconnected' ? ' warn' : ''}`, text: BUCKET_LABEL[bucket] || bucket })),
-      el('td', { text: r.stage || '—' }),
-      el('td', { text: formatAge(ageMs(r.lastOutputAt || r.spawnedAt)) }),
-      el('td', { text: formatAge(ageMs(r.spawnedAt)) }),
-    ]));
+    const table = el('table', { class: 'tbl' }, [
+      el('thead', {}, el('tr', {}, ['Run', 'Feature', 'Host', 'State', 'Stage', 'Last activity', 'Age'].map((h) => el('th', { text: h })))),
+    ]);
+    const tbody = el('tbody');
+    for (const r of filtered) {
+      const bucket = runBucket(r);
+      tbody.append(el('tr', {}, [
+        el('td', {}, el('a', { href: '#', text: r.ticketId || r.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: r.runId, title: r.ticketId || r.runId }); } })),
+        el('td', { text: r.featureId || '—' }),
+        el('td', { text: r.runner || '—' }),
+        el('td', {}, el('span', { class: `chip${bucket === 'blocked' ? ' fail' : bucket === 'disconnected' ? ' warn' : ''}`, text: BUCKET_LABEL[bucket] || bucket })),
+        el('td', { text: r.stage || '—' }),
+        el('td', { text: formatAge(ageMs(r.lastOutputAt || r.spawnedAt)) }),
+        el('td', { text: formatAge(ageMs(r.spawnedAt)) }),
+      ]));
+    }
+    table.append(tbody);
+    results.append(table);
   }
-  table.append(tbody);
-  wrap.append(table);
 }
 
 function viewMessages(wrap, tab) {

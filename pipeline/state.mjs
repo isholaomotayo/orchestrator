@@ -1,6 +1,7 @@
 // Shared state helpers for the pipeline: paths, config, status.json, events.jsonl.
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, mergeModelProfiles } from './models.mjs';
 import { STAGES, CORE_STAGES, OPTIONAL_STAGES, STAGE_ARTIFACT_FILES } from './stages.mjs';
 
@@ -248,25 +249,42 @@ export function atomicWrite(file, contents) {
  *
  * @returns {boolean} true when the lock is now held by this caller
  */
-export function acquireLockFile(file, payload) {
+export function acquireLockFile(file, payload, reclaimDepth = 0) {
+  if (reclaimDepth > 8) return false;
   const body = JSON.stringify({ startedAt: new Date().toISOString(), ...payload });
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(file, 'wx');
-      fs.writeSync(fd, body);
-      fs.closeSync(fd);
-      return true;
-    } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
-      let owner = null;
-      try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-      // A corrupt lock cannot name a live owner, so it is reclaimable too.
-      if (owner && pidAlive(owner.pid)) return false;
-      try { fs.unlinkSync(file); } catch {}
+  // Publish a fully populated inode. Exclusive open followed by write exposed
+  // an empty file that another contender could mistake for a corrupt lock.
+  const candidate = `${file}.${process.pid}.${crypto.randomUUID()}.candidate`;
+  fs.writeFileSync(candidate, body, { flag: 'wx', mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.linkSync(candidate, file);
+        return true;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+        let owner = null;
+        try { owner = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
+        if (owner && pidAlive(owner.pid)) return false;
+        // Serialize stale-owner reclamation, then re-read under the guard.
+        // Otherwise two reclaimers can unlink a new live owner's lock. The
+        // guard uses the same recovery protocol if its own process dies.
+        const guard = `${file}.reclaim`;
+        if (!acquireLockFile(guard, { pid: process.pid }, reclaimDepth + 1)) return false;
+        try {
+          owner = null;
+          let body;
+          try { body = fs.readFileSync(file, 'utf8'); }
+          catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+          try { owner = JSON.parse(body); } catch {}
+          if (owner && pidAlive(owner.pid)) return false;
+          try { fs.unlinkSync(file); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        } finally { fs.unlinkSync(guard); }
+      }
     }
-  }
-  return false;
+    return false;
+  } finally { fs.unlinkSync(candidate); }
 }
 
 // Append one newline-terminated line, creating the parent directory if needed.
