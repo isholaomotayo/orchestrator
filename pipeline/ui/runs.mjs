@@ -3,12 +3,26 @@
 // picked from a tile lands on exactly the runs that tile counted.
 
 export function runBucket(run) {
+  // A finished run (done or halted) is recognized before anything about its
+  // bridge owner is consulted: the backend classifies both as state 'idle'
+  // (attention.mjs's classifyRun), so overall is the only thing that tells
+  // them apart, and a stale/disconnected owner left over from before the run
+  // finished must never override that — a done run is 'done', not
+  // 'disconnected', and a halted run is 'blocked', not 'disconnected'.
+  if (run.overall === 'halted') return 'blocked';
+  if (run.overall === 'done') return 'done';
   if (run.state === 'busy' || run.state === 'stale') return 'executing';
   if (run.state === 'awaiting' && !run.owner) return 'awaiting-agent';
   if (run.owner?.capability === 'disconnected') return 'disconnected';
-  if (run.overall === 'halted' || ['dead', 'unknown'].includes(run.state)) return 'blocked';
-  if (run.overall === 'done' || run.state === 'idle') return 'done';
-  return run.state || 'unknown';
+  if (['dead', 'unknown'].includes(run.state)) return 'blocked';
+  if (run.state === 'idle') return 'done';
+  // Coerced to the fixed vocabulary rather than passing the raw state
+  // through: BUCKET_LABEL (and the "Any state" filter dropdown built from
+  // it) only ever offers these six values, so a raw state outside that set
+  // would otherwise be a bucket no filter could ever select. The stage/state
+  // itself is still visible in the table's own columns — only the bucket
+  // dimension is constrained.
+  return 'unknown';
 }
 
 export const BUCKET_LABEL = {
@@ -52,7 +66,13 @@ export function filterRuns(runs, f) {
     if (f.feature && r.featureId !== f.feature) return false;
     if (f.host && r.runner !== f.host) return false;
     if (f.bucket && runBucket(r) !== f.bucket) return false;
-    if (f.olderThanH && (ageMs(r.spawnedAt) ?? 0) < Number(f.olderThanH) * 3600000) return false;
+    if (f.olderThanH) {
+      const age = ageMs(r.spawnedAt);
+      // An unknown age isn't excluded by an "older than" filter — a run with
+      // a missing/corrupt spawn timestamp is exactly the kind of run this
+      // filter exists to surface, not hide.
+      if (age != null && age < Number(f.olderThanH) * 3600000) return false;
+    }
     if (f.q && !`${r.runId} ${r.ticketId || ''}`.toLowerCase().includes(f.q.toLowerCase())) return false;
     return true;
   });

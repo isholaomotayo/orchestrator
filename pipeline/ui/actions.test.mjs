@@ -21,11 +21,18 @@ test('continue: unavailable when the completed stage artifact is not ready', () 
   assert.match(reason, /missing a verdict line/);
 });
 
-test('continue: no reason (available) when awaiting chat and the artifact is ready', () => {
+test('continue: still returns a real string, not null, once every modeled blocking condition is absent', () => {
+  // This is the drift-safety case: if the server ever disables the action
+  // for a reason this file doesn't model, the input looks exactly like
+  // this — every known blocking condition absent, yet canContinue is still
+  // false. A caller only displays this string when canContinue is already
+  // false, so returning null here would silently recreate the "disabled
+  // button, no explanation" bug this module exists to prevent.
   const reason = unavailableReason('continue', {
     canCancel: false, status: { overall: 'awaiting_chat' }, stageReady: { ok: true },
   });
-  assert.equal(reason, null);
+  assert.equal(typeof reason, 'string');
+  assert.ok(reason.length > 0);
 });
 
 // ---- resume ---------------------------------------------------------------
@@ -45,14 +52,16 @@ test('resume: unavailable for a halt reason other than INTERRUPTED names it', ()
   assert.match(reason, /MAX_CYCLES/);
 });
 
-test('resume: no reason for an interrupted halt', () => {
+test('resume: still a real string, not null, for an interrupted halt (no blocking condition matched)', () => {
   const reason = unavailableReason('resume', { canCancel: false, status: { overall: 'halted', haltReason: 'INTERRUPTED' } });
-  assert.equal(reason, null);
+  assert.equal(typeof reason, 'string');
+  assert.ok(reason.length > 0);
 });
 
-test('resume: no reason for a stale (stuck) running process', () => {
+test('resume: still a real string, not null, for a stale (stuck) running process', () => {
   const reason = unavailableReason('resume', { canCancel: false, stale: true, status: { overall: 'running' } });
-  assert.equal(reason, null);
+  assert.equal(typeof reason, 'string');
+  assert.ok(reason.length > 0);
 });
 
 // ---- extend -----------------------------------------------------------------
@@ -67,13 +76,24 @@ test('extend: unavailable for a halt reason other than MAX_CYCLES names it', () 
   assert.match(reason, /AGENT_ERROR/);
 });
 
-test('extend: no reason when halted with MAX_CYCLES', () => {
+test('extend: still a real string, not null, when halted with MAX_CYCLES', () => {
   const reason = unavailableReason('extend', { status: { overall: 'halted', haltReason: 'MAX_CYCLES' } });
-  assert.equal(reason, null);
+  assert.equal(typeof reason, 'string');
+  assert.ok(reason.length > 0);
 });
 
 // ---- cancel -------------------------------------------------------------
 
 test('cancel: always explains nothing is running, since it is only ever shown when unavailable', () => {
   assert.match(unavailableReason('cancel', {}), /Nothing is currently running/);
+});
+
+// ---- never returns null, for any action --------------------------------
+
+test('unavailableReason never returns null for any of the four actions, even with an empty data object', () => {
+  for (const action of ['continue', 'resume', 'extend', 'cancel']) {
+    const reason = unavailableReason(action, {});
+    assert.equal(typeof reason, 'string', `${action} must always return a string`);
+    assert.ok(reason.length > 0, `${action}'s reason must not be empty`);
+  }
 });

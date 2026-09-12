@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runBucket, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
+import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
 
 // ---- runBucket --------------------------------------------------------------
 
@@ -13,13 +13,33 @@ test('runBucket maps the run-state axes onto the six overview buckets', () => {
   assert.equal(runBucket({ state: 'unknown' }), 'blocked');
   assert.equal(runBucket({ overall: 'halted', state: 'idle' }), 'blocked');
   assert.equal(runBucket({ overall: 'done', state: 'idle' }), 'done');
-  assert.equal(runBucket({ state: 'queued' }), 'queued');
+  assert.equal(runBucket({ state: 'queued' }), 'unknown');
 });
 
 test('runBucket prefers busy over a stale disconnected owner — a run cannot be two things at once', () => {
   // Defensive: a real run never has state:'busy' and a disconnected owner
   // together, but the precedence should still be deterministic if it did.
   assert.equal(runBucket({ state: 'busy', owner: { capability: 'disconnected' } }), 'executing');
+});
+
+test('runBucket recognizes a finished run before consulting a stale owner flag', () => {
+  // A run that finished can still carry a leftover owner from before it did
+  // (the bridge owner record doesn't get cleared just because the run is
+  // over) — that owner must not override the finished classification.
+  assert.equal(runBucket({ overall: 'done', state: 'idle', owner: { capability: 'disconnected' } }), 'done');
+  assert.equal(runBucket({ overall: 'halted', state: 'idle', owner: { capability: 'disconnected' } }), 'blocked');
+});
+
+test('runBucket only ever returns one of the six labeled buckets', () => {
+  const samples = [
+    {}, { state: 'busy' }, { state: 'stale' }, { state: 'awaiting' },
+    { state: 'awaiting', owner: { capability: 'disconnected' } },
+    { state: 'dead' }, { state: 'unknown' }, { state: 'idle' }, { state: 'queued' },
+    { overall: 'done' }, { overall: 'halted' },
+  ];
+  for (const run of samples) {
+    assert.ok(Object.hasOwn(BUCKET_LABEL, runBucket(run)), `runBucket(${JSON.stringify(run)}) must be a known bucket`);
+  }
 });
 
 // ---- age formatting ----------------------------------------------------------
@@ -82,6 +102,11 @@ test('filterRuns narrows by feature, host, and bucket independently', () => {
 
 test('filterRuns treats olderThanH as a minimum age, not a maximum', () => {
   assert.deepEqual(filterRuns(RUNS, { olderThanH: '1' }).map((r) => r.runId), ['r1']);
+});
+
+test('filterRuns does not exclude a run with an unknown spawn time from an age filter', () => {
+  const runs = [...RUNS, { runId: 'r3', featureId: 'F3', runner: 'claude', state: 'busy', ticketId: 'T3', spawnedAt: null }];
+  assert.deepEqual(filterRuns(runs, { olderThanH: '1' }).map((r) => r.runId), ['r1', 'r3']);
 });
 
 test('filterRuns searches both run id and ticket id, case-insensitively', () => {
