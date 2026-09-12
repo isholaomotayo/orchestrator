@@ -22,9 +22,11 @@ function tmpRepo({ config = null } = {}) {
   // different (but equivalent) .pipeline/ locations.
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'orch-')));
   spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  spawnSync('git', ['config', 'user.name', 'test'], { cwd: root });
+  spawnSync('git', ['config', 'user.email', 'test@example.test'], { cwd: root });
   fs.writeFileSync(path.join(root, 'README.md'), 'demo\n');
   spawnSync('git', ['add', '-A'], { cwd: root });
-  spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'], { cwd: root });
+  spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: root });
   const paths = pipelinePaths(root);
   fs.mkdirSync(paths.prompts, { recursive: true });
   for (const stage of ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']) {

@@ -25,8 +25,16 @@ jobs:
       - run: pnpm run build:ui -- --check
       - run: pnpm test
         env:
-          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_COUNT: '3'
           GIT_CONFIG_KEY_0: commit.gpgsign
           GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: user.name
+          GIT_CONFIG_VALUE_1: 'CI'
+          GIT_CONFIG_KEY_2: user.email
+          GIT_CONFIG_VALUE_2: 'ci@orchestrator.test'
+          GIT_AUTHOR_NAME: 'CI'
+          GIT_AUTHOR_EMAIL: 'ci@orchestrator.test'
+          GIT_COMMITTER_NAME: 'CI'
+          GIT_COMMITTER_EMAIL: 'ci@orchestrator.test'
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run test:browser
