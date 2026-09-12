@@ -312,6 +312,47 @@ test('a note targets the selected run, not the project root', withServer(async (
   assert.match(events, /"kind":"note"/);
 }));
 
+test('/api/run with an explicit external runner always sends an explicit --mode cli', withServer(async ({ post, root, paths }) => {
+  // A dashboard-spawned run must never fall back to guessing chat-vs-cli from
+  // this long-lived server process's own (possibly stale IDE) environment —
+  // the operator's own runner choice is the only signal that matters.
+  const res = await post('/api/run', { task: 'do the thing', runner: 'cursor' });
+  assert.equal(res.status, 200, await res.text());
+  const out = fs.readFileSync(path.join(paths.dir, 'orchestrator.out'), 'utf8');
+  assert.match(out, /--runner cursor/);
+  assert.match(out, /--mode cli/);
+}));
+
+test('/api/run with runner "host" sends --mode chat', withServer(async ({ post, paths }) => {
+  const res = await post('/api/run', { task: 'do the thing', runner: 'host' });
+  assert.equal(res.status, 200, await res.text());
+  const out = fs.readFileSync(path.join(paths.dir, 'orchestrator.out'), 'utf8');
+  assert.match(out, /--runner host/);
+  assert.match(out, /--mode chat/);
+}));
+
+test('/api/extend always sends an explicit --mode matching the chosen runner', withServer(async ({ post, root }) => {
+  const r2 = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(r2.dir, { recursive: true });
+  fs.writeFileSync(r2.status, JSON.stringify({ overall: 'halted', haltReason: 'MAX_CYCLES', haltedPhase: 'coder', stages: [] }));
+  const res = await post('/api/extend', { extend: 3, runner: 'claude', run: 'r2' });
+  assert.equal(res.status, 200, await res.text());
+  const out = fs.readFileSync(path.join(r2.dir, 'orchestrator.out'), 'utf8');
+  assert.match(out, /--runner claude/);
+  assert.match(out, /--mode cli/);
+}));
+
+test('/api/resume always sends an explicit --mode matching the chosen runner', withServer(async ({ post, root }) => {
+  const r2 = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(r2.dir, { recursive: true });
+  fs.writeFileSync(r2.status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', stages: [] }));
+  const res = await post('/api/resume', { runner: 'host', run: 'r2' });
+  assert.equal(res.status, 200, await res.text());
+  const out = fs.readFileSync(path.join(r2.dir, 'orchestrator.out'), 'utf8');
+  assert.match(out, /--runner host/);
+  assert.match(out, /--mode chat/);
+}));
+
 test('a note cannot target an archived run, a mismatched stage, or a path-traversal id', withServer(async ({ post, root }) => {
   const archived = await post('/api/followup', { stage: 'planner', text: 'nope', run: 'r1' });
   assert.equal(archived.status, 409);

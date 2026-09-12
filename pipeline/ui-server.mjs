@@ -391,7 +391,13 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
-    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+    // A dashboard-spawned run must never infer chat-vs-cli from inherited
+    // environment variables — this is a long-lived, detached process that can
+    // still carry stale IDE env vars from whatever shell originally launched
+    // it (the documented root cause of a dashboard-started run silently
+    // landing in the wrong mode). The operator's own runner choice is the
+    // only signal that matters here.
+    nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   if (sandbox) nodeArgs.push('--sandbox');
   const mc = positiveInt(maxCycles);
@@ -439,7 +445,13 @@ function extendRun(project, { extend, runner, run = null } = {}) {
   const nodeArgs = [orchestratorEntry(project), '--resume', '--extend', String(n)];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
-    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+    // A dashboard-spawned run must never infer chat-vs-cli from inherited
+    // environment variables — this is a long-lived, detached process that can
+    // still carry stale IDE env vars from whatever shell originally launched
+    // it (the documented root cause of a dashboard-started run silently
+    // landing in the wrong mode). The operator's own runner choice is the
+    // only signal that matters here.
+    nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
   return { ok: true, pid: child.pid, extend: n };
@@ -459,7 +471,13 @@ function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
   const nodeArgs = [orchestratorEntry(project), '--resume'];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
-    if (runner === 'host') nodeArgs.push('--mode', 'chat');
+    // A dashboard-spawned run must never infer chat-vs-cli from inherited
+    // environment variables — this is a long-lived, detached process that can
+    // still carry stale IDE env vars from whatever shell originally launched
+    // it (the documented root cause of a dashboard-started run silently
+    // landing in the wrong mode). The operator's own runner choice is the
+    // only signal that matters here.
+    nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
   return { ok: true, pid: child.pid };

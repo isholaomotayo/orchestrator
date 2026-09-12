@@ -68,6 +68,30 @@ test('a host pool worker is spawned as a chat handoff, never --mode cli', () => 
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('an external-CLI pool worker is always spawned with --mode cli, never left to env-heuristics', () => {
+  const { root, paths } = tmpRepo();
+  // Opt this feature into a real, unattended agent CLI (the pattern documented
+  // in roadmap.md's own `- runner:` bullet) rather than the default host/auto.
+  const roadmapMd = fs.readFileSync(paths.roadmapMd, 'utf8').replace('- depends_on: none', '- depends_on: none\n- runner: cursor');
+  fs.writeFileSync(paths.roadmapMd, roadmapMd);
+  compile(paths);
+  const spawned = [];
+  const sup = createSupervisor({
+    repoRoot: root,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 4242, unref() {} }; },
+    spawnSync: () => { throw new Error('a cursor worker must never take the host spawnSync branch'); },
+  });
+  sup.tick();
+  assert.ok(spawned.length >= 1);
+  const args = spawned[0];
+  assert.equal(args[args.indexOf('--mode') + 1], 'cli', 'an external-CLI runner is always --mode cli, never left unset for env to guess');
+  assert.equal(args[args.indexOf('--runner') + 1], 'cursor');
+  const runId = args[args.indexOf('--run-id') + 1];
+  const meta = JSON.parse(fs.readFileSync(pipelinePaths(root, { runId }).runMeta, 'utf8'));
+  assert.equal(meta.executionSurface, 'cli-subprocess');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('an unavailable runner writes a terminal halted run instead of a status-less unknown', () => {
   const { root, paths } = tmpRepo();
   fs.writeFileSync(paths.config, JSON.stringify({ runner: 'not-configured' }));

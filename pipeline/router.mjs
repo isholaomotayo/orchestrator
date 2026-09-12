@@ -106,7 +106,7 @@ export async function routeMessage({ text, status, config }) {
   // 2. LLM fallback
   let runner = null;
   try {
-    runner = detectRunner(config, { invocationMode: 'cli' });
+    ({ runner } = detectRunner(config, { invocationMode: 'cli' }));
   } catch (err) {
     // Runner detection/auth failure, skip LLM
   }

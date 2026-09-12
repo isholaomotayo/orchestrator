@@ -14,7 +14,7 @@ import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile } from './state.mjs';
 import { runChecks } from './checker.mjs';
-import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface } from './adapters.mjs';
+import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconcileChatRunner } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
@@ -175,7 +175,7 @@ function acquireLock() {
 }
 acquireLock();
 
-let status, history, workCwd, runner, models;
+let status, history, workCwd, runner, runnerRequested, models;
 let planApprovalPending = false;
 let worktreeInfo = null;
 let lastVerbLine = null;
@@ -227,6 +227,27 @@ function loadWorkCwdFromStatus() {
   workCwd = worktree;
 }
 
+// Shared by --continue/--resume/--extend: converges `runner` and the run's
+// recorded chat metadata onto the chat session whenever either the recorded
+// status or this very invocation says chat — self-healing a status.json that
+// was mis-created before this coercion existed, or a fresh --resume/--continue
+// typed from inside a live chat session against a run that used to be plain
+// cli. Reads/writes the enclosing `runner`/`hostClient`/`status` closures.
+function applyChatReconciliation() {
+  const reconciled = reconcileChatRunner({
+    runner, statusInvocationMode: status.invocationMode,
+    statusExecutionSurface: status.executionSurface, currentInvocationMode: invocationMode,
+  });
+  if (!reconciled) return;
+  runner = reconciled.runner;
+  status.runner = runner;
+  if (reconciled.runnerRequested) status.runnerRequested = reconciled.runnerRequested;
+  status.executionSurface = reconciled.executionSurface;
+  status.invocationMode = reconciled.invocationMode;
+  if (!status.hostClient) status.hostClient = detectedHostClient;
+  hostClient = status.hostClient;
+}
+
 function loadHistory() {
   try { history = JSON.parse(fs.readFileSync(paths.testHistory, 'utf8')); } catch { history = { coder: [], postTester: [] }; }
 }
@@ -240,6 +261,7 @@ function ensureRunDefaults(status) {
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
   if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
   if (status.reviewPass == null) status.reviewPass = 0;
+  if (status.runnerRequested === undefined) status.runnerRequested = null;
 }
 
 function releaseLock() {
@@ -302,12 +324,7 @@ if (args.continue) {
   status.awaitingStage = null;
   runner = status.runner || 'host';
   models = status.models || null;
-  if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
-    status.executionSurface = 'host-handoff';
-    status.invocationMode = 'chat';
-    if (!status.hostClient) status.hostClient = detectedHostClient;
-    hostClient = status.hostClient;
-  }
+  applyChatReconciliation();
   loadWorkCwdFromStatus();
   loadHistory();
   if (!planApprovalPending) {
@@ -331,12 +348,7 @@ if (args.continue) {
     ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
-    if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
-      status.executionSurface = 'host-handoff';
-      status.invocationMode = 'chat';
-      if (!status.hostClient) status.hostClient = detectedHostClient;
-      hostClient = status.hostClient;
-    }
+    applyChatReconciliation();
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles)${dashboardMsg}`);
@@ -361,12 +373,7 @@ if (args.continue) {
     ensureRunDefaults(status);
     runner = args.runner || status.runner;
     models = status.models || null;
-    if (isHostSurface({ runner, invocationMode: status.invocationMode, executionSurface: status.executionSurface })) {
-      status.executionSurface = 'host-handoff';
-      status.invocationMode = 'chat';
-      if (!status.hostClient) status.hostClient = detectedHostClient;
-      hostClient = status.hostClient;
-    }
+    applyChatReconciliation();
     loadWorkCwdFromStatus();
     loadHistory();
     console.log(`[Orchestrator] Resuming interrupted/stale run${dashboardMsg}`);
@@ -442,7 +449,7 @@ if (args.continue) {
   // PATH, not logged in, unknown runner name). A stack trace buries that, so
   // report it as a plain message and exit on the usage code.
   try {
-    runner = detectRunner(config, { invocationMode });
+    ({ runner, runnerRequested } = detectRunner(config, { invocationMode }));
   } catch (err) {
     console.error(`[Orchestrator] ${err.message}`);
     haltAndExit(2);
@@ -471,6 +478,7 @@ if (args.continue) {
   status.executionSurface = executionSurface;
   status.invocationMode = executionSurface === 'host-handoff' ? 'chat' : invocationMode;
   status.runner = runner;
+  status.runnerRequested = runnerRequested || null;
   status.hostClient = executionSurface === 'host-handoff' ? hostClient : null;
   status.models = models;
   status.sandbox = args.sandbox;
@@ -520,10 +528,10 @@ if (args.continue) {
   status.stages.find((s) => s.name === 'coder').maxCycles = status.limits.coderMax;
   history = { coder: [], postTester: [] };
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, invocationMode, hostClient: status.hostClient || undefined, models, flags: runFlags });
-  const modeLabel = executionSurface === 'host-handoff'
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_start', task: args.task, runner, runnerRequested: status.runnerRequested || undefined, invocationMode, hostClient: status.hostClient || undefined, models, flags: runFlags });
+  const modeLabel = (executionSurface === 'host-handoff'
     ? `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`
-    : 'cli (subprocess)';
+    : 'cli (subprocess)') + (status.runnerRequested ? `, requested: ${status.runnerRequested}` : '');
   const modelSummary = models ? Object.entries(models.stages).map(([s, m]) => `${s}=${m}@${models.effort?.[s] || '-'}`).join(', ') : '';
   console.log(`[Orchestrator] Pipeline started (mode=${modeLabel}, runner=${runner}, models=${modelSummary || 'default'}, sandbox=${args.sandbox}, coderMax=${status.limits.coderMax}, postTesterMax=${status.limits.postTesterMax}, reviewMax=${status.limits.reviewMax}, design=${runFlags.design}, approvePlan=${runFlags.approvePlan})${dashboardMsg}`);
 }

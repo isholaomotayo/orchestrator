@@ -253,6 +253,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   status.invocationMode = isHostSurface({ executionSurface: surface }) ? 'chat' : (primary?.status?.invocationMode || 'cli');
   status.runner = primary?.status?.runner || primary?.meta?.runner || config?.runner || 'auto';
   status.hostClient = primary?.status?.hostClient || null;
+  status.runnerRequested = primary?.status?.runnerRequested || null;
   if (awaitingChat) {
     status.awaitingStage = awaitingChat.status.awaitingStage || null;
     status.chatResume = awaitingChat.status.chatResume || null;

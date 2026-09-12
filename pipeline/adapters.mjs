@@ -122,41 +122,69 @@ export function binExists(bin) {
   return res.status === 0;
 }
 
+// The one place that decides "does chat mode override this runner". A chat
+// session must always be the one driving its own stages — there is no
+// legitimate reason for a chat invocation to end up dispatching to a
+// different, unwatched agent CLI (the exact failure this exists to prevent:
+// a task started from one IDE's chat silently ran under a different CLI that
+// nobody had open, and just sat there looking stuck). Pure and shared by
+// detectRunner (fresh runs) and reconcileChatRunner (continue/resume), so the
+// decision lives in exactly one place.
+export function resolveChatSafeRunner(requestedRunner, invocationMode) {
+  if (invocationMode !== 'chat' || !requestedRunner || requestedRunner === 'host') {
+    return { runner: requestedRunner ?? null, runnerRequested: null };
+  }
+  console.log(`[Orchestrator] Notice: runner "${requestedRunner}" coerced to "host" — invoked from chat, so this chat session stays the driver instead of silently delegating to an external, unattended agent CLI. Drop --runner (or pass --runner host) to silence this.`);
+  return { runner: 'host', runnerRequested: requestedRunner };
+}
+
 export function detectRunner(config, { invocationMode = 'cli' } = {}) {
   const forced = config.runner && config.runner !== 'auto' ? config.runner : null;
   if (forced) {
-    if (forced === 'host') return 'host';
+    if (forced === 'host') return { runner: 'host', runnerRequested: null };
     if (!RUNNER_BINS[forced] && !config.customRunners?.[forced]) {
       throw new Error(`Unknown runner "${forced}".`);
     }
-    // Explicit flags win, but delegation from a chat session to an external
-    // agent CLI must never happen silently.
-    if (invocationMode === 'chat') {
-      console.log(`[Orchestrator] Notice: runner forced to "${forced}" while invoked from chat — stages will run in an external agent CLI, not this chat session. Drop --runner to keep this chat as the driver.`);
-    }
+    const coerced = resolveChatSafeRunner(forced, invocationMode);
+    if (coerced.runnerRequested) return coerced;
     // Only the built-in agent CLIs have an auth concept to probe. A custom
     // runner is a command the user configured explicitly; there is nothing to
     // log in to, and probing it would always "fail" and refuse a valid runner.
     const isBuiltIn = Object.prototype.hasOwnProperty.call(RUNNER_BINS, forced);
-    if (invocationMode === 'cli' && forced !== 'host' && isBuiltIn && !probeRunnerAuth(forced)) {
+    if (invocationMode === 'cli' && isBuiltIn && !probeRunnerAuth(forced)) {
       throw new Error(`Runner "${forced}" is on PATH but not authenticated. Log in to that CLI or use --mode chat from your IDE.`);
     }
-    return forced;
+    return { runner: forced, runnerRequested: null };
   }
 
   // Chat mode: the IDE session is the agent — no separate CLI auth required.
-  if (invocationMode === 'chat') return 'host';
+  if (invocationMode === 'chat') return { runner: 'host', runnerRequested: null };
 
   // CLI mode: pick the first authenticated agent CLI.
   const authed = firstAuthenticatedRunner();
-  if (authed) return authed;
+  if (authed) return { runner: authed, runnerRequested: null };
 
   // Fall back to first binary on PATH (may fail with a clear auth error).
   for (const [name, bin] of Object.entries(RUNNER_BINS)) {
     if (name === 'host' || !bin) continue;
-    if (binExists(bin)) return name;
+    if (binExists(bin)) return { runner: name, runnerRequested: null };
   }
   throw new Error('No agent CLI found on PATH (looked for: claude, cursor-agent, codex, agy). Set "runner" in .pipeline/config.json, pass --runner, or invoke from an IDE chat for host mode.');
+}
+
+// For --continue/--resume/--extend: reconciles an already-resolved runner
+// against both its recorded chat surface and this invocation's own freshly
+// detected mode. Self-heals a status.json baked before this coercion existed
+// (runner mismatched against chat-mode metadata), and converges a fresh
+// --resume/--continue invoked from a live chat session onto 'host' even if
+// the halted run was originally a genuine cli-subprocess run — a chat
+// session must always drive its own stages, with no carve-out for what the
+// run used to be. Returns null when nothing needs to change.
+export function reconcileChatRunner({ runner, statusInvocationMode, statusExecutionSurface, currentInvocationMode }) {
+  const recordedHostSurface = isHostSurface({ runner, invocationMode: statusInvocationMode, executionSurface: statusExecutionSurface });
+  if (!recordedHostSurface && currentInvocationMode !== 'chat') return null;
+  const { runner: safeRunner, runnerRequested } = resolveChatSafeRunner(runner, 'chat');
+  return { runner: safeRunner, executionSurface: 'host-handoff', invocationMode: 'chat', runnerRequested };
 }
 
 // Build argv for each supported CLI. Every adapter runs non-interactively with

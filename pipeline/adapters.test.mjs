@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS, resolveExecutionSurface, isHostSurface } from './adapters.mjs';
+import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS, resolveExecutionSurface, isHostSurface, resolveChatSafeRunner, reconcileChatRunner } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
 const base = { systemPrompt: 'sys', task: 'do it', config: {}, model: null };
@@ -184,11 +184,64 @@ test('host handoff records the requested effort for the chat session', async () 
 
 test('a configured custom runner is accepted in cli mode without an auth probe', () => {
   const config = { runner: 'fake', customRunners: { fake: { command: 'node', args: ['agent.mjs'] } } };
-  assert.equal(detectRunner(config, { invocationMode: 'cli' }), 'fake');
+  assert.deepEqual(detectRunner(config, { invocationMode: 'cli' }), { runner: 'fake', runnerRequested: null });
 });
 
 test('an unknown runner with no custom definition is still rejected', () => {
   assert.throws(() => detectRunner({ runner: 'nope' }, { invocationMode: 'cli' }), /Unknown runner/);
+});
+
+test('an unknown runner in chat mode still throws before any coercion, never silently becomes host', () => {
+  assert.throws(() => detectRunner({ runner: 'nope' }, { invocationMode: 'chat' }), /Unknown runner/);
+});
+
+test('chat mode coerces a forced external runner to host and records what was requested', () => {
+  assert.deepEqual(detectRunner({ runner: 'cursor' }, { invocationMode: 'chat' }), { runner: 'host', runnerRequested: 'cursor' });
+});
+
+test('chat mode with runner already "host" is a no-op — runnerRequested stays null', () => {
+  assert.deepEqual(detectRunner({ runner: 'host' }, { invocationMode: 'chat' }), { runner: 'host', runnerRequested: null });
+});
+
+test('chat mode with no forced runner (auto/unset) resolves straight to host, unchanged', () => {
+  assert.deepEqual(detectRunner({ runner: 'auto' }, { invocationMode: 'chat' }), { runner: 'host', runnerRequested: null });
+  assert.deepEqual(detectRunner({}, { invocationMode: 'chat' }), { runner: 'host', runnerRequested: null });
+});
+
+test('cli mode with a forced external runner is untouched — still returns that runner, still probes auth', () => {
+  const config = { runner: 'fake', customRunners: { fake: { command: 'node', args: ['agent.mjs'] } } };
+  assert.deepEqual(detectRunner(config, { invocationMode: 'cli' }), { runner: 'fake', runnerRequested: null });
+});
+
+test('resolveChatSafeRunner coerces only in chat mode for a non-host request', () => {
+  assert.deepEqual(resolveChatSafeRunner('cursor', 'chat'), { runner: 'host', runnerRequested: 'cursor' });
+  assert.deepEqual(resolveChatSafeRunner('cursor', 'cli'), { runner: 'cursor', runnerRequested: null });
+  assert.deepEqual(resolveChatSafeRunner('host', 'chat'), { runner: 'host', runnerRequested: null });
+  assert.deepEqual(resolveChatSafeRunner(null, 'chat'), { runner: null, runnerRequested: null });
+});
+
+test('reconcileChatRunner self-heals a run whose status already carries a mismatched runner+chat surface', () => {
+  // The exact incident shape: a chat-mode run whose status.json recorded
+  // runner:"cursor" alongside chat-mode metadata, from before this coercion
+  // existed. The next --continue/--resume must converge it onto host.
+  const result = reconcileChatRunner({
+    runner: 'cursor', statusInvocationMode: 'chat', statusExecutionSurface: 'host-handoff', currentInvocationMode: 'cli',
+  });
+  assert.deepEqual(result, { runner: 'host', executionSurface: 'host-handoff', invocationMode: 'chat', runnerRequested: 'cursor' });
+});
+
+test('reconcileChatRunner converges a fresh --resume invoked from a live chat session even when the prior status was plain cli', () => {
+  const result = reconcileChatRunner({
+    runner: 'cursor', statusInvocationMode: 'cli', statusExecutionSurface: 'cli-subprocess', currentInvocationMode: 'chat',
+  });
+  assert.deepEqual(result, { runner: 'host', executionSurface: 'host-handoff', invocationMode: 'chat', runnerRequested: 'cursor' });
+});
+
+test('reconcileChatRunner is a no-op for a genuine cli-subprocess run resumed from a genuine terminal', () => {
+  const result = reconcileChatRunner({
+    runner: 'cursor', statusInvocationMode: 'cli', statusExecutionSurface: 'cli-subprocess', currentInvocationMode: 'cli',
+  });
+  assert.equal(result, null);
 });
 
 test('verified skill instructions are appended after the stage prompt, never before it', () => {
