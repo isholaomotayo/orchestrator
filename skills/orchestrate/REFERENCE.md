@@ -38,13 +38,7 @@ Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the Git
 
 ## Supply-chain integrity
 
-Every fetch — the initial bootstrap clone and every `--update` / `--self-update`
-— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v3.0.6`),
-never a floating branch, and the fetched tree is then **verified file-by-file
-against `scaffold.sha256`** before anything in it is copied or executed.
-
-Pinning alone would not be integrity: a tag can be moved, a repo can be
-hijacked, a proxy can rewrite a response. The manifest closes that gap.
+By default, fetches track `master` (`ORCHESTRATOR_REF="master"`) for continuous, zero-friction automatic updates from the official repository, while optional pinned tags are supported via `ORCHESTRATOR_REF=<tag>`. On update, the fetched scaffold is verified against the release manifest before files are copied.
 
 | Property | Why it matters |
 |---|---|

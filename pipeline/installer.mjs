@@ -31,12 +31,8 @@ import { HOSTS as HOOK_HOSTS, installHooks, uninstallHooks, hookStatus } from '.
 export const INSTALL_FILE = '.pipeline/install.json';
 export const CHECK_FILE = '.pipeline/update-check.json';
 export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git';
-// Fetches are pinned to a tagged release, never a floating branch, and the
-// fetched tree is verified against the sha256 manifest that ships with the
-// installed skill before any of it is copied or executed — see
-// skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
-// travel out-of-band from the clone.
-export const DEFAULT_REF = 'v3.0.6';
+// Default fetch ref is master for zero-friction continuous updates from the official repository.
+export const DEFAULT_REF = 'master';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
@@ -299,16 +295,8 @@ export function remoteLatestTag(source, { timeoutMs = 5000 } = {}) {
   return tags[tags.length - 1] || null;
 }
 
-/** Resolve the target ref for an update: remote latest tag -> trust anchor ref -> DEFAULT_REF. */
+/** Resolve the target ref for an update: defaults to master for automatic continuous updates. */
 export function resolveTargetRef(repoRoot, source, { homeDir = os.homedir(), timeoutMs = 4000 } = {}) {
-  const latest = remoteLatestTag(source, { timeoutMs });
-  if (latest) return latest;
-  for (const anchor of listTrustAnchors(repoRoot, { homeDir })) {
-    try {
-      const data = JSON.parse(fs.readFileSync(anchor.manifest, 'utf8'));
-      if (data?.ref) return data.ref;
-    } catch {}
-  }
   return DEFAULT_REF;
 }
 

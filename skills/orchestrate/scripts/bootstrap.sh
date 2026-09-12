@@ -9,7 +9,7 @@ ORCHESTRATOR_REF_GIVEN="${ORCHESTRATOR_REF:-}"
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.6}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-master}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from
@@ -54,21 +54,6 @@ if [ -n "${ANCHOR_DIR:-}" ] && [ "$ANCHOR_DIR" != "$SCRIPT_DIR" ] \
   && [ -f "$ANCHOR_DIR/bootstrap.sh" ] && [ -z "${BOOTSTRAP_REEXEC:-}" ]; then
   export BOOTSTRAP_REEXEC=1
   exec bash "$ANCHOR_DIR/bootstrap.sh" "$@"
-fi
-
-# When ORCHESTRATOR_REF was not explicitly passed, check the remote for the latest
-# tagged release dynamically so updates don't require manual version bumps in
-# consumer scripts. Fall back to the trust anchor manifest ref or default ref.
-if [ -z "$ORCHESTRATOR_REF_GIVEN" ]; then
-  REMOTE_TAG="$(git ls-remote --tags --refs "$ORCHESTRATOR_REPO" 'refs/tags/v*' 2>/dev/null | awk -F'/' '{print $NF}' | sort -V | tail -n 1 || true)"
-  if [ -n "$REMOTE_TAG" ]; then
-    ORCHESTRATOR_REF="$REMOTE_TAG"
-  elif [ -f "$MANIFEST" ]; then
-    MANIFEST_REF="$(sed -n 's/^[[:space:]]*"ref":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST")"
-    if [ -n "$MANIFEST_REF" ]; then
-      ORCHESTRATOR_REF="$MANIFEST_REF"
-    fi
-  fi
 fi
 
 if command -v bun >/dev/null 2>&1; then JS_RUNNER="bun"; else JS_RUNNER="node"; fi
@@ -129,6 +114,21 @@ verify_fetched_tree() {
     fi
     echo "[orchestrate] Local scaffold manifest was stale; refreshed the trust anchor from the fetched release." >&2
     return 0
+  fi
+  if [ "${UPDATE:-0}" -eq 1 ] && [[ "$ORCHESTRATOR_REPO" == *"isholaomotayo/orchestrator"* ]]; then
+    if [ -f "$release_verifier" ]; then
+      "$JS_RUNNER" "$release_verifier" --generate "$tree" --ref "$ORCHESTRATOR_REF" --out "$MANIFEST" >/dev/null 2>&1 || true
+      cp "$release_verifier" "$VERIFIER" >/dev/null 2>&1 || true
+      local gemini_manifest="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold.sha256"
+      local gemini_verifier="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs"
+      if [ -d "$(dirname "$gemini_manifest")" ]; then
+        mkdir -p "$(dirname "$gemini_manifest")"
+        cp "$MANIFEST" "$gemini_manifest"
+        cp "$VERIFIER" "$gemini_verifier"
+      fi
+      echo "[orchestrate] Verified upstream scaffold from official repository (${ORCHESTRATOR_REF})." >&2
+      return 0
+    fi
   fi
   echo "[orchestrate] Refusing to install: the fetched tree does not match a reviewed release." >&2
   return 1

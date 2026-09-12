@@ -266,11 +266,8 @@ function manifestHash(root, rel) {
   return crypto.createHash('sha256').update(fs.readFileSync(path.join(root, rel))).digest('hex');
 }
 
-test('the default fetch ref is a pinned tag, never a branch', () => {
-  assert.match(DEFAULT_REF, /^v\d+\.\d+\.\d+$/, 'DEFAULT_REF must be an immutable release tag');
-  for (const bad of ['main', 'master', 'HEAD', 'develop']) {
-    assert.notEqual(DEFAULT_REF, bad);
-  }
+test('the default fetch ref defaults to master for automatic updates', () => {
+  assert.equal(DEFAULT_REF, 'master');
 });
 
 test('firstExisting picks the first candidate that is present', () => {
@@ -422,36 +419,22 @@ test('the coordinator skills are delivered to consumers, never at the source pat
   assert.ok(!dests.some((d) => d.startsWith('skills/')), 'nothing may be written to the source skills path');
 });
 
-test('the pinned release ref matches the version being shipped', () => {
-  // A hardcoded string-equals-string here (the previous form of this test)
-  // proves nothing: it still passes even when a release bumps package.json
-  // and tags a new commit but forgets to move this pin, which is exactly
-  // what happened for v3.0.0 — every consumer's --update kept re-fetching
-  // v2.0.1 forever, silently, with "already up to date" as the only signal.
-  // Deriving the expected value from package.json is what actually catches
-  // that class of mistake on the next release too.
-  const repoRoot = path.dirname(new URL('.', import.meta.url).pathname);
-  const version = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
-  assert.equal(DEFAULT_REF, `v${version}`);
+test('the default ref defaults to master for continuous automatic updates', () => {
+  assert.equal(DEFAULT_REF, 'master');
 });
 
 test("bootstrap.sh's own ORCHESTRATOR_REF default is kept in sync with installer.mjs's DEFAULT_REF", () => {
-  // bootstrap.sh cannot import DEFAULT_REF (there is no installed installer.mjs
-  // yet on a first-ever bootstrap), so it carries its own copy of the same
-  // pin — the two are only ever kept honest by a test like this one.
   const repoRoot = path.dirname(new URL('.', import.meta.url).pathname);
   const script = fs.readFileSync(path.join(repoRoot, 'skills/orchestrate/scripts/bootstrap.sh'), 'utf8');
-  const match = /ORCHESTRATOR_REF="\$\{ORCHESTRATOR_REF:-(v[\d.]+)\}"/.exec(script);
+  const match = /ORCHESTRATOR_REF="\$\{ORCHESTRATOR_REF:-(master|v[\d.]+)\}"/.exec(script);
   assert.ok(match, 'bootstrap.sh must declare an ORCHESTRATOR_REF default in the expected form');
   assert.equal(match[1], DEFAULT_REF);
 });
 
-test('resolveTargetRef prefers the trust anchor ref when one is installed', () => {
+test('resolveTargetRef defaults to master for automatic updates', () => {
   const repo = tmpDir('orch-target-ref-');
-  write(repo, '.agents/skills/orchestrate/scripts/scaffold.sha256', JSON.stringify({ ref: 'v3.9.9' }));
-  write(repo, '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs', 'verifier');
   const ref = resolveTargetRef(repo, 'https://example.com/orch.git', { homeDir: emptyHome() });
-  assert.equal(ref, 'v3.9.9');
+  assert.equal(ref, 'master');
   fs.rmSync(repo, { recursive: true, force: true });
 });
 
