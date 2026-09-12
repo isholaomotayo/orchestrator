@@ -114,12 +114,18 @@ export function compile(paths, { now = new Date() } = {}) {
   return { ok: true, roadmap: compiled, errors: [], warnings };
 }
 
+function parseRunSpawnTime(runId) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(runId || '');
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+}
+
 // ---- run inventory ---------------------------------------------------------
 
 /** Every run directory, newest first, with enough state to classify it. */
 export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date.now()) {
   let ids = [];
-  try { ids = fs.readdirSync(paths.runs).filter((d) => isValidRunId(d)); } catch { return []; }
+  try { ids = fs.readdirSync(paths.runs).filter((d) => isValidRunId(d)); } catch { /* no runs dir */ }
   let dismissedMap = {};
   try { dismissedMap = readBridge(paths.root)?.dismissedRuns || {}; } catch {}
   const runs = [];
@@ -175,15 +181,150 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
       hostClient: status?.hostClient ?? null,
       invocationMode: status?.invocationMode ?? null,
       runnerRequested: status?.runnerRequested ?? null,
-      spawnedAt: meta?.spawnedAt ?? status?.startedAt ?? null,
+      spawnedAt: meta?.spawnedAt ?? status?.startedAt ?? parseRunSpawnTime(runId),
       // A run's own directory (and its reports) outlives its worktree — cleanup
       // on merge only removes the worktree — so this stays available for a
-      // landed/accepted run same as a live one.
+      // landed/accepted run same as a live one. Fallback to control reports when available.
       reportRel: fs.existsSync(path.join(runPaths.reports, 'work-done.html'))
         ? path.relative(paths.root, path.join(runPaths.reports, 'work-done.html'))
-        : null,
+        : (meta?.featureId && fs.existsSync(path.join(paths.control, 'reports', meta.featureId, 'work-done.html'))
+          ? path.relative(paths.root, path.join(paths.control, 'reports', meta.featureId, 'work-done.html'))
+          : null),
     });
   }
+
+  const seenRunIds = new Set(runs.map((r) => r.runId));
+
+  // Durable run records from control/runs.jsonl
+  if (paths.runsLedger && fs.existsSync(paths.runsLedger)) {
+    try {
+      const lines = fs.readFileSync(paths.runsLedger, 'utf8').trim().split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (!entry.runId || seenRunIds.has(entry.runId)) continue;
+          seenRunIds.add(entry.runId);
+          const runPaths = pipelinePaths(paths.root, { runId: entry.runId });
+          const spawnedAt = entry.spawnedAt || parseRunSpawnTime(entry.runId) || entry.recordedAt || null;
+          runs.push({
+            runId: entry.runId,
+            paths: runPaths,
+            status: {
+              overall: entry.overall || 'done',
+              haltReason: entry.haltReason || null,
+              startedAt: spawnedAt,
+              endedAt: entry.finishedAt || entry.recordedAt || null,
+            },
+            meta: {
+              runId: entry.runId,
+              featureId: entry.featureId,
+              ticketId: entry.ticketId,
+              kind: entry.kind,
+              runner: entry.runner,
+              branch: entry.branch,
+            },
+            dismissed: !!(dismissedMap[entry.runId]),
+            featureId: entry.featureId ?? null,
+            ticketId: entry.ticketId ?? null,
+            kind: entry.kind ?? 'ticket',
+            branch: entry.branch ?? null,
+            worktree: null,
+            pid: null,
+            pidAlive: false,
+            verb: entry.overall === 'halted' ? 'failed' : 'landed',
+            verbDetail: entry.haltReason || null,
+            verbSince: entry.recordedAt ?? null,
+            lastOutputAt: entry.finishedAt ?? entry.recordedAt ?? null,
+            stage: 'reporter',
+            cycle: 1,
+            maxCycles: 1,
+            state: entry.overall === 'halted' ? 'halted' : 'idle',
+            costUsd: null,
+            tokens: null,
+            owner: inspectBridge(paths.root, entry.runId).owner,
+            handoffId: null,
+            runner: entry.runner ?? null,
+            hostClient: entry.hostClient ?? null,
+            invocationMode: entry.invocationMode ?? null,
+            runnerRequested: entry.runnerRequested ?? null,
+            spawnedAt,
+            reportRel: entry.reportRel || (entry.featureId && fs.existsSync(path.join(paths.control, 'reports', entry.featureId, 'work-done.html'))
+              ? path.relative(paths.root, path.join(paths.control, 'reports', entry.featureId, 'work-done.html'))
+              : null),
+          });
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Synthesize historical runs from roadmap.json if not already present
+  try {
+    const rm = readRoadmap(paths);
+    for (const feature of rm?.features || []) {
+      const featureItems = [
+        feature.specRunId ? { runId: feature.specRunId, kind: 'plan' } : null,
+        ...(feature.tickets || []).map((t) => t.runId ? { runId: t.runId, ticketId: t.id, title: t.title, status: t.status, kind: 'ticket' } : null),
+        feature.integrationRunId ? { runId: feature.integrationRunId, kind: 'integration' } : null,
+      ].filter(Boolean);
+
+      for (const item of featureItems) {
+        if (!item.runId || seenRunIds.has(item.runId)) continue;
+        seenRunIds.add(item.runId);
+        const spawnedAt = parseRunSpawnTime(item.runId) || feature.startedAt || feature.landedAt || null;
+        const isDone = ['landed', 'accepted'].includes(feature.status) || item.status === 'completed';
+        const reportRel = feature.reportRel || (fs.existsSync(path.join(paths.control, 'reports', feature.id, 'work-done.html'))
+          ? path.relative(paths.root, path.join(paths.control, 'reports', feature.id, 'work-done.html'))
+          : null);
+        runs.push({
+          runId: item.runId,
+          paths: pipelinePaths(paths.root, { runId: item.runId }),
+          status: {
+            overall: isDone ? 'done' : 'idle',
+            task: item.title || feature.title,
+            startedAt: spawnedAt,
+            endedAt: feature.landedAt ?? null,
+          },
+          meta: {
+            runId: item.runId,
+            featureId: feature.id,
+            ticketId: item.ticketId ?? null,
+            kind: item.kind,
+            runner: feature.runner ?? 'host',
+          },
+          dismissed: !!(dismissedMap[item.runId]),
+          featureId: feature.id,
+          ticketId: item.ticketId ?? null,
+          kind: item.kind,
+          branch: feature.branch ?? null,
+          worktree: null,
+          pid: null,
+          pidAlive: false,
+          verb: isDone ? 'landed' : 'note',
+          verbDetail: null,
+          verbSince: feature.landedAt ?? spawnedAt,
+          lastOutputAt: feature.landedAt ?? spawnedAt,
+          stage: 'reporter',
+          cycle: 1,
+          maxCycles: 1,
+          state: isDone ? 'idle' : 'unknown',
+          costUsd: null,
+          tokens: null,
+          owner: inspectBridge(paths.root, item.runId).owner,
+          handoffId: null,
+          runner: feature.runner ?? 'host',
+          hostClient: null,
+          invocationMode: null,
+          runnerRequested: null,
+          spawnedAt,
+          reportRel,
+        });
+      }
+    }
+  } catch {}
+
+  runs.sort((a, b) => String(b.spawnedAt || b.runId).localeCompare(String(a.spawnedAt || a.runId)));
   return runs;
 }
 

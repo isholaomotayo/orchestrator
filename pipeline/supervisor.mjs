@@ -74,10 +74,27 @@ export function createSupervisor({
     return 'auto';
   }
 
+  function recordDurableRun(entry) {
+    if (!paths.runsLedger) return;
+    try {
+      appendLine(paths.runsLedger, JSON.stringify({
+        recordedAt: new Date(now()).toISOString(),
+        ...entry,
+      }));
+    } catch (err) {
+      log(`warning: could not write to runs ledger: ${err.message}`);
+    }
+  }
+
   function persistRunRecord(runPaths, {
     runId, featureId, ticketId, kind, runner, branch, baseRef, brief, pid = null,
     phase = 'spawned', haltReason = null, haltDetail = null,
   }) {
+    recordDurableRun({
+      runId, featureId, ticketId, kind, runner, branch, pid, phase,
+      overall: haltReason ? 'halted' : (phase === 'spawned' ? 'running' : phase),
+      haltReason,
+    });
     const surface = resolveExecutionSurface({ runner });
     let existing = null;
     try { existing = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* first write */ }
@@ -799,20 +816,124 @@ export function createSupervisor({
     saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', {validatedTarget:rm.finalValidation?.state === 'approved' ? rm.finalValidation.target : currentSha(repoRoot,rm.base)}));
   }
 
+  function archiveFeatureReport(feature, landedSha) {
+    const controlReportsDir = path.join(paths.control, 'reports', feature.id);
+    fs.mkdirSync(controlReportsDir, { recursive: true });
+
+    // Look for reports in candidate runs: integration run first, then tickets (reverse order), then specRunId
+    const candidates = [
+      feature.integrationRunId,
+      ...((feature.tickets || []).map((t) => t.runId).filter(Boolean).reverse()),
+      feature.specRunId,
+    ].filter(Boolean);
+
+    let srcReportDir = null;
+    let foundRunId = null;
+    for (const runId of candidates) {
+      const p = pipelinePaths(repoRoot, { runId });
+      if (fs.existsSync(path.join(p.reports, 'work-done.html'))) {
+        srcReportDir = p.reports;
+        foundRunId = runId;
+        break;
+      }
+    }
+
+    if (srcReportDir && fs.existsSync(srcReportDir)) {
+      try {
+        const files = fs.readdirSync(srcReportDir);
+        for (const file of files) {
+          const srcPath = path.join(srcReportDir, file);
+          const destPath = path.join(controlReportsDir, file);
+          if (fs.statSync(srcPath).isFile()) {
+            fs.copyFileSync(srcPath, destPath);
+          }
+        }
+      } catch (err) {
+        log(`warning: failed to copy reports for ${feature.id}: ${err.message}`);
+      }
+    }
+
+    const htmlPath = path.join(controlReportsDir, 'work-done.html');
+    const mdPath = path.join(controlReportsDir, 'work-done.md');
+    if (!fs.existsSync(htmlPath)) {
+      const title = `${feature.id}: ${feature.title}`;
+      const completedTickets = (feature.tickets || [])
+        .map((t) => `<li><strong>${t.id}</strong>: ${t.title || 'Completed'} (run: <code>${t.runId || 'direct'}</code>)</li>`)
+        .join('\n');
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${title} — Work Done Report</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1f2937; background: #fff; }
+    h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #111827; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; background: #ecfdf5; color: #065f46; margin-bottom: 1.5rem; }
+    .meta { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 0.9rem; }
+    .meta p { margin: 4px 0; }
+    .meta code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+    h2 { font-size: 1.3rem; margin-top: 24px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 6px; }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  <span class="badge">Landed</span>
+  <div class="meta">
+    <p><strong>Status:</strong> Landed / Accepted</p>
+    <p><strong>Landed SHA:</strong> <code>${landedSha || 'unknown'}</code></p>
+    <p><strong>Landed At:</strong> ${new Date(now()).toISOString()}</p>
+    ${foundRunId ? `<p><strong>Source Run:</strong> <code>${foundRunId}</code></p>` : ''}
+  </div>
+  ${feature.acceptance ? `<h2>Acceptance Criteria</h2><p>${feature.acceptance}</p>` : ''}
+  <h2>Completed Tickets</h2>
+  <ul>
+    ${completedTickets || '<li>All changes reviewed and merged.</li>'}
+  </ul>
+</body>
+</html>`;
+      fs.writeFileSync(htmlPath, html, 'utf8');
+      const md = `# ${title}\n\n- **Status**: Landed / Accepted\n- **Landed SHA**: \`${landedSha || 'unknown'}\`\n- **Date**: ${new Date(now()).toISOString()}\n\n## Completed Tickets\n${(feature.tickets || []).map((t) => `- **${t.id}**: ${t.title || 'Completed'}`).join('\n') || '- Completed'}\n`;
+      fs.writeFileSync(mdPath, md, 'utf8');
+    }
+
+    return path.relative(repoRoot, htmlPath);
+  }
+
   function finishLanding(feature, landedSha, { deferred = false } = {}) {
     const runPaths = feature.integrationRunId ? pipelinePaths(repoRoot, { runId: feature.integrationRunId }) : null;
     if (runPaths) appendRunVerb(runPaths, 'landed', landedSha?.slice(0, 8) || '');
+    const reportRel = archiveFeatureReport(feature, landedSha);
     let rm = setFeatureStatus(roadmap(), feature.id, deferred ? 'accepted' : 'landed', {
       mergeState: deferred ? 'accepted' : 'landed',
       acceptedSha: deferred ? landedSha : null,
       deliveryBranch: deferred ? roadmap().workingBranch : roadmap().base,
       landedSha,
       landedAt: new Date(now()).toISOString(),
-      reportRel: runPaths && fs.existsSync(path.join(runPaths.reports, 'work-done.html'))
-        ? path.relative(repoRoot, path.join(runPaths.reports, 'work-done.html'))
-        : null,
+      reportRel,
     });
     saveRoadmap(rm);
+
+    // Record all associated runs into the durable runs ledger
+    const featureRuns = [
+      feature.specRunId ? { runId: feature.specRunId, kind: 'plan' } : null,
+      ...(feature.tickets || []).map((t) => t.runId ? { runId: t.runId, ticketId: t.id, kind: 'ticket' } : null),
+      feature.integrationRunId ? { runId: feature.integrationRunId, kind: 'integration' } : null,
+    ].filter(Boolean);
+    for (const r of featureRuns) {
+      recordDurableRun({
+        runId: r.runId,
+        featureId: feature.id,
+        ticketId: r.ticketId ?? null,
+        kind: r.kind,
+        overall: 'done',
+        state: 'idle',
+        stage: 'reporter',
+        landedSha: landedSha || null,
+        reportRel,
+      });
+    }
     const branch = rm.workingBranch;
     appendAttention(paths, {
       featureId: feature.id, kind: 'landed', escalate: false,

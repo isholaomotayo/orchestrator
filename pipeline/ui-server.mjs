@@ -326,14 +326,98 @@ function listRuns(project) {
   const runs = ids.map((id) => {
     let s = null;
     try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
+    const controlReportExists = s?.featureId && fs.existsSync(path.join(project.paths.control, 'reports', s.featureId, 'work-done.html'));
     return {
       id, featureId:s?.featureId, ticketId:s?.ticketId,
       hostClient: s?.hostClient ?? null, runner: s?.runner ?? null, invocationMode: s?.invocationMode ?? null, runnerRequested: s?.runnerRequested ?? null,
-      stage:s?.awaitingStage || s?.stages?.find(x=>x.status==='running')?.name, reportRel:fs.existsSync(path.join(project.paths.runs,id,'reports/work-done.html')) ? `.pipeline/runs/${id}/reports/work-done.html` : null, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
+      stage:s?.awaitingStage || s?.stages?.find(x=>x.status==='running')?.name,
+      reportRel: fs.existsSync(path.join(project.paths.runs,id,'reports/work-done.html'))
+        ? `.pipeline/runs/${id}/reports/work-done.html`
+        : (controlReportExists ? `.pipeline/control/reports/${s.featureId}/work-done.html` : null),
+      kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
       verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt,
       live: s?.overall === 'running' || s?.overall === 'awaiting_chat' || s?.overall === 'awaiting_plan_approval',
     };
   });
+
+  const seenIds = new Set(runs.map((r) => r.id));
+
+  // Durable runs from control/runs.jsonl
+  if (project.paths.runsLedger && fs.existsSync(project.paths.runsLedger)) {
+    try {
+      const lines = fs.readFileSync(project.paths.runsLedger, 'utf8').trim().split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line);
+          if (!entry.runId || seenIds.has(entry.runId)) continue;
+          seenIds.add(entry.runId);
+          runs.push({
+            id: entry.runId,
+            featureId: entry.featureId ?? null,
+            ticketId: entry.ticketId ?? null,
+            hostClient: entry.hostClient ?? null,
+            runner: entry.runner ?? null,
+            invocationMode: entry.invocationMode ?? null,
+            runnerRequested: entry.runnerRequested ?? null,
+            stage: 'reporter',
+            reportRel: entry.reportRel || (entry.featureId && fs.existsSync(path.join(project.paths.control, 'reports', entry.featureId, 'work-done.html'))
+              ? `.pipeline/control/reports/${entry.featureId}/work-done.html`
+              : null),
+            kind: 'pool',
+            task: entry.task || `${entry.kind || 'run'} ${entry.featureId || ''}${entry.ticketId ? `/${entry.ticketId}` : ''}`,
+            overall: entry.overall || 'done',
+            verdict: 'APPROVED',
+            haltReason: entry.haltReason ?? null,
+            startedAt: entry.spawnedAt || entry.recordedAt || null,
+            live: false,
+          });
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Synthesize from roadmap.json if not already present
+  try {
+    const rm = JSON.parse(fs.readFileSync(project.paths.roadmapJson, 'utf8'));
+    for (const feature of rm?.features || []) {
+      const featureItems = [
+        feature.specRunId ? { runId: feature.specRunId, kind: 'plan' } : null,
+        ...(feature.tickets || []).map((t) => t.runId ? { runId: t.runId, ticketId: t.id, title: t.title, status: t.status, kind: 'ticket' } : null),
+        feature.integrationRunId ? { runId: feature.integrationRunId, kind: 'integration' } : null,
+      ].filter(Boolean);
+
+      for (const item of featureItems) {
+        if (!item.runId || seenIds.has(item.runId)) continue;
+        seenIds.add(item.runId);
+        const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/.exec(item.runId);
+        const startedAt = m ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z` : (feature.landedAt || null);
+        const isDone = ['landed', 'accepted'].includes(feature.status) || item.status === 'completed';
+        const reportRel = feature.reportRel || (fs.existsSync(path.join(project.paths.control, 'reports', feature.id, 'work-done.html'))
+          ? `.pipeline/control/reports/${feature.id}/work-done.html`
+          : null);
+        runs.push({
+          id: item.runId,
+          featureId: feature.id,
+          ticketId: item.ticketId ?? null,
+          hostClient: null,
+          runner: feature.runner ?? 'host',
+          invocationMode: null,
+          runnerRequested: null,
+          stage: 'reporter',
+          reportRel,
+          kind: 'pool',
+          task: item.title || feature.title,
+          overall: isDone ? 'done' : 'unknown',
+          verdict: isDone ? 'APPROVED' : null,
+          haltReason: null,
+          startedAt,
+          live: false,
+        });
+      }
+    }
+  } catch {}
   // A plain single-run project (no pool) keeps its live run at the project
   // root, not under paths.runs — without this it has state to read
   // (readState already serves it) but nothing in the sidebar ever opens it.
@@ -549,25 +633,68 @@ const REPORT_CSP = [
 ].join('; ');
 
 function serveReport(project, url, res) {
-  const rel = url.searchParams.get('file') || '';
+  let rel = url.searchParams.get('file') || 'work-done.html';
   const runId = url.searchParams.get('run');
   const featureId = url.searchParams.get('feature');
+
+  if (rel.includes('/')) {
+    const parts = rel.split('/');
+    if (parts.includes('reports')) {
+      rel = parts.slice(parts.lastIndexOf('reports') + 1).join('/') || 'work-done.html';
+    } else {
+      rel = parts[parts.length - 1] || 'work-done.html';
+    }
+  }
+
   // A traversal here would serve any file the server can read, so the path is
   // both pattern-checked and resolved against its root before anything is read.
   if (!/^[\w.\-/]+$/.test(rel) || rel.split('/').includes('..')) {
     return json(res, { error: 'invalid file' }, 400);
   }
-  let root = null;
-  if (runId && /^[\w.-]+$/.test(runId)) root = path.join(project.paths.runs, runId, 'reports');
-  else if (featureId && /^[\w.-]+$/.test(featureId)) root = path.join(project.paths.control, 'reports', featureId);
-  if (!root) return json(res, { error: 'expected run or feature' }, 400);
 
-  let resolved;
+  const candidateRoots = [];
+  if (runId && /^[\w.-]+$/.test(runId)) {
+    candidateRoots.push(path.join(project.paths.runs, runId, 'reports'));
+  }
+  if (featureId && /^[\w.-]+$/.test(featureId)) {
+    candidateRoots.push(path.join(project.paths.control, 'reports', featureId));
+  }
+
+  // Cross-lookup in roadmap.json if needed
   try {
-    resolved = fs.realpathSync(path.resolve(root, rel));
-    const rootReal = fs.realpathSync(root);
-    if (resolved !== rootReal && !resolved.startsWith(rootReal + path.sep)) throw new Error('outside');
-  } catch {
+    const rm = JSON.parse(fs.readFileSync(project.paths.roadmapJson, 'utf8'));
+    if (runId && !featureId) {
+      const match = (rm?.features || []).find((f) =>
+        f.specRunId === runId || f.integrationRunId === runId || (f.tickets || []).some((t) => t.runId === runId)
+      );
+      if (match) candidateRoots.push(path.join(project.paths.control, 'reports', match.id));
+    } else if (featureId && !runId) {
+      const match = (rm?.features || []).find((f) => f.id === featureId);
+      if (match) {
+        if (match.integrationRunId) candidateRoots.push(path.join(project.paths.runs, match.integrationRunId, 'reports'));
+        for (const t of (match.tickets || []).slice().reverse()) {
+          if (t.runId) candidateRoots.push(path.join(project.paths.runs, t.runId, 'reports'));
+        }
+      }
+    }
+  } catch {}
+
+  if (!candidateRoots.length) return json(res, { error: 'expected run or feature' }, 400);
+
+  let resolved = null;
+  for (const root of candidateRoots) {
+    try {
+      if (!fs.existsSync(root)) continue;
+      const cand = fs.realpathSync(path.resolve(root, rel));
+      const rootReal = fs.realpathSync(root);
+      if (cand === rootReal || cand.startsWith(rootReal + path.sep)) {
+        resolved = cand;
+        break;
+      }
+    } catch {}
+  }
+
+  if (!resolved) {
     return json(res, { error: 'not found' }, 404);
   }
   const type = REPORT_TYPES[path.extname(resolved).toLowerCase()];

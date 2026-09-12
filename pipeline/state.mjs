@@ -45,6 +45,8 @@ export function pipelinePaths(repoRoot, { runId = null } = {}) {
     attention: path.join(control, 'attention.jsonl'),
     briefs: path.join(control, 'briefs'),
     notes: path.join(control, 'notes'),
+    controlReports: path.join(control, 'reports'),
+    runsLedger: path.join(control, 'runs.jsonl'),
     supervisorPid: path.join(control, 'supervisor.pid'),
     supervisorLog: path.join(control, 'supervisor.log'),
     paused: path.join(control, 'paused'),

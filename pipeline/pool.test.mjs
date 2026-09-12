@@ -439,3 +439,33 @@ test('the primary mirror reports awaiting_chat when a worker is parked for a hos
   assert.equal(mirror.invocationMode, 'chat');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
+
+test('listRunStates recovers historical runs from roadmap.json and runsLedger when runs dir is empty', () => {
+  const paths = tmpPool();
+  compile(paths);
+  const rm = readRoadmap(paths);
+  rm.features[0].status = 'landed';
+  rm.features[0].specRunId = '20260912T100000Z-F1-plan-abc1';
+  rm.features[0].integrationRunId = '20260912T103000Z-F1-integration-abc3';
+  rm.features[0].tickets = [
+    { id: 'T1', title: 'Add models', runId: '20260912T101500Z-F1-T1-abc2', status: 'completed' },
+  ];
+  rm.features[0].reportRel = '.pipeline/control/reports/F1/work-done.html';
+  writeRoadmap(paths, rm);
+
+  // Notice: paths.runs is completely empty!
+  const runs = listRunStates(paths);
+  assert.equal(runs.length, 3);
+  const intRun = runs.find((r) => r.runId === '20260912T103000Z-F1-integration-abc3');
+  assert.ok(intRun);
+  assert.equal(intRun.featureId, 'F1');
+  assert.equal(intRun.status.overall, 'done');
+  assert.equal(intRun.reportRel, '.pipeline/control/reports/F1/work-done.html');
+  assert.equal(intRun.spawnedAt, '2026-09-12T10:30:00Z');
+
+  const snap = snapshot(paths);
+  assert.equal(snap.history.length, 3);
+  assert.equal(snap.recentlyLanded[0].reportRel, '.pipeline/control/reports/F1/work-done.html');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
