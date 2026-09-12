@@ -96,7 +96,7 @@ test('Attention keeps an in-progress answer across a background refresh, and dro
         '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
         '/api/pool': { enabled: true, snapshot: {
           roadmap: { title: 'Fixture roadmap', features: [] },
-          counts: { landed: 0, executing: 0, awaitingAgent: 0, awaitingUser: decisions.length, blocked: 0, disconnected: 0, queued: 0 },
+          counts: { landed: 0, executing: 0, awaitingAgent: 0, awaitingUser: decisions.length, blocked: 0, disconnected: 0, queued: 0, decisions: decisions.length },
           supervisor: { alive: true, paused: false },
           skills: [], needsDecision: decisions, recentlyLanded: [], inProgress: [], upNext: [], history: [],
         } },
@@ -114,7 +114,10 @@ test('Attention keeps an in-progress answer across a background refresh, and dro
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.locator('#tabs button').filter({ hasText: /^Attention$/ }).click();
+  const attentionTab = page.locator('#tabs button').filter({ hasText: /^Attention/ });
+  await page.waitForFunction(() => /Attention\s*2/.test(document.querySelector('#tabs')?.innerText || ''));
+  assert.match(await attentionTab.innerText(), /2/, 'the tab itself shows the pending count, not just the sidebar');
+  await attentionTab.click();
   await page.waitForSelector('text=Approve the plan for F1?');
 
   const cards = page.locator('.card');
@@ -141,6 +144,7 @@ test('Attention keeps an in-progress answer across a background refresh, and dro
   await refreshedAgain;
   await page.waitForFunction(() => document.querySelectorAll('.card').length === 1);
   assert.match(await page.locator('.card').innerText(), /F2/);
+  assert.match(await attentionTab.innerText(), /1/, 'the tab badge drops to match the one remaining decision');
   assert.deepEqual(errors, []);
 });
 
@@ -190,6 +194,44 @@ test('Overview\'s decision list uses the same draft-preserving behavior as Atten
   await page.waitForTimeout(100);
   assert.equal(await draft.inputValue(), 'draft answer');
   assert.equal(await draft.evaluate(node => node === document.activeElement), true);
+  assert.deepEqual(errors, []);
+});
+
+test('a stale hash naming a removed tab kind does not crash boot', async t => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  // 'diff' was a declared-but-never-implemented tab kind; a hash from an old
+  // session (or a hand-edited URL) can still reference it.
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('diff:x')}&active=0`);
+  await page.waitForSelector('#tabs button');
+  // Boot must still land on a real, working destination — not a blank page.
+  await page.locator('#tabs button').filter({ hasText: /^Overview$/ }).waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#tabs button').count(), 5, 'only the five real destinations — the bad tab was dropped, not shown as an error tab');
   assert.deepEqual(errors, []);
 });
 

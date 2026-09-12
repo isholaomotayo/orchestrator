@@ -153,6 +153,52 @@ test('restoring from an empty or malformed hash leaves the workspace untouched',
   assert.deepEqual(tabs.restore('#nonsense=1'), []);
 });
 
+test('restore drops a tab whose kind this build no longer knows, keeping the rest', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'home', pinned: true });
+  tabs.open({ kind: 'diff', subject: 'r1' }); // a kind removed from a later build
+  tabs.open({ kind: 'run', subject: 'r1' });
+  const hash = tabs.serialize();
+
+  const restored = createTabStore();
+  restored.restore(`#${hash}`, { isKnownKind: (kind) => kind !== 'diff' });
+  assert.deepEqual(restored.list().map((t) => t.id), ['home', 'run:r1'], 'the diff tab is gone, nothing else is');
+});
+
+test('restore re-maps the active tab correctly when an earlier tab is dropped for an unknown kind', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'diff', subject: 'r1' }); // index 0, will be dropped
+  tabs.open({ kind: 'run', subject: 'r1' }); // index 1
+  tabs.open({ kind: 'review', subject: 'r1' }); // index 2, was active
+  const hash = tabs.serialize();
+  assert.match(hash, /active=2/);
+
+  const restored = createTabStore();
+  restored.restore(`#${hash}`, { isKnownKind: (kind) => kind !== 'diff' });
+  assert.equal(restored.activeId(), 'review:r1', 'still the review tab, not shifted onto run:r1');
+});
+
+test('restore falls back to the first surviving tab when the requested active tab itself was dropped', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'run', subject: 'r1' });
+  tabs.open({ kind: 'diff', subject: 'r1' }); // active, but will be dropped
+  const hash = tabs.serialize();
+
+  const restored = createTabStore();
+  restored.restore(`#${hash}`, { isKnownKind: (kind) => kind !== 'diff' });
+  assert.equal(restored.activeId(), 'run:r1');
+});
+
+test('setBadgeCount marks a specific tab by id, independent of subject matching', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'attention', pinned: true });
+  tabs.setBadgeCount('attention', 3);
+  assert.equal(tabs.get('attention').badgeCount, 3);
+  tabs.setBadgeCount('attention', 0);
+  assert.equal(tabs.get('attention').badgeCount, 0);
+  assert.equal(tabs.setBadgeCount('does-not-exist', 5), null);
+});
+
 test('moving cycles through tabs in both directions', () => {
   const tabs = createTabStore();
   tabs.open({ kind: 'run', subject: 'a' });

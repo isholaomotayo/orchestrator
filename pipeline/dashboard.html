@@ -180,6 +180,7 @@
     border-color:var(--border); font-weight:550; }
   .tab .t { overflow:hidden; text-overflow:ellipsis; }
   .tab .badge { width:7px; height:7px; border-radius:50%; flex:none; }
+  .tab .n { background:var(--amber-bg); color:var(--amber-text); border-radius:999px; padding:0 6px; font-size:10px; flex:none; }
   .badge.decision { background:var(--orange); }
   .badge.blocked { background:var(--st-fail); }
   .badge.merge { background:var(--purple-text); }
@@ -524,7 +525,7 @@ function renderDiff(patch) {
 const MAX_TABS = 12;
 
 // Which kinds may be opened more than once (one per subject).
-const SUBJECT_KINDS = new Set(['run', 'feature', 'review', 'report', 'diff']);
+const SUBJECT_KINDS = new Set(['run', 'feature', 'review', 'report']);
 
 function tabId(spec) {
   return SUBJECT_KINDS.has(spec.kind)
@@ -563,6 +564,11 @@ function createTabStore({ max = MAX_TABS } = {}) {
       attention: null,
       lastSeenSeq: 0,
       openedAt: Date.now(),
+      // A numeric count shown on the tab itself, set by id (not by subject
+      // match like markAttention) — for a destination like Attention that
+      // has no single run/feature subject of its own but still needs to
+      // surface "N things are waiting" on the tab strip.
+      badgeCount: 0,
     };
     tabs.push(tab);
     activeId = id;
@@ -622,6 +628,12 @@ function createTabStore({ max = MAX_TABS } = {}) {
     return marked;
   }
 
+  function setBadgeCount(id, count) {
+    const tab = tabs.find((t) => t.id === id);
+    if (tab) tab.badgeCount = count || 0;
+    return tab ?? null;
+  }
+
   function pin(id, pinned = true) {
     const tab = tabs.find((t) => t.id === id);
     if (tab) tab.pinned = pinned;
@@ -643,27 +655,35 @@ function createTabStore({ max = MAX_TABS } = {}) {
     return `tabs=${encodeURIComponent(parts.join(','))}&active=${active}${pins.length ? `&pin=${encodeURIComponent(pins.join(','))}` : ''}`;
   }
 
-  function restore(hash, { titleFor = (spec) => spec.subject || spec.kind } = {}) {
+  // A saved/bookmarked hash can reference a tab kind this version of the
+  // dashboard no longer knows (removed, or from a newer build) — isKnownKind
+  // lets the caller drop just that one entry instead of the whole restore
+  // silently misbehaving or a later render() crashing on an unrecognized kind.
+  function restore(hash, { titleFor = (spec) => spec.subject || spec.kind, isKnownKind = () => true } = {}) {
     const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
     const raw = params.get('tabs');
     if (!raw) return [];
     const pins = new Set((params.get('pin') || '').split(',').filter(Boolean));
     tabs = [];
     activeId = null;
-    for (const part of raw.split(',').filter(Boolean)) {
+    const rawParts = raw.split(',').filter(Boolean);
+    const requestedActiveIndex = Number(params.get('active'));
+    let resolvedActiveId = null;
+    rawParts.forEach((part, i) => {
       const [idPart, stage] = part.split('.');
       const [kind, ...rest] = idPart.split(':');
+      if (!isKnownKind(kind)) return;
       const subject = rest.join(':') || null;
       const spec = { kind, subject, stage: stage || null, pinned: pins.has(idPart) };
-      open({ ...spec, title: titleFor(spec) });
-    }
-    const activeIndex = Number(params.get('active'));
-    activeId = tabs[Number.isInteger(activeIndex) && activeIndex >= 0 ? activeIndex : 0]?.id ?? null;
+      const tab = open({ ...spec, title: titleFor(spec) });
+      if (i === requestedActiveIndex) resolvedActiveId = tab.id;
+    });
+    activeId = resolvedActiveId ?? tabs[0]?.id ?? null;
     return tabs;
   }
 
   return {
-    open, close, activate, pin, move, markAttention, serialize, restore,
+    open, close, activate, pin, move, markAttention, setBadgeCount, serialize, restore,
     list: () => tabs.slice(),
     active: () => tabs.find((t) => t.id === activeId) ?? null,
     activeId: () => activeId,
@@ -1480,6 +1500,7 @@ function renderTabs() {
     }, [
       tab.attention ? el('span', { class: `badge ${tab.attention}` }) : null,
       el('span', { class: 't', text: tab.title || tab.id }),
+      tab.badgeCount ? el('span', { class: 'n', text: String(tab.badgeCount) }) : null,
       tab.pinned ? null : el('span', {
         class: 'x', text: '×', title: 'Close',
         onclick: (e) => { e.stopPropagation(); tabs.close(tab.id); syncUrl(); render(); },
@@ -1524,8 +1545,28 @@ function render() {
     lastPanelTabId = tab.id;
   }
   panel.classList.toggle('is-run', tab.kind === 'run');
-  const view = VIEWS[tab.kind] || VIEWS.home;
-  view(wrap, tab);
+  const view = VIEWS[tab.kind] || VIEWS.unknown;
+  // A bug in any one view must not freeze the whole dashboard for this
+  // browser tab — render an inline failure in its place instead of letting
+  // the exception propagate up through refresh()/boot(), which have no
+  // try/catch of their own around this call.
+  try { view(wrap, tab); }
+  catch (err) {
+    console.error(`[dashboard] "${tab.kind}" view failed:`, err);
+    wrap.replaceChildren(el('div', { class: 'empty' }, [
+      el('p', { text: 'This tab hit an error and could not be shown.' }),
+      el('p', { class: 'sub', text: err.message }),
+      el('button', { class: 'btn ghost', text: 'Close tab', onclick: () => { tabs.close(tab.id); syncUrl(); render(); } }),
+    ]));
+  }
+}
+
+function viewUnknown(wrap, tab) {
+  wrap.replaceChildren(el('div', { class: 'empty' }, [
+    el('p', { text: 'This tab type isn\'t supported by this version of the dashboard.' }),
+    el('p', { class: 'sub', text: `kind: ${tab.kind}` }),
+    el('button', { class: 'btn ghost', text: 'Close tab', onclick: () => { tabs.close(tab.id); syncUrl(); render(); } }),
+  ]));
 }
 
 const VIEWS = {
@@ -1538,6 +1579,7 @@ const VIEWS = {
   runs: viewRuns,
   messages: viewMessages,
   reports: viewReports,
+  unknown: viewUnknown,
 };
 
 // The five fixed destinations, always open, always in this order, never
@@ -2446,6 +2488,10 @@ async function refresh() {
 
   const decisions = state.pool?.snapshot?.counts?.decisions ?? 0;
   document.title = decisions ? `(${decisions}) Orchestrator` : 'Orchestrator';
+  // The Attention tab has no single run/feature subject of its own for
+  // markAttention's per-run badging above to ever match, so without this it
+  // never shows anything is waiting until you actually click into it.
+  tabs.setBadgeCount('attention', decisions);
   const poolChip = $('pool-state');
   if (state.pool) {
     const s = state.pool.snapshot.supervisor;
@@ -2568,6 +2614,10 @@ async function boot() {
       titleFor: (spec) => (spec.kind === 'review' ? `Review ${spec.subject}`
         : spec.kind === 'report' ? `${spec.subject} report`
           : DESTINATIONS.find((d) => d.kind === spec.kind)?.title || spec.subject || spec.kind),
+      // A hash from an older or newer build can name a tab kind this version
+      // doesn't implement — drop just that one entry rather than crash or
+      // restore something render() has no view for.
+      isKnownKind: (kind) => Object.hasOwn(VIEWS, kind) && kind !== 'unknown',
     });
     restoredActive = tabs.activeId();
   }

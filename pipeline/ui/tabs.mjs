@@ -12,7 +12,7 @@
 export const MAX_TABS = 12;
 
 // Which kinds may be opened more than once (one per subject).
-const SUBJECT_KINDS = new Set(['run', 'feature', 'review', 'report', 'diff']);
+const SUBJECT_KINDS = new Set(['run', 'feature', 'review', 'report']);
 
 export function tabId(spec) {
   return SUBJECT_KINDS.has(spec.kind)
@@ -51,6 +51,11 @@ export function createTabStore({ max = MAX_TABS } = {}) {
       attention: null,
       lastSeenSeq: 0,
       openedAt: Date.now(),
+      // A numeric count shown on the tab itself, set by id (not by subject
+      // match like markAttention) — for a destination like Attention that
+      // has no single run/feature subject of its own but still needs to
+      // surface "N things are waiting" on the tab strip.
+      badgeCount: 0,
     };
     tabs.push(tab);
     activeId = id;
@@ -110,6 +115,12 @@ export function createTabStore({ max = MAX_TABS } = {}) {
     return marked;
   }
 
+  function setBadgeCount(id, count) {
+    const tab = tabs.find((t) => t.id === id);
+    if (tab) tab.badgeCount = count || 0;
+    return tab ?? null;
+  }
+
   function pin(id, pinned = true) {
     const tab = tabs.find((t) => t.id === id);
     if (tab) tab.pinned = pinned;
@@ -131,27 +142,35 @@ export function createTabStore({ max = MAX_TABS } = {}) {
     return `tabs=${encodeURIComponent(parts.join(','))}&active=${active}${pins.length ? `&pin=${encodeURIComponent(pins.join(','))}` : ''}`;
   }
 
-  function restore(hash, { titleFor = (spec) => spec.subject || spec.kind } = {}) {
+  // A saved/bookmarked hash can reference a tab kind this version of the
+  // dashboard no longer knows (removed, or from a newer build) — isKnownKind
+  // lets the caller drop just that one entry instead of the whole restore
+  // silently misbehaving or a later render() crashing on an unrecognized kind.
+  function restore(hash, { titleFor = (spec) => spec.subject || spec.kind, isKnownKind = () => true } = {}) {
     const params = new URLSearchParams(String(hash || '').replace(/^#/, ''));
     const raw = params.get('tabs');
     if (!raw) return [];
     const pins = new Set((params.get('pin') || '').split(',').filter(Boolean));
     tabs = [];
     activeId = null;
-    for (const part of raw.split(',').filter(Boolean)) {
+    const rawParts = raw.split(',').filter(Boolean);
+    const requestedActiveIndex = Number(params.get('active'));
+    let resolvedActiveId = null;
+    rawParts.forEach((part, i) => {
       const [idPart, stage] = part.split('.');
       const [kind, ...rest] = idPart.split(':');
+      if (!isKnownKind(kind)) return;
       const subject = rest.join(':') || null;
       const spec = { kind, subject, stage: stage || null, pinned: pins.has(idPart) };
-      open({ ...spec, title: titleFor(spec) });
-    }
-    const activeIndex = Number(params.get('active'));
-    activeId = tabs[Number.isInteger(activeIndex) && activeIndex >= 0 ? activeIndex : 0]?.id ?? null;
+      const tab = open({ ...spec, title: titleFor(spec) });
+      if (i === requestedActiveIndex) resolvedActiveId = tab.id;
+    });
+    activeId = resolvedActiveId ?? tabs[0]?.id ?? null;
     return tabs;
   }
 
   return {
-    open, close, activate, pin, move, markAttention, serialize, restore,
+    open, close, activate, pin, move, markAttention, setBadgeCount, serialize, restore,
     list: () => tabs.slice(),
     active: () => tabs.find((t) => t.id === activeId) ?? null,
     activeId: () => activeId,

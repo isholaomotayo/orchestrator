@@ -224,6 +224,7 @@ function renderTabs() {
     }, [
       tab.attention ? el('span', { class: `badge ${tab.attention}` }) : null,
       el('span', { class: 't', text: tab.title || tab.id }),
+      tab.badgeCount ? el('span', { class: 'n', text: String(tab.badgeCount) }) : null,
       tab.pinned ? null : el('span', {
         class: 'x', text: '×', title: 'Close',
         onclick: (e) => { e.stopPropagation(); tabs.close(tab.id); syncUrl(); render(); },
@@ -268,8 +269,28 @@ function render() {
     lastPanelTabId = tab.id;
   }
   panel.classList.toggle('is-run', tab.kind === 'run');
-  const view = VIEWS[tab.kind] || VIEWS.home;
-  view(wrap, tab);
+  const view = VIEWS[tab.kind] || VIEWS.unknown;
+  // A bug in any one view must not freeze the whole dashboard for this
+  // browser tab — render an inline failure in its place instead of letting
+  // the exception propagate up through refresh()/boot(), which have no
+  // try/catch of their own around this call.
+  try { view(wrap, tab); }
+  catch (err) {
+    console.error(`[dashboard] "${tab.kind}" view failed:`, err);
+    wrap.replaceChildren(el('div', { class: 'empty' }, [
+      el('p', { text: 'This tab hit an error and could not be shown.' }),
+      el('p', { class: 'sub', text: err.message }),
+      el('button', { class: 'btn ghost', text: 'Close tab', onclick: () => { tabs.close(tab.id); syncUrl(); render(); } }),
+    ]));
+  }
+}
+
+function viewUnknown(wrap, tab) {
+  wrap.replaceChildren(el('div', { class: 'empty' }, [
+    el('p', { text: 'This tab type isn\'t supported by this version of the dashboard.' }),
+    el('p', { class: 'sub', text: `kind: ${tab.kind}` }),
+    el('button', { class: 'btn ghost', text: 'Close tab', onclick: () => { tabs.close(tab.id); syncUrl(); render(); } }),
+  ]));
 }
 
 const VIEWS = {
@@ -282,6 +303,7 @@ const VIEWS = {
   runs: viewRuns,
   messages: viewMessages,
   reports: viewReports,
+  unknown: viewUnknown,
 };
 
 // The five fixed destinations, always open, always in this order, never
@@ -1190,6 +1212,10 @@ async function refresh() {
 
   const decisions = state.pool?.snapshot?.counts?.decisions ?? 0;
   document.title = decisions ? `(${decisions}) Orchestrator` : 'Orchestrator';
+  // The Attention tab has no single run/feature subject of its own for
+  // markAttention's per-run badging above to ever match, so without this it
+  // never shows anything is waiting until you actually click into it.
+  tabs.setBadgeCount('attention', decisions);
   const poolChip = $('pool-state');
   if (state.pool) {
     const s = state.pool.snapshot.supervisor;
@@ -1312,6 +1338,10 @@ async function boot() {
       titleFor: (spec) => (spec.kind === 'review' ? `Review ${spec.subject}`
         : spec.kind === 'report' ? `${spec.subject} report`
           : DESTINATIONS.find((d) => d.kind === spec.kind)?.title || spec.subject || spec.kind),
+      // A hash from an older or newer build can name a tab kind this version
+      // doesn't implement — drop just that one entry rather than crash or
+      // restore something render() has no view for.
+      isKnownKind: (kind) => Object.hasOwn(VIEWS, kind) && kind !== 'unknown',
     });
     restoredActive = tabs.activeId();
   }
