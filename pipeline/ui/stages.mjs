@@ -37,3 +37,19 @@ export function stageIcon(name) {
 export function agentMeta(name) {
   return AGENTS[name] || { sub: name, desc: '' };
 }
+
+// Why a stage shows as skipped, not just that it is. Keyed by stage name so a
+// future optional stage that isn't listed here falls back to a generic
+// pointer instead of inheriting Designer's reason.
+const SKIP_REASONS = {
+  designer: (status) => (status?.flags?.design
+    ? null
+    : 'Skipped — Designer is opt-in (`--design` flag / `"designStage": true` in .pipeline/config.json was not set for this run).'),
+};
+
+export function skipReason(stage, status) {
+  if (!stage || stage.status !== 'skipped') return null;
+  const reasonFn = SKIP_REASONS[stage.name];
+  if (reasonFn) return reasonFn(status) ?? 'Skipped for this run (reason not recorded).';
+  return 'Skipped for this run (see status.json for details).';
+}

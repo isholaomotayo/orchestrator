@@ -17,7 +17,7 @@ import { renderDiff } from './diff.mjs';
 import { createTabStore } from './tabs.mjs';
 import { buildTree, attentionByRun, featureLabel } from './pool-tree.mjs';
 import { createApi } from './api.mjs';
-import { stageIcon, agentMeta, STAGE_ORDER } from './stages.mjs';
+import { stageIcon, agentMeta, skipReason, STAGE_ORDER } from './stages.mjs';
 import {
   describeEvent, isStaleRefresh, conversationItems, estimateItemHeight,
   visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
@@ -126,7 +126,7 @@ function renderSidebar() {
 // name, description, a progress track for its state) — not just the one
 // stage being read. Lives inside a run's own tab, so it scales to as many
 // open runs as there are tabs, unlike a single sidebar ever could.
-function buildStageRail(stages, activeName, onSelect) {
+function buildStageRail(stages, activeName, onSelect, status) {
   const rail = el('div', { class: 'rail' });
   for (const stage of stages) {
     const cls = stage.status === 'passed' ? 'is-passed'
@@ -137,9 +137,10 @@ function buildStageRail(stages, activeName, onSelect) {
     // "nothing recorded," so the row is disabled rather than clickable, with
     // the reason as its title instead of the stage's usual description.
     const notReached = stage.status === 'pending';
+    const reason = stage.status === 'skipped' ? skipReason(stage, status) : null;
     rail.append(el('button', {
       class: `rail-row ${cls}${stage.name === activeName ? ' selected' : ''}`,
-      title: notReached ? 'This stage hasn\'t started yet.' : agentMeta(stage.name).sub,
+      title: notReached ? 'This stage hasn\'t started yet.' : (reason || agentMeta(stage.name).sub),
       disabled: notReached,
       onclick: () => onSelect(stage.name),
     }, [
@@ -147,7 +148,7 @@ function buildStageRail(stages, activeName, onSelect) {
         el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
         el('span', { class: 'rail-nm', text: cap(stage.name) }),
       ]),
-      el('div', { class: 'rail-sub', text: agentMeta(stage.name).sub }),
+      el('div', { class: 'rail-sub', text: reason || agentMeta(stage.name).sub }),
       el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
       stage.status === 'running' && stage.startedAt
         ? el('span', { class: 'rail-elapsed', text: `running ${formatAge(ageMs(stage.startedAt))}` }) : null,
@@ -918,7 +919,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   wrap.append(el('div', { 'data-role': 'mode', style: 'margin:-6px 0 12px' }));
 
   const railHost = el('div', { 'data-role': 'rail' });
-  railHost.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
+  railHost.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }, status));
   railHost.dataset.sig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
   wrap.append(railHost);
 
@@ -984,7 +985,7 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
     const railSig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
     if (railHost.dataset.sig !== railSig) {
       railHost.dataset.sig = railSig;
-      railHost.replaceChildren(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
+      railHost.replaceChildren(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }, status));
     }
   }
   fillGoal(wrap, data.goal);

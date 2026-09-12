@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { atomicWrite } from './state.mjs';
 import { hashFile } from './integrity.mjs';
+import { skipReason } from './ui/stages.mjs';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -272,7 +273,12 @@ export function compileWorkDoneReport({
 
     status.stages?.length ? section('Stages', [
       '<table><thead><tr><th>Stage</th><th>Model</th><th>Mode</th><th>Status</th></tr></thead><tbody>',
-      ...status.stages.filter(s => s.status !== 'skipped').map((s) => `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${escapeHtml(stageModelLabel(s, status) || '-')}</td><td>${escapeHtml(stageExecutionLabel(s, status) || '-')}</td><td>${escapeHtml(s.status)}</td></tr>`),
+      ...status.stages.map((s) => {
+        const reason = skipReason(s, status);
+        return reason
+          ? `<tr><td><code>${escapeHtml(s.name)}</code></td><td colspan="3" class="meta">skipped &mdash; ${escapeHtml(reason)}</td></tr>`
+          : `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${escapeHtml(stageModelLabel(s, status) || '-')}</td><td>${escapeHtml(stageExecutionLabel(s, status) || '-')}</td><td>${escapeHtml(s.status)}</td></tr>`;
+      }),
       '</tbody></table>',
     ].join('\n')) : '',
 
@@ -315,7 +321,10 @@ export function compileWorkDoneReport({
     plain(narrativeSection(narrative, 'Summary')) || '_No narrative was recorded._', '',
     plain(narrativeSection(narrative, 'Review Guidance')) ? `## Review guidance\n\n${plain(narrativeSection(narrative, 'Review Guidance'))}\n` : '',
     operations ? `## Operational record\n\n${JSON.stringify(operations,null,2)}\n` : '',
-    status.stages?.length ? `## Stages\n\n${status.stages.filter(s => s.status !== 'skipped').map((s) => `- \`${s.name}\` — Model: ${stageModelLabel(s, status) || '-'}, Mode: ${stageExecutionLabel(s, status) || '-'}, Status: ${s.status}`).join('\n')}\n` : '',
+    status.stages?.length ? `## Stages\n\n${status.stages.map((s) => {
+      const reason = skipReason(s, status);
+      return reason ? `- \`${s.name}\` — skipped (${reason})` : `- \`${s.name}\` — Model: ${stageModelLabel(s, status) || '-'}, Mode: ${stageExecutionLabel(s, status) || '-'}, Status: ${s.status}`;
+    }).join('\n')}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',
     plain(narrativeSection(narrative, 'Rough Edges & Follow-ups')) ? `## Rough edges and follow-ups\n\n${plain(narrativeSection(narrative, 'Rough Edges & Follow-ups'))}\n` : '',

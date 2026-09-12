@@ -72,12 +72,16 @@ test('antigravity includes --dangerously-skip-permissions even during a read-onl
 });
 
 test('gemini runner is a deprecated alias for antigravity (agy)', () => {
+  // readOnly:true — gemini omits --dangerously-skip-permissions (best-effort read-only,
+  // consistent with the P0-2 regression test that exempts antigravity but not gemini).
+  // antigravity always keeps the flag to prevent headless hangs on stdin prompts.
   const ro = buildInvocation({ ...base, runner: 'gemini', readOnly: true });
-  const agy = buildInvocation({ ...base, runner: 'antigravity', readOnly: true });
   assert.equal(ro.bin, 'agy');
-  assert.deepEqual(ro.args, agy.args);
+  assert.ok(!ro.args.includes('--dangerously-skip-permissions'), 'gemini read-only must not leak the flag');
   assert.ok(!ro.args.includes('--yolo'));
+  assert.equal(ro.readOnlyEnforced, false);
 
+  // readOnly:false — both runners include it so neither hangs non-interactively.
   const rw = buildInvocation({ ...base, runner: 'gemini', readOnly: false });
   assert.ok(rw.args.includes('--dangerously-skip-permissions'));
 });

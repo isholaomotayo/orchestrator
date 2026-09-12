@@ -1345,6 +1345,8 @@ function finishApproved() {
   finalize();
   console.log(`\n[Orchestrator] Pipeline complete. Verdict: ${status.verdict}`);
   console.log(`Review: ${path.relative(repoRoot, paths.reviewReport)}`);
+  console.log(`Run artifacts: ${path.relative(repoRoot, paths.dir)}/`);
+  if (dashboardUrl) console.log(`Full history: ${dashboardUrl} (Runs -> this run -> stage rail)`);
   haltAndExit(0);
 }
 

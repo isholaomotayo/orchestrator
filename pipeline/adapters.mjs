@@ -30,10 +30,16 @@ function googleCliEffort(level) {
   return null;
 }
 
-function buildGoogleCliInvocation({ combined, readOnly, modelId, level }) {
-  // agy has no hard read-only flag; always pass --dangerously-skip-permissions
-  // in non-interactive mode so it doesn't hang on stdin prompts, even for read-only audits.
-  const args = ['-p', combined, '--output-format', 'text', '--dangerously-skip-permissions'];
+function buildGoogleCliInvocation({ combined, readOnly, modelId, level, runner }) {
+  // agy has no hard read-only flag. Pass --dangerously-skip-permissions so it
+  // doesn't hang on stdin prompts in non-interactive mode.
+  // Exception: the 'gemini' runner is a deprecated alias with stricter read-only
+  // semantics (consistent with how cursor/codex withhold write flags). When
+  // readOnly is true, omit the flag as best-effort enforcement — the caller's
+  // warning log will note that hard enforcement is unavailable for this runner.
+  const skipPerms = !readOnly || runner !== 'gemini';
+  const args = ['-p', combined, '--output-format', 'text'];
+  if (skipPerms) args.push('--dangerously-skip-permissions');
   if (modelId) args.push('--model', modelId);
   const effort = googleCliEffort(level);
   if (effort) args.push('--effort', effort);
@@ -260,7 +266,7 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
     }
     case 'antigravity':
     case 'gemini':
-      return buildGoogleCliInvocation({ combined, readOnly, modelId, level });
+      return buildGoogleCliInvocation({ combined, readOnly, modelId, level, runner });
     default: {
       const custom = config.customRunners?.[runner];
       if (!custom) throw new Error(`Unknown runner "${runner}"`);
