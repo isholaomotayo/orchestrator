@@ -36,7 +36,7 @@ export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git
 // installed skill before any of it is copied or executed — see
 // skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
 // travel out-of-band from the clone.
-export const DEFAULT_REF = 'v3.0.2';
+export const DEFAULT_REF = 'v3.0.3';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
@@ -97,6 +97,7 @@ export const MANAGED = [
   // listManaged is first-wins per destination.
   { src: 'skills/orchestrate/scripts/scaffold-manifest.mjs', dest: '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs', cls: 'engine' },
   { src: 'skills/orchestrate/scripts/scaffold.sha256', dest: '.agents/skills/orchestrate/scripts/scaffold.sha256', cls: 'engine' },
+  { src: 'skills/orchestrate/scripts/bootstrap.sh', dest: '.agents/skills/orchestrate/scripts/bootstrap.sh', cls: 'engine' },
   { src: 'skills/orchestrate', dest: '.agents/skills/orchestrate', cls: 'tunable', tree: true },
   { src: 'skills/orchestrate', dest: '.gemini/skills/orchestrate', cls: 'tunable', tree: true, only: ['SKILL.md', 'REFERENCE.md'] },
   // The coordinator's own skills: how a chat session reads and steers a roadmap
@@ -286,6 +287,30 @@ export function remoteHead(source, { timeoutMs = 5000 } = {}) {
   if (res.status !== 0 || !res.stdout) return null;
   const sha = res.stdout.trim().split(/\s+/)[0];
   return SHA_RE.test(sha) ? sha : null;
+}
+
+/** Upstream latest release tag (highest semver v*), or null on any failure. */
+export function remoteLatestTag(source, { timeoutMs = 5000 } = {}) {
+  const res = spawnSync('git', ['ls-remote', '--tags', '--refs', source, 'refs/tags/v*'], { encoding: 'utf8', timeout: timeoutMs });
+  if (res.status !== 0 || !res.stdout) return null;
+  const lines = res.stdout.trim().split('\n').filter(Boolean);
+  const tags = lines.map((l) => l.split(/\s+/)[1]?.replace(/^refs\/tags\//, '')).filter(Boolean);
+  if (!tags.length) return null;
+  tags.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  return tags[tags.length - 1] || null;
+}
+
+/** Resolve the target ref for an update: trust anchor ref -> remote latest tag -> DEFAULT_REF. */
+export function resolveTargetRef(repoRoot, source, { homeDir = os.homedir() } = {}) {
+  for (const anchor of listTrustAnchors(repoRoot, { homeDir })) {
+    try {
+      const data = JSON.parse(fs.readFileSync(anchor.manifest, 'utf8'));
+      if (data?.ref) return data.ref;
+    } catch {}
+  }
+  const latest = remoteLatestTag(source);
+  if (latest) return latest;
+  return DEFAULT_REF;
 }
 
 export function gitHead(dir) {
@@ -553,7 +578,7 @@ function main(argv) {
     let cloned = null;
     const source = flagValue(argv, '--source', readInstall(repoRoot)?.source || DEFAULT_SOURCE);
     if (!srcRoot) {
-      const ref = flagValue(argv, '--ref', DEFAULT_REF);
+      const ref = flagValue(argv, '--ref', null) || resolveTargetRef(repoRoot, source);
       cloned = cloneSource(source, ref);
       if (!cloned) { console.error(`[installer] Could not fetch ${source}@${ref}.`); return 1; }
       const check = argv.includes('--skip-verify')

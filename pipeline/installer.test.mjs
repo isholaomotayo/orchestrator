@@ -8,7 +8,7 @@ import {
   MANAGED, listManaged, planUpdate, applyUpdate, nextManifestFiles,
   manifestFilesAfterInstall, shouldCheck, resolveEngineEntry, summarize, isValidSource, CHECK_TTL_MS,
   firstExisting, listTrustAnchors, verifyFetchedTree, refreshInstalledTrustAnchor, DEFAULT_REF, VERIFIER_RELS, MANIFEST_RELS,
-  RELEASE_MANIFEST_REL, RELEASE_VERIFIER_REL,
+  RELEASE_MANIFEST_REL, RELEASE_VERIFIER_REL, remoteLatestTag, resolveTargetRef,
 } from './installer.mjs';
 import { SELF_MARKERS } from './self-guard.mjs';
 
@@ -397,12 +397,13 @@ test('refreshInstalledTrustAnchor copies the release trust anchor into installed
   assert.equal(read(repoRoot, VERIFIER_RELS[0]), 'verifier v2');
 });
 
-test('the manifest and verifier are engine-class, so a local edit can never preserve a stale trust anchor', () => {
+test('the manifest, verifier, and bootstrap script are engine-class, so a local edit can never preserve a stale trust anchor', () => {
   const src = sources();
   write(src, 'skills/orchestrate/scripts/scaffold-manifest.mjs', 'verifier v2');
   write(src, 'skills/orchestrate/scripts/scaffold.sha256', '{"ref":"v2","files":{}}');
+  write(src, 'skills/orchestrate/scripts/bootstrap.sh', '#!/bin/bash\n# bootstrap v2');
   const managed = listManaged(src);
-  for (const rel of ['scaffold-manifest.mjs', 'scaffold.sha256']) {
+  for (const rel of ['scaffold-manifest.mjs', 'scaffold.sha256', 'bootstrap.sh']) {
     const entry = managed.find((m) => m.dest === `.agents/skills/orchestrate/scripts/${rel}`);
     assert.ok(entry, `${rel} must be managed`);
     assert.equal(entry.cls, 'engine', `${rel} must always be overwritten, not preserved as a user edit`);
@@ -443,4 +444,20 @@ test("bootstrap.sh's own ORCHESTRATOR_REF default is kept in sync with installer
   const match = /ORCHESTRATOR_REF="\$\{ORCHESTRATOR_REF:-(v[\d.]+)\}"/.exec(script);
   assert.ok(match, 'bootstrap.sh must declare an ORCHESTRATOR_REF default in the expected form');
   assert.equal(match[1], DEFAULT_REF);
+});
+
+test('resolveTargetRef prefers the trust anchor ref when one is installed', () => {
+  const repo = tmpDir('orch-target-ref-');
+  write(repo, '.agents/skills/orchestrate/scripts/scaffold.sha256', JSON.stringify({ ref: 'v3.9.9' }));
+  write(repo, '.agents/skills/orchestrate/scripts/scaffold-manifest.mjs', 'verifier');
+  const ref = resolveTargetRef(repo, 'https://example.com/orch.git', { homeDir: emptyHome() });
+  assert.equal(ref, 'v3.9.9');
+  fs.rmSync(repo, { recursive: true, force: true });
+});
+
+test('resolveTargetRef falls back to DEFAULT_REF when no anchor has a ref and remote fails', () => {
+  const repo = tmpDir('orch-target-ref-empty-');
+  const ref = resolveTargetRef(repo, 'https://invalid-host-that-does-not-exist.local/repo.git', { homeDir: emptyHome() });
+  assert.equal(ref, DEFAULT_REF);
+  fs.rmSync(repo, { recursive: true, force: true });
 });

@@ -5,10 +5,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ORCHESTRATOR_REPO="${ORCHESTRATOR_REPO:-https://github.com/isholaomotayo/orchestrator.git}"
+ORCHESTRATOR_REF_GIVEN="${ORCHESTRATOR_REF:-}"
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.2}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.3}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from
@@ -23,6 +24,7 @@ resolve_trust_anchor() {
   if [ -n "${ORCHESTRATOR_MANIFEST:-}" ]; then
     MANIFEST="$ORCHESTRATOR_MANIFEST"
     VERIFIER="${ORCHESTRATOR_VERIFIER:-$(dirname "$MANIFEST")/scaffold-manifest.mjs}"
+    ANCHOR_DIR="$(dirname "$MANIFEST")"
     return 0
   fi
   local candidates=(
@@ -35,13 +37,34 @@ resolve_trust_anchor() {
     if [ -f "$dir/scaffold.sha256" ] && [ -f "$dir/scaffold-manifest.mjs" ]; then
       MANIFEST="$dir/scaffold.sha256"
       VERIFIER="$dir/scaffold-manifest.mjs"
+      ANCHOR_DIR="$dir"
       return 0
     fi
   done
   MANIFEST="$SCRIPT_DIR/scaffold.sha256"
   VERIFIER="$SCRIPT_DIR/scaffold-manifest.mjs"
+  ANCHOR_DIR="$SCRIPT_DIR"
 }
 resolve_trust_anchor
+
+# If an external trust anchor (e.g. ~/.cursor/skills/ refreshed by Skill Manager)
+# is newer than this script's directory, re-exec into that script so the update
+# runs with the latest logic and release pins directly.
+if [ -n "${ANCHOR_DIR:-}" ] && [ "$ANCHOR_DIR" != "$SCRIPT_DIR" ] \
+  && [ -f "$ANCHOR_DIR/bootstrap.sh" ] && [ -z "${BOOTSTRAP_REEXEC:-}" ]; then
+  export BOOTSTRAP_REEXEC=1
+  exec bash "$ANCHOR_DIR/bootstrap.sh" "$@"
+fi
+
+# When ORCHESTRATOR_REF was not explicitly passed, align it with the ref
+# declared in the resolved trust anchor manifest so the fetch matches the
+# integrity manifest we will verify against.
+if [ -z "$ORCHESTRATOR_REF_GIVEN" ] && [ -f "$MANIFEST" ]; then
+  MANIFEST_REF="$(sed -n 's/^[[:space:]]*"ref":[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST")"
+  if [ -n "$MANIFEST_REF" ]; then
+    ORCHESTRATOR_REF="$MANIFEST_REF"
+  fi
+fi
 
 if command -v bun >/dev/null 2>&1; then JS_RUNNER="bun"; else JS_RUNNER="node"; fi
 
@@ -134,6 +157,14 @@ if [ "$UPDATE" -eq 1 ]; then
   if [ ! -d "$REPO_ROOT/pipeline" ]; then
     echo "[orchestrate] Nothing to update — no scaffold here. Run bootstrap.sh without --update first." >&2
     exit 1
+  fi
+  # When updating and no explicit ref was given, discover the latest remote
+  # release tag so an update actually refreshes to the newest upstream release.
+  if [ -z "$ORCHESTRATOR_REF_GIVEN" ]; then
+    REMOTE_LATEST="$(git ls-remote --tags --refs "$ORCHESTRATOR_REPO" 'refs/tags/v*' 2>/dev/null | awk '{print $2}' | sed 's@^refs/tags/@@' | sort -V | tail -n 1)"
+    if [ -n "$REMOTE_LATEST" ]; then
+      ORCHESTRATOR_REF="$REMOTE_LATEST"
+    fi
   fi
   TMP="$(mktemp -d)"
   cleanup_update() { rm -rf "$TMP"; }
