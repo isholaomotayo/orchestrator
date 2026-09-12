@@ -280,3 +280,165 @@ test('Review keeps a "Request changes" draft across a background refresh', async
   assert.equal(await draft.evaluate(node => node === document.activeElement), true);
   assert.deepEqual(errors, []);
 });
+
+test("Overview's Roadmap groups features into status lanes and shows their dependencies", async t => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: true, snapshot: {
+          roadmap: { title: 'Fixture roadmap', features: [
+            { id: 'F1', title: 'Auth service', status: 'landed', dependsOn: [] },
+            { id: 'F2', title: 'Billing', status: 'executing', dependsOn: ['F1'] },
+            { id: 'F3', title: 'Notifications', status: 'failed', dependsOn: ['F1', 'F2'] },
+          ] },
+          counts: { landed: 1, executing: 1, awaitingAgent: 0, awaitingUser: 0, blocked: 0, disconnected: 0, queued: 0, decisions: 0 },
+          supervisor: { alive: true, paused: false },
+          skills: [], needsDecision: [], recentlyLanded: [], inProgress: [], upNext: [], history: [],
+        } },
+        '/api/runs': { runs: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.waitForSelector('text=Auth service');
+
+  // Lane headings are uppercased by CSS (text-transform), which innerText
+  // reflects; the "Queued" stat tile above the Roadmap section is not — so
+  // checking the uppercase form specifically distinguishes a lane heading
+  // from that unrelated tile label.
+  const body = await page.locator('.wrap').innerText();
+  assert.match(body, /\bLANDED\b/);
+  assert.match(body, /\bBUILDING\b/);
+  assert.match(body, /FAILED OR HELD/);
+  assert.doesNotMatch(body, /\bQUEUED\b/, 'a lane with no features is not shown at all');
+  assert.doesNotMatch(body, /IN REVIEW/);
+  assert.match(body, /depends on F1\b/);
+  assert.match(body, /depends on F1, F2/);
+  assert.deepEqual(errors, []);
+});
+
+test("A pending stage's rail row is disabled and names why, while the running stage shows elapsed time", async t => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+        '/api/state': { status: { overall: 'running', stages: [
+          { name: 'planner', status: 'passed' },
+          { name: 'designer', status: 'skipped' },
+          { name: 'coder', status: 'passed' },
+          { name: 'tester', status: 'running', startedAt: new Date().toISOString() },
+          { name: 'reviewer', status: 'pending' },
+          { name: 'handoff', status: 'pending' },
+          { name: 'reporter', status: 'pending' },
+        ] }, artifacts: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.waitForSelector('.rail-row');
+
+  const reviewerRow = page.locator('.rail-row').filter({ hasText: 'Reviewer' });
+  assert.equal(await reviewerRow.isDisabled(), true, 'a stage past the furthest reached one cannot be selected');
+  assert.match(await reviewerRow.getAttribute('title'), /hasn't started yet/);
+
+  const testerRow = page.locator('.rail-row').filter({ hasText: 'Tester' });
+  assert.equal(await testerRow.isDisabled(), false, 'the actively running stage stays selectable');
+  assert.match(await testerRow.innerText(), /running/);
+  assert.deepEqual(errors, []);
+});
+
+test('The "Compare with diff" toggle survives a background refresh', async t => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname === '/api/artifact') {
+      res.setHeader('Content-Type', 'application/json');
+      const name = url.searchParams.get('name');
+      return res.end(JSON.stringify({ content: name === 'diff.patch' ? '--- a/x\n+++ b/x\n@@\n-old\n+new\n' : '# Test plan\n\nCovers the happy path.' }));
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+        '/api/state': { status: { overall: 'running', stages: [
+          { name: 'planner', status: 'passed' },
+          { name: 'designer', status: 'skipped' },
+          { name: 'coder', status: 'passed' },
+          { name: 'tester', status: 'running' },
+          { name: 'reviewer', status: 'pending' },
+          { name: 'handoff', status: 'pending' },
+          { name: 'reporter', status: 'pending' },
+        ] }, artifacts: ['test_suite.md', 'diff.patch'] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.getByText('Compare with diff').waitFor({ state: 'visible' });
+  await page.getByText('Compare with diff').click();
+  await page.waitForSelector('.compare-grid');
+  assert.equal(await page.locator('.compare-grid .artifact-card').count(), 2);
+
+  const refreshed = page.waitForResponse(res => res.url().includes('/api/state'));
+  for (const stream of streams) stream.write('data: {"type":"change"}\n\n');
+  await refreshed;
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('input[type=checkbox]').isChecked(), true, 'the toggle itself stays on');
+  assert.equal(await page.locator('.compare-grid .artifact-card').count(), 2, 'the two-column view is not reverted by the background refresh');
+  assert.deepEqual(errors, []);
+});

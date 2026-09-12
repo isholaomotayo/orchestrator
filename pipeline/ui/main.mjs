@@ -133,9 +133,14 @@ function buildStageRail(stages, activeName, onSelect) {
       : stage.status === 'running' ? 'is-running'
         : stage.status === 'failed' ? 'is-failed'
           : stage.status === 'skipped' ? 'is-skipped' : 'is-pending';
+    // A pending stage has not been reached yet — clicking it would only show
+    // "nothing recorded," so the row is disabled rather than clickable, with
+    // the reason as its title instead of the stage's usual description.
+    const notReached = stage.status === 'pending';
     rail.append(el('button', {
       class: `rail-row ${cls}${stage.name === activeName ? ' selected' : ''}`,
-      title: agentMeta(stage.name).sub,
+      title: notReached ? 'This stage hasn\'t started yet.' : agentMeta(stage.name).sub,
+      disabled: notReached,
       onclick: () => onSelect(stage.name),
     }, [
       el('div', { class: 'rail-top' }, [
@@ -144,6 +149,8 @@ function buildStageRail(stages, activeName, onSelect) {
       ]),
       el('div', { class: 'rail-sub', text: agentMeta(stage.name).sub }),
       el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
+      stage.status === 'running' && stage.startedAt
+        ? el('span', { class: 'rail-elapsed', text: `running ${formatAge(ageMs(stage.startedAt))}` }) : null,
     ]));
   }
   return rail;
@@ -335,6 +342,53 @@ const OVERVIEW_TILES = [
 function decisionKey(d) { return d.decisionId ?? `${d.kind}:${d.featureId ?? d.runId ?? ''}`; }
 function decisionSig(d) { return JSON.stringify([d.question, d.options, d.recommended, d.artifacts, d.decisionId]); }
 
+// Status lanes for Overview's Roadmap section — the same vocabulary
+// pool-tree.mjs's FEATURE_DOT/FEATURE_LABEL already classify each feature
+// into, grouped into the five questions an operator actually asks at a
+// glance: what hasn't started, what's being built, what's waiting on review,
+// what's done, and what needs intervention.
+const ROADMAP_LANES = [
+  { key: 'queued', title: 'Queued', statuses: ['queued'] },
+  { key: 'building', title: 'Building', statuses: ['planning', 'awaiting_plan_approval', 'executing', 'integrating'] },
+  { key: 'review', title: 'In review', statuses: ['reviewing', 'awaiting_merge_approval', 'merge_approved', 'merging'] },
+  { key: 'landed', title: 'Landed', statuses: ['accepted', 'landed', 'skipped'] },
+  { key: 'failed', title: 'Failed or held', statuses: ['failed', 'held'] },
+];
+
+function featureCard(feature) {
+  const depLine = (feature.dependsOn || []).length ? `depends on ${feature.dependsOn.join(', ')}` : null;
+  return el('div', { class: 'card' }, [
+    el('h4', { text: `${feature.id}: ${feature.title}` }),
+    el('div', { class: 'meta', text: featureLabel(feature.status) + (feature.pr?.url ? ' · pull request open' : '') }),
+    depLine ? el('div', { class: 'meta', text: depLine }) : null,
+    el('div', { class: 'row', style: 'margin-top:8px' }, [
+      feature.reportRel ? el('button', { class: 'btn ghost', text: 'Report', onclick: () => open({ kind: 'report', subject: feature.id, file: feature.reportRel, title: `${feature.id} report` }) }) : null,
+      el('button', { class: 'btn ghost', text: 'Open', onclick: () => open({ kind: 'feature', subject: feature.id, title: `${feature.id}: ${feature.title}` }) }),
+    ]),
+  ]);
+}
+
+// Flattens the lane grouping into one ordered list patchList can reconcile: a
+// lane heading (re-rendered only if the lane's title changes, i.e. never) and
+// one row per feature, keyed by feature.id so an unrelated feature changing
+// elsewhere in the roadmap does not recreate this one's card.
+function roadmapRows(features) {
+  const rows = [];
+  for (const lane of ROADMAP_LANES) {
+    const inLane = features.filter((f) => lane.statuses.includes(f.status));
+    if (!inLane.length) continue;
+    rows.push({ key: `lane:${lane.key}`, sig: lane.title, render: () => el('h3', { class: 'lane-title', text: lane.title }) });
+    for (const feature of inLane) {
+      rows.push({
+        key: feature.id,
+        sig: JSON.stringify([feature.status, feature.pr?.url, feature.reportRel, feature.dependsOn]),
+        render: () => featureCard(feature),
+      });
+    }
+  }
+  return rows;
+}
+
 // Patches a persistent decisions-list container against `items` — the shared
 // fix behind both Overview and Attention: a decision an operator is mid-typing
 // an answer into keeps its exact DOM node (and that typed text) across any
@@ -418,18 +472,10 @@ function viewOverview(wrap) {
   wrap.querySelector('[data-role="decisions-heading"]').hidden = !snap.needsDecision.length;
   renderDecisionList(wrap.querySelector('[data-role="decisions"]'), snap.needsDecision);
 
-  const roadmapSig = JSON.stringify((snap.roadmap?.features || []).map((f) => [f.id, f.status, f.pr?.url, f.reportRel]));
-  patchRegion(wrap.querySelector('[data-role="roadmap"]'), roadmapSig, (h) => {
-    for (const feature of snap.roadmap?.features || []) {
-      h.append(el('div', { class: 'card' }, [
-        el('h4', { text: `${feature.id}: ${feature.title}` }),
-        el('div', { class: 'meta', text: featureLabel(feature.status) + (feature.pr?.url ? ' · pull request open' : '') }),
-        el('div', { class: 'row', style: 'margin-top:8px' }, [
-          feature.reportRel ? el('button', { class: 'btn ghost', text: 'Report', onclick: () => open({ kind: 'report', subject: feature.id, file: feature.reportRel, title: `${feature.id} report` }) }) : null,
-          feature.runIds?.length ? el('button', { class: 'btn ghost', text: 'Runs', onclick: () => open({ kind: 'feature', subject: feature.id, title: `${feature.id}: ${feature.title}` }) }) : null,
-        ]),
-      ]));
-    }
+  patchList(wrap.querySelector('[data-role="roadmap"]'), roadmapRows(snap.roadmap?.features || []), {
+    key: (row) => row.key,
+    sig: (row) => row.sig,
+    render: (row) => row.render(),
   });
 }
 
@@ -513,6 +559,31 @@ function viewFeature(wrap, tab) {
   wrap.append(el('h1', { text: `${feature.id}: ${feature.title}` }));
   wrap.append(el('p', { class: 'sub', text: featureLabel(feature.status) }));
   if (feature.pr?.url) wrap.append(el('p', {}, el('a', { href: feature.pr.url, text: feature.pr.url, target: '_blank', rel: 'noreferrer' })));
+
+  // "Roadmap" names the whole multi-feature structure; "Plan" is this one
+  // feature's specs.md — distinct, non-overlapping referents. Cached on the
+  // tab by specRunId so a background refresh (SSE event, 15s poll) neither
+  // re-fetches nor flashes "Loading…" over content already shown.
+  wrap.append(el('h2', { text: 'Plan' }));
+  const planCard = el('div', { class: 'card' });
+  wrap.append(planCard);
+  if (!feature.specRunId) {
+    planCard.textContent = 'No plan has been written for this feature yet.';
+  } else if (tab._planRunId === feature.specRunId && tab._planContent != null) {
+    planCard.innerHTML = tab._planContent;
+  } else {
+    planCard.textContent = 'Loading…';
+    const runId = feature.specRunId;
+    api.artifact('specs.md', runId).then((a) => {
+      const html = renderMd(a.content || '');
+      tab._planRunId = runId;
+      tab._planContent = html;
+      if (tabs.activeId() === tab.id && tab.subject === feature.id) planCard.innerHTML = html;
+    }).catch(() => {
+      if (tabs.activeId() === tab.id) planCard.textContent = 'Could not read this plan.';
+    });
+  }
+
   wrap.append(el('h2', { text: 'Runs' }));
   // A run's own directory (status, events, reports) outlives its worktree —
   // cleanup on merge only removes the worktree. So a landed/accepted feature's
@@ -766,7 +837,11 @@ async function viewRun(wrap, tab) {
   else patchRunChrome(wrap, tab, { status, stages, active, meta, data });
 
   const items = conversationItems((data.events || {})[active] || [], data.followups, active);
-  paintVirtualFeed(wrap.querySelector('.feed-shell'), items, tab, active);
+  const activeStage = stages.find((s) => s.name === active);
+  const emptyMessage = activeStage && !['pending', 'skipped'].includes(activeStage.status)
+    ? 'This stage ran but recorded no activity.'
+    : 'This stage hasn\'t started.';
+  paintVirtualFeed(wrap.querySelector('.feed-shell'), items, tab, active, emptyMessage);
 }
 
 function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
@@ -938,12 +1013,47 @@ function fillArtifact(wrap, tab, active, data) {
   const host = wrap.querySelector('[data-role="artifact"]');
   if (!host) return;
   const wanted = STAGE_ARTIFACT[active];
-  const key = wanted && (data.artifacts || []).includes(wanted) ? `${active}:${wanted}` : '';
+  const hasArtifact = wanted && (data.artifacts || []).includes(wanted);
+  const hasDiff = (data.artifacts || []).includes('diff.patch');
+  const compareOn = hasDiff && !!tab._compareDiff;
+  // tab._compareDiff (same convention as tab._noteDraft) is part of the key so
+  // toggling it forces a rebuild even though nothing about the stage's own
+  // artifacts changed.
+  const key = hasArtifact ? `${active}:${wanted}:${compareOn}` : '';
   if (host.dataset.key === key) return;
   host.dataset.key = key;
   host.replaceChildren();
-  if (!key) return;
-  host.append(el('div', { class: 'sec-label', text: `Output — ${wanted}` }));
+  if (!hasArtifact) return;
+
+  host.append(el('div', { class: 'row', style: 'align-items:center;justify-content:space-between' }, [
+    el('div', { class: 'sec-label', text: `Output — ${wanted}` }),
+    hasDiff ? el('label', { class: 'row', style: 'gap:6px;font-size:12px;color:var(--muted);cursor:pointer' }, [
+      el('input', {
+        type: 'checkbox', checked: compareOn,
+        onchange: (e) => { tab._compareDiff = e.target.checked; render(); },
+      }),
+      el('span', { text: 'Compare with diff' }),
+    ]) : null,
+  ]));
+
+  if (compareOn) {
+    const left = el('div', { class: 'artifact-card', text: 'Loading…' });
+    const right = el('div', { class: 'artifact-card', text: 'Loading…' });
+    host.append(el('div', { class: 'compare-grid' }, [left, right]));
+    Promise.all([api.artifact(wanted, tab.subject), api.artifact('diff.patch', tab.subject)])
+      .then(([a, d]) => {
+        if (host.dataset.key !== key) return;
+        left.innerHTML = renderMd(a.content || '');
+        right.innerHTML = renderDiff(d.content || '');
+      })
+      .catch(() => {
+        if (host.dataset.key !== key) return;
+        left.textContent = 'Could not read this artifact.';
+        right.textContent = 'Could not read the diff.';
+      });
+    return;
+  }
+
   const card = el('div', { class: 'artifact-card', text: 'Loading…' });
   host.append(card);
   api.artifact(wanted, tab.subject)
@@ -951,7 +1061,7 @@ function fillArtifact(wrap, tab, active, data) {
     .catch(() => { if (host.dataset.key === key) card.textContent = 'Could not read this artifact.'; });
 }
 
-function paintVirtualFeed(shell, items, tab, stage) {
+function paintVirtualFeed(shell, items, tab, stage, emptyMessage = 'Nothing recorded for this stage yet.') {
   if (!shell) return;
   const feed = shell.querySelector('.feed') || shell.appendChild(el('div', { class: 'feed' }));
   shell._feedItems = items;
@@ -959,7 +1069,7 @@ function paintVirtualFeed(shell, items, tab, stage) {
   if (!items.length) {
     feed.style.paddingTop = '0px';
     feed.style.paddingBottom = '0px';
-    feed.replaceChildren(el('div', { class: 'empty', text: 'Nothing recorded for this stage yet.' }));
+    feed.replaceChildren(el('div', { class: 'empty', text: emptyMessage }));
     tab._feedSig = '0';
     tab._feedRange = '0:0';
     return;

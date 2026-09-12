@@ -157,9 +157,17 @@
   .rail-bar { display:block; height:100%; width:0; border-radius:999px;
     background-color:var(--st-pending); transition:width .45s cubic-bezier(.4,0,.2,1); }
   .rail-row.is-passed .rail-bar { background-color:var(--st-done); width:100%; }
-  .rail-row.is-running .rail-bar { background-color:var(--st-run); width:60%; }
+  /* No duration data backs a percentage, so a fixed width would just be a
+     made-up number — an indeterminate sweep says "working" without claiming
+     to know how far along it is. */
+  .rail-row.is-running .rail-bar { background-color:var(--st-run); width:40%;
+    animation:rail-indeterminate 1.4s ease-in-out infinite; }
+  @keyframes rail-indeterminate { 0% { transform:translateX(-100%); } 100% { transform:translateX(250%); } }
+  @media (prefers-reduced-motion:reduce) { .rail-row.is-running .rail-bar { animation:none; width:60%; } }
   .rail-row.is-failed .rail-bar { background-color:var(--st-fail); width:100%; }
   .rail-row.is-pending .rail-bar { width:0; }
+  .rail-row[disabled] { cursor:default; opacity:.7; }
+  .rail-elapsed { display:block; font-size:10px; color:var(--muted); }
   .rail-row.is-skipped { opacity:.55; }
   .rail-row.is-skipped .rail-track { background:none;
     background-image:repeating-linear-gradient(90deg, var(--st-skip) 0 3px, transparent 3px 6px); }
@@ -297,6 +305,8 @@
     text-transform:uppercase; margin:18px 0 6px; }
   .artifact-card { background:var(--code-bg); border:1px solid var(--border); border-radius:10px;
     padding:2px 16px 12px; }
+  .compare-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:start; }
+  .compare-grid .artifact-card { min-width:0; }
   pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
     padding:10px 12px; overflow-x:auto; margin:8px 0; }
   code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
