@@ -741,7 +741,26 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const stageModel = modelForStage(models, name);
   const stageEffort = effortForStage(models, name);
-  setStage(name, { model: stageModel, requestedModel: stageModel, effort: stageEffort });
+  const isChat = runner === 'host' || status.invocationMode === 'chat';
+  if (isChat) {
+    setStage(name, {
+      model: stageModel,
+      requestedModel: stageModel,
+      mode: 'chat',
+      hostClient: status.hostClient || null,
+      effort: stageEffort,
+    });
+  } else {
+    setStage(name, {
+      model: stageModel,
+      actualModel: stageModel,
+      requestedModel: stageModel,
+      mode: 'cli',
+      runner,
+      modelSource: 'cli-runner',
+      effort: stageEffort,
+    });
+  }
   // Integrity baseline: taken before the agent starts so the comparison covers
   // everything it did, regardless of whether its runner can enforce anything.
   // Only verified skills are attached; a rejected one is recorded so the run
@@ -1377,9 +1396,10 @@ async function chatContinueRun() {
   status.chatResume = null;
 
   let actualModel = null;
+  let parsedHandoff = null;
   try {
-    const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
-    if (handoff.actualModel) actualModel = handoff.actualModel;
+    parsedHandoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+    if (parsedHandoff.actualModel) actualModel = parsedHandoff.actualModel;
   } catch {}
 
   if (!pendingCompletion) { try { fs.unlinkSync(paths.stageHandoff); } catch {} }
@@ -1394,14 +1414,21 @@ async function chatContinueRun() {
                         step === 'after_coder' ? 'coder' :
                         step === 'after_tester' ? 'tester' :
                         step === 'after_reviewer' ? 'reviewer' :
-                        step === 'after_handoff' ? 'handoff' : null;
-  if (completedStage && actualModel) {
-    setStage(completedStage, { actualModel, modelSource: 'host-reported' });
-  }
+                        step === 'after_handoff' ? 'handoff' :
+                        step === 'after_reporter' ? 'reporter' : null;
 
-  if (completedStage && pendingCompletion) {
-    const owner = inspectBridge(repoRoot, args.runId).owner;
-    setStage(completedStage, { actualModel: owner?.actualModel || actualModel, modelSource: owner?.actualModel ? 'host-observed' : 'unknown', detail: null });
+  if (completedStage) {
+    const owner = pendingCompletion ? inspectBridge(repoRoot, args.runId).owner : null;
+    let resolvedModel = owner?.actualModel || actualModel || stage(completedStage)?.actualModel || parsedHandoff?.model || stage(completedStage)?.model;
+    let source = owner?.actualModel ? 'host-observed' : actualModel ? 'host-reported' : parsedHandoff?.model ? 'host-suggested' : 'unknown';
+    
+    setStage(completedStage, { 
+      model: resolvedModel,
+      actualModel: resolvedModel, 
+      mode: 'chat',
+      modelSource: source, 
+      detail: null 
+    });
   }
 
   // status.chatResume.step is always one of the after_X checkpoints below (set
@@ -1419,7 +1446,7 @@ async function freshRun() {
   // reproduce a file we already have.
   if (args.specsFile) {
     seedArtifact('planner', args.specsFile, paths.specs, 'specs.md');
-    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md', detail: 'Seeded from the feature specification' });
+    setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md', detail: 'Seeded from the feature specification', mode: 'seeded', model: 'seeded', actualModel: 'seeded', modelSource: 'seeded' });
     status.planApproved = true;
   }
   if (args.changesFile) {

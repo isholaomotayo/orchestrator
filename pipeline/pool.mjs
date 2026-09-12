@@ -6,6 +6,7 @@
 // next. Keeping that boundary is what makes the agent's judgment auditable —
 // it can be wrong about a recommendation, but it cannot be wrong about state.
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { readUsage } from './usage.mjs';
 import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
 import path from 'node:path';
@@ -517,6 +518,35 @@ export function resume(paths) {
 
 export function dismissRun(paths, runId, reason = 'Dismissed by operator') {
   return bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
+}
+
+export function reset(paths, { archive = true, hard = false } = {}) {
+  spawnSync('git', ['worktree', 'prune'], { cwd: paths.root, encoding: 'utf8' });
+  const runsDir = paths.runs;
+  const worktreesDir = paths.worktrees;
+  if (fs.existsSync(worktreesDir)) {
+    fs.rmSync(worktreesDir, { recursive: true, force: true });
+  }
+  if (fs.existsSync(runsDir)) {
+    for (const dir of fs.readdirSync(runsDir)) {
+      if (!isValidRunId(dir)) continue;
+      const p = path.join(runsDir, dir);
+      if (hard) {
+        fs.rmSync(p, { recursive: true, force: true });
+      } else if (archive) {
+        fs.mkdirSync(path.join(runsDir, 'archived'), { recursive: true });
+        fs.renameSync(p, path.join(runsDir, 'archived', dir));
+      }
+    }
+  }
+  fs.rmSync(paths.lock, { force: true });
+  fs.rmSync(path.join(paths.control, 'snapshot.json'), { force: true });
+  fs.rmSync(path.join(paths.control, 'supervisor.log'), { force: true });
+  if (fs.existsSync(paths.supervisorPid)) {
+    const pid = Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim());
+    if (!pidAlive(pid)) fs.rmSync(paths.supervisorPid, { force: true });
+  }
+  return { reset: true };
 }
 
 export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };

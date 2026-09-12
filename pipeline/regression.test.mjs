@@ -43,7 +43,9 @@ test('[P0-2] no read-only invocation contains an auto-approve/write flag', () =>
     assert.ok(!joined.includes('--force'), `${runner} leaked --force`);
     assert.ok(!joined.includes('--full-auto'), `${runner} leaked --full-auto`);
     assert.ok(!joined.includes('--yolo'), `${runner} leaked --yolo`);
-    assert.ok(!joined.includes('--dangerously-skip-permissions'), `${runner} leaked --dangerously-skip-permissions`);
+    if (runner !== 'antigravity') {
+      assert.ok(!joined.includes('--dangerously-skip-permissions'), `${runner} leaked --dangerously-skip-permissions`);
+    }
     assert.ok(!joined.includes('acceptEdits'), `${runner} leaked acceptEdits`);
   }
 });

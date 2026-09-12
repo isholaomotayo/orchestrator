@@ -62,7 +62,7 @@ export function createSupervisor({
   // Before the first feature is accepted, `rm.workingBranch` is only a name —
   // the git ref itself materializes on the first `acceptOntoWorkingBranch`.
   function targetRef(rm) {
-    return rm.review === 'end' && branchExists(repoRoot, rm.workingBranch) ? rm.workingBranch : rm.base;
+    return rm.review === 'end' && rm.workingSha && branchExists(repoRoot, rm.workingBranch) ? rm.workingBranch : rm.base;
   }
   function saveRoadmap(next) { return pool.writeRoadmap(paths, next); }
 
@@ -511,6 +511,16 @@ export function createSupervisor({
         title: `${feature.id}: ${feature.title}`, bodyFile,
       });
       if (!pr.ok) {
+        const err = pr.error || '';
+        if (err.includes('No commits between')) {
+          askForMergeApproval(feature, run, null);
+          return;
+        }
+        if (err.includes('already exists') || err.includes('A pull request already exists')) {
+          const m = err.match(/https:\/\/[^\s]+/);
+          askForMergeApproval(feature, run, m ? { url: m[0] } : null);
+          return;
+        }
         escalate(feature, run, 'pr_failed', `Could not open a pull request: ${pr.error}`);
         saveRoadmap(setFeatureStatus(roadmap(), feature.id, 'awaiting_merge_approval', { mergeState: 'pr_failed' }));
         return;
@@ -673,8 +683,23 @@ export function createSupervisor({
         title: `${rm.title}: land roadmap`, bodyFile,
       });
       if (!pr.ok) {
+        const err = pr.error || '';
+        if (err.includes('No commits between')) {
+          gitIn(repoRoot, ['fetch', mergeCfg.remote, rm.base]);
+          saveRoadmap(setRoadmapStatus(roadmap(), 'landed', {
+            landedSha: currentSha(repoRoot, `${mergeCfg.remote}/${rm.base}`),
+            landedAt: new Date(now()).toISOString(),
+          }));
+          log(`landed roadmap onto ${rm.base} (no commits)`);
+          return;
+        }
+        let fallbackPr = null;
+        if (err.includes('already exists') || err.includes('A pull request already exists')) {
+          const m = err.match(/https:\/\/[^\s]+/);
+          if (m) fallbackPr = { url: m[0] };
+        }
         escalate(fakeFeature, null, 'pr_failed', `Could not open a pull request: ${pr.error}`);
-        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr }));
+        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr: fallbackPr }));
         return;
       }
       const check = checkMergeable({

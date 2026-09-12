@@ -205,6 +205,11 @@ export function newStatus(task, { design = false } = {}) {
       artifact: null,
       detail: null,
       model: null,
+      actualModel: null,
+      mode: null,
+      modelSource: null,
+      hostClient: null,
+      runner: null,
       effort: null,  // reasoning-effort level requested for this stage
       checks: null, // { passedCount, failedCount } from last checker run
     })),
@@ -224,7 +229,9 @@ export function ensureStageEntries(status) {
     if (have.has(name)) return;
     status.stages.splice(i, 0, {
       name, status: 'skipped', cycle: 0, maxCycles: 1,
-      startedAt: null, endedAt: null, artifact: null, detail: null, model: null, effort: null, checks: null,
+      startedAt: null, endedAt: null, artifact: null, detail: null, model: null,
+      actualModel: null, mode: null, modelSource: null, hostClient: null, runner: null,
+      effort: null, checks: null,
     });
   });
   return status;

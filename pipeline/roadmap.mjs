@@ -245,7 +245,8 @@ export function orderFeatures(features) {
  * silently would be worse than carrying it.
  */
 export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, now = new Date() } = {}) {
-  const prior = new Map((previous?.features || []).map((f) => [f.id, f]));
+  const titleChanged = Boolean(previous?.title && previous.title !== roadmap.title);
+  const prior = new Map(titleChanged ? [] : (previous?.features || []).map((f) => [f.id, f]));
   const features = roadmap.features.map((f) => {
     const before = prior.get(f.id);
     return {
@@ -272,7 +273,7 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
     };
   });
   const liveIds = new Set(features.map((f) => f.id));
-  const orphans = [
+  const orphans = titleChanged ? [] : [
     ...(previous?.orphans || []),
     ...(previous?.features || []).filter((f) => !liveIds.has(f.id)),
   ].filter((f, i, all) => all.findIndex((o) => o.id === f.id) === i);
@@ -286,9 +287,9 @@ export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, 
     base: roadmap.base,
     merge: roadmap.merge,
     review: roadmap.review || 'feature',
-    workingBranch: previous?.workingBranch || roadmapWorkingBranch(roadmap.title),
-    workingSha: previous?.workingSha ?? null,
-    roadmapStatus: previous?.roadmapStatus || 'running',
+    workingBranch: titleChanged ? roadmapWorkingBranch(roadmap.title) : (previous?.workingBranch || roadmapWorkingBranch(roadmap.title)),
+    workingSha: titleChanged ? null : (previous?.workingSha ?? null),
+    roadmapStatus: titleChanged ? 'running' : (previous?.roadmapStatus || 'running'),
     currentFeatureId: null,
     features,
     orphans,

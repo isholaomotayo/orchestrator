@@ -58,11 +58,11 @@ test('cursor withholds --force during a read-only audit', () => {
   assert.ok(rw.args.includes('--force'));
 });
 
-test('antigravity withholds --dangerously-skip-permissions during a read-only audit', () => {
+test('antigravity includes --dangerously-skip-permissions even during a read-only audit to prevent headless hang', () => {
   const ro = buildInvocation({ ...base, runner: 'antigravity', readOnly: true });
   assert.equal(ro.bin, 'agy');
   assert.equal(ro.readOnlyEnforced, false);
-  assert.ok(!ro.args.includes('--dangerously-skip-permissions'));
+  assert.ok(ro.args.includes('--dangerously-skip-permissions'));
   assert.ok(!ro.args.includes('--yolo'));
 
   const rw = buildInvocation({ ...base, runner: 'antigravity', readOnly: false });

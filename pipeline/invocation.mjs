@@ -118,7 +118,7 @@ function probeClaudeAuth() {
 function probeCursorAuth() {
   if (!binExists('cursor-agent')) return false;
   if (process.env.CURSOR_API_KEY) return true;
-  const res = spawnSync('cursor-agent', ['-p', 'ok', '--output-format', 'text'], {
+  const res = spawnSync('cursor-agent', ['--trust', '-p', 'ok', '--output-format', 'text'], {
     encoding: 'utf8',
     timeout: 8000,
     input: '',
@@ -136,9 +136,9 @@ function probeCodexAuth() {
 
 function probeAntigravityAuth() {
   if (!binExists('agy')) return false;
-  const res = spawnSync('agy', ['-p', 'ok'], { encoding: 'utf8', timeout: 8000, input: '' });
+  const res = spawnSync('agy', ['models'], { encoding: 'utf8', timeout: 2000 });
   const out = `${res.stdout}\n${res.stderr}`;
-  return res.status === 0 && !/authentication required|not authenticated|login required|sign in/i.test(out);
+  return res.status === 0 && !/authentication required|not authenticated|login required|sign in/i.test(out) && out.length > 0;
 }
 
 const AUTH_PROBES = {

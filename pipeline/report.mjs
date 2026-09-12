@@ -20,6 +20,18 @@ export function escapeHtml(value) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+export function stageExecutionLabel(stage, status) {
+  if (!stage) return null;
+  if (stage.mode === 'seeded') return 'seeded';
+  if (stage.mode === 'chat') return stage.hostClient ? `chat (IDE host: ${stage.hostClient})` : 'chat (IDE host)';
+  if (stage.mode === 'cli') return stage.runner ? `cli (subprocess: ${stage.runner})` : 'cli (subprocess)';
+  return status?.executionSurface === 'host-handoff' ? 'chat (IDE host)' : 'cli (subprocess)';
+}
+
+export function stageModelLabel(stage, status) {
+  return stage?.actualModel || stage?.model || status?.models?.stages?.[stage?.name] || null;
+}
+
 /**
  * A deliberately small markdown subset. There is no raw-HTML passthrough and no
  * link rendering, because every input here is text an agent wrote after reading
@@ -226,6 +238,10 @@ export function compileWorkDoneReport({
   const trend = testTrend(history);
   const totals = files.reduce((a, f) => ({ added: a.added + f.added, removed: a.removed + f.removed }), { added: 0, removed: 0 });
 
+  const plannerStage = status.stages?.find(s => s.name === 'planner');
+  const plannerModel = stageModelLabel(plannerStage, status);
+  const plannerExec = stageExecutionLabel(plannerStage, status);
+
   const metaBits = [
     feature?.id ? `Feature ${escapeHtml(feature.id)}` : null,
     runId ? `Run <code>${escapeHtml(runId)}</code>` : null,
@@ -240,6 +256,7 @@ export function compileWorkDoneReport({
     `<h1>${escapeHtml(title)}</h1>`,
     `<p class="meta">${metaBits}${metaBits ? ' &middot; ' : ''}<span class="badge ${verdict === 'APPROVED' ? 'approved' : 'other'}">${escapeHtml(verdict)}</span>`,
     pr?.url ? ` &middot; <a href="${escapeHtml(pr.url)}">pull request</a>` : '',
+    plannerModel ? `<br>Planner: <code>${escapeHtml(plannerModel)}</code> <span class="meta-mode">(${escapeHtml(plannerExec)})</span>` : '',
     `</p>`,
 
     section('Summary', narrativeSection(narrative, 'Summary') || '<p class="note">No narrative was recorded for this run.</p>'),
@@ -251,6 +268,12 @@ export function compileWorkDoneReport({
       '<table><thead><tr><th>File</th><th>Change</th><th>+</th><th>&minus;</th></tr></thead><tbody>',
       ...files.map((f) => `<tr><td><code>${escapeHtml(f.file)}</code></td><td>${STATUS_LABEL[f.status] || 'changed'}${f.binary ? ' (binary)' : ''}</td><td>${f.added}</td><td>${f.removed}</td></tr>`),
       `</tbody></table><p class="meta">${files.length} file(s), +${totals.added} &minus;${totals.removed}</p>`,
+    ].join('\n')) : '',
+
+    status.stages?.length ? section('Stages', [
+      '<table><thead><tr><th>Stage</th><th>Model</th><th>Mode</th><th>Status</th></tr></thead><tbody>',
+      ...status.stages.filter(s => s.status !== 'skipped').map((s) => `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${escapeHtml(stageModelLabel(s, status) || '-')}</td><td>${escapeHtml(stageExecutionLabel(s, status) || '-')}</td><td>${escapeHtml(s.status)}</td></tr>`),
+      '</tbody></table>',
     ].join('\n')) : '',
 
     coverage.length ? section('Specification coverage', [
@@ -288,9 +311,11 @@ export function compileWorkDoneReport({
   const md = [
     `# ${title}`, '',
     `${feature?.id ? `Feature ${feature.id} · ` : ''}Review verdict: **${verdict}**`, '',
+    plannerModel ? `Planner model: **${plannerModel}** (${plannerExec})` : '', '',
     plain(narrativeSection(narrative, 'Summary')) || '_No narrative was recorded._', '',
     plain(narrativeSection(narrative, 'Review Guidance')) ? `## Review guidance\n\n${plain(narrativeSection(narrative, 'Review Guidance'))}\n` : '',
     operations ? `## Operational record\n\n${JSON.stringify(operations,null,2)}\n` : '',
+    status.stages?.length ? `## Stages\n\n${status.stages.filter(s => s.status !== 'skipped').map((s) => `- \`${s.name}\` — Model: ${stageModelLabel(s, status) || '-'}, Mode: ${stageExecutionLabel(s, status) || '-'}, Status: ${s.status}`).join('\n')}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',
     plain(narrativeSection(narrative, 'Rough Edges & Follow-ups')) ? `## Rough edges and follow-ups\n\n${plain(narrativeSection(narrative, 'Rough Edges & Follow-ups'))}\n` : '',
@@ -315,6 +340,20 @@ export function writeWorkDoneReport(paths, payload) {
       featureId: payload.feature?.id ?? null,
       verdict: payload.status?.verdict ?? null,
       generatedAt: new Date().toISOString(),
+      planner: payload.status?.stages?.find(s => s.name === 'planner') ? {
+        model: stageModelLabel(payload.status.stages.find(s => s.name === 'planner'), payload.status),
+        actualModel: payload.status.stages.find(s => s.name === 'planner').actualModel,
+        mode: payload.status.stages.find(s => s.name === 'planner').mode,
+        execution: stageExecutionLabel(payload.status.stages.find(s => s.name === 'planner'), payload.status),
+        modelSource: payload.status.stages.find(s => s.name === 'planner').modelSource,
+      } : null,
+      stages: (payload.status?.stages || []).map(s => ({
+        name: s.name,
+        status: s.status,
+        model: stageModelLabel(s, payload.status),
+        mode: s.mode,
+        execution: stageExecutionLabel(s, payload.status),
+      })),
       files: computed.files.length,
       coverage: computed.coverage,
       diagrams: (payload.diagrams || []).map((d) => ({ id: d.id, type: d.type, ok: !!d.ok, sha256: d.sha256 ?? null, error: d.error ?? null })),

@@ -31,10 +31,9 @@ function googleCliEffort(level) {
 }
 
 function buildGoogleCliInvocation({ combined, readOnly, modelId, level }) {
-  // agy has no hard read-only flag; withhold --dangerously-skip-permissions
-  // so it cannot auto-run mutating actions during a read-only audit (best-effort).
-  const args = ['-p', combined, '--output-format', 'text'];
-  if (!readOnly) args.push('--dangerously-skip-permissions');
+  // agy has no hard read-only flag; always pass --dangerously-skip-permissions
+  // in non-interactive mode so it doesn't hang on stdin prompts, even for read-only audits.
+  const args = ['-p', combined, '--output-format', 'text', '--dangerously-skip-permissions'];
   if (modelId) args.push('--model', modelId);
   const effort = googleCliEffort(level);
   if (effort) args.push('--effort', effort);
@@ -284,6 +283,8 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     promptFile: path.relative(paths.root, systemPromptFile),
     artifact: `.pipeline/${STAGE_ARTIFACT_FILES[stage]}`,
     readOnly: !!readOnly,
+    mode: 'chat',
+    actualModel: null,
     createdAt: new Date().toISOString(),
   };
   if (model) {

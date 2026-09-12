@@ -967,7 +967,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   fillControls(wrap, tab, data);
   fillBanners(wrap, status, active);
   fillArtifact(wrap, tab, active, data);
-  fillMode(wrap, status);
+  fillMode(wrap, status, active);
 }
 
 function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
@@ -978,7 +978,7 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
     if (pill.className !== cls) pill.className = cls;
     if (pill.textContent !== label) pill.textContent = label;
   }
-  fillMode(wrap, status);
+  fillMode(wrap, status, active);
   const railHost = wrap.querySelector('[data-role="rail"]');
   if (railHost) {
     const railSig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
@@ -996,7 +996,12 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
 // Same wording the engine itself already logs at startup (orchestrator.mjs)
 // so the dashboard never invents a second vocabulary for the same fact: is a
 // live chat session driving this, or an unattended agent CLI subprocess.
-function modeLabel(status) {
+function modeLabel(status, stage) {
+  if (stage?.mode) {
+    if (stage.mode === 'seeded') return 'seeded';
+    if (stage.mode === 'chat') return `chat (IDE host${stage.hostClient ? `: ${stage.hostClient}` : ''})`;
+    if (stage.mode === 'cli') return `cli (subprocess: ${stage.runner || 'unknown'})`;
+  }
   if (status.executionSurface === 'host-handoff') {
     return `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`;
   }
@@ -1006,16 +1011,22 @@ function modeLabel(status) {
   return null;
 }
 
-function fillMode(wrap, status) {
+function fillMode(wrap, status, activeStageName) {
   const host = wrap.querySelector('[data-role="mode"]');
   if (!host) return;
-  const label = modeLabel(status);
-  const sig = `${label || ''}|${status.runnerRequested || ''}`;
+  const stage = status.stages?.find(s => s.name === activeStageName);
+  const label = modeLabel(status, stage);
+  const model = stage?.actualModel || stage?.model || status.models?.stages?.[activeStageName] || null;
+  
+  const sig = `${label || ''}|${model || ''}|${status.runnerRequested || ''}`;
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
-  if (!label) return;
-  host.append(el('span', { class: 'chip', text: label }));
+  if (!label && !model) return;
+  
+  if (model) host.append(el('span', { class: 'chip', text: `model: ${model}` }));
+  if (label) host.append(el('span', { class: 'chip', style: model ? 'margin-left:6px' : '', text: label }));
+  
   if (status.runnerRequested) {
     host.append(el('span', {
       class: 'chip warn', style: 'margin-left:6px',

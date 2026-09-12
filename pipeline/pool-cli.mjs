@@ -34,7 +34,8 @@ Acting:
   extend <runId> <cycles>
   ack <attentionId>
   notes add "<text>" [--kind learning|decision|gotcha] [--run <id>] [--feature <id>]
-  pause [why] | resume`;
+  pause [why] | resume
+  reset | clean [--hard]`;
 
 function out(json, value, text) {
   if (json) console.log(JSON.stringify(value, null, 2));
@@ -181,6 +182,13 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
       }
       case 'pause': { out(json, pool.pause(paths, args.slice(1).join(' ')), 'Pool paused; running workers finish their current stage.'); return 0; }
       case 'resume': { out(json, pool.resume(paths), 'Pool resumed.'); return 0; }
+      case 'reset':
+      case 'clean': {
+        const hard = args.includes('--hard');
+        pool.reset(paths, { archive: !hard, hard });
+        out(json, { reset: true }, `Pool reset completed. Runs archived${hard ? ' (hard deleted)' : ''}.`);
+        return 0;
+      }
       default:
         console.error(USAGE);
         return 2;

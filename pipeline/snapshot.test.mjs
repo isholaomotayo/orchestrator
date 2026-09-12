@@ -166,7 +166,7 @@ test('a held feature says how to release it', () => {
 
 test('a claim-run item tells the operator exactly which command picks it up', () => {
   const s = buildSnapshot({
-    roadmap: null, runs: [], decisions: [], supervisor,
+    roadmap: null, runs: [{ runId: 'r9' }], decisions: [], supervisor,
     attention: [{ id: 'a1', escalate: true, kind: 'claim-run', runId: 'r9', summary: 'Ready for a human to complete the "coder" stage in chat.', ts: '2026-09-06T11:00:00Z' }],
     now: new Date(),
   });
@@ -176,7 +176,7 @@ test('a claim-run item tells the operator exactly which command picks it up', ()
 
 test('an escalation with no decision attached still reaches the operator', () => {
   const s = buildSnapshot({
-    roadmap: null, runs: [], decisions: [], supervisor,
+    roadmap: null, runs: [{ runId: 'r9' }], decisions: [], supervisor,
     attention: [{ id: 'a1', escalate: true, kind: 'dead', runId: 'r9', summary: 'The worker process is gone', ts: '2026-09-06T11:00:00Z' }],
     now: new Date(),
   });

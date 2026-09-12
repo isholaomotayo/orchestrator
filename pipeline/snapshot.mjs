@@ -19,13 +19,11 @@ export function buildSnapshot({
 }) {
   const features = roadmap?.features || [];
   const byFeature = new Map(features.map((f) => [f.id, f]));
+  const liveRunIds = new Set(runs.map((r) => r.runId));
 
-  // Anything waiting on a person belongs here, not only formal decisions. A
-  // feature that failed, or an escalation with no question attached, still
-  // needs someone to look — and a digest that says "nothing needs your
-  // decision" while the roadmap is stuck is worse than no digest at all.
   const needsDecision = decisions
     .filter((d) => d.status === 'open')
+    .filter((d) => (!d.runId || liveRunIds.has(d.runId)) && (!d.featureId || byFeature.has(d.featureId)))
     .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
     .map((d) => ({
       decisionId: d.decisionId,
@@ -78,6 +76,7 @@ export function buildSnapshot({
   // Escalations the supervisor raised that are not attached to a decision.
   for (const item of attention) {
     if (!item.escalate || item.decisionId || covered.has(item.featureId)) continue;
+    if ((item.runId && !liveRunIds.has(item.runId)) || (item.featureId && !byFeature.has(item.featureId))) continue;
     needsDecision.push({
       decisionId: null,
       attentionId: item.id ?? null,
