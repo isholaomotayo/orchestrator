@@ -542,6 +542,10 @@ export function reset(paths, { archive = true, hard = false } = {}) {
   fs.rmSync(paths.lock, { force: true });
   fs.rmSync(path.join(paths.control, 'snapshot.json'), { force: true });
   fs.rmSync(path.join(paths.control, 'supervisor.log'), { force: true });
+  if (hard) {
+    fs.rmSync(path.join(paths.control, 'attention.jsonl'), { force: true });
+    fs.rmSync(path.join(paths.control, 'decisions.jsonl'), { force: true });
+  }
   if (fs.existsSync(paths.supervisorPid)) {
     const pid = Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim());
     if (!pidAlive(pid)) fs.rmSync(paths.supervisorPid, { force: true });
