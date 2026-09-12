@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
+import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns, hostLabel } from './runs.mjs';
 
 // ---- runBucket --------------------------------------------------------------
 
@@ -69,13 +69,35 @@ test('allRuns merges a pool snapshot’s in-progress and historical runs', () =>
 });
 
 test('allRuns falls back to the single-run list, normalized to the pool shape', () => {
-  const singleRunList = [{ id: 'abc', featureId: null, ticketId: null, host: 'claude', overall: 'done', live: false, startedAt: '2026-01-01T00:00:00Z', reportRel: 'x', task: 'Fix the thing' }];
+  const singleRunList = [{
+    id: 'abc', featureId: null, ticketId: null, runner: 'claude', hostClient: null, invocationMode: 'cli', runnerRequested: null,
+    overall: 'done', live: false, startedAt: '2026-01-01T00:00:00Z', reportRel: 'x', task: 'Fix the thing',
+  }];
   const runs = allRuns(null, singleRunList);
   assert.equal(runs.length, 1);
   assert.equal(runs[0].runId, 'abc');
   assert.equal(runs[0].runner, 'claude');
+  assert.equal(runs[0].hostClient, null);
+  assert.equal(runs[0].invocationMode, 'cli');
   assert.equal(runs[0].state, 'idle');
   assert.equal(runs[0].title, 'Fix the thing');
+});
+
+// ---- hostLabel ------------------------------------------------------------
+
+test('hostLabel shows the IDE host for a chat-driven run, in either mode', () => {
+  assert.equal(hostLabel({ invocationMode: 'chat', hostClient: 'antigravity', runner: 'host' }), 'chat: antigravity');
+  assert.equal(hostLabel({ invocationMode: 'chat', hostClient: null, runner: 'host' }), 'chat', 'no host name recorded yet is still "chat", not blank');
+});
+
+test('hostLabel shows the runner for a cli-subprocess run, in either mode', () => {
+  assert.equal(hostLabel({ invocationMode: 'cli', runner: 'codex', hostClient: null }), 'cli: codex');
+});
+
+test('hostLabel falls back to the raw runner/hostClient for a run recorded before mode-tracking existed', () => {
+  assert.equal(hostLabel({ runner: 'claude' }), 'claude');
+  assert.equal(hostLabel({ hostClient: 'cursor' }), 'cursor');
+  assert.equal(hostLabel({}), '—');
 });
 
 test('allRuns treats a live single run as busy', () => {

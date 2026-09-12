@@ -442,3 +442,47 @@ test('The "Compare with diff" toggle survives a background refresh', async t => 
   assert.equal(await page.locator('.compare-grid .artifact-card').count(), 2, 'the two-column view is not reverted by the background refresh');
   assert.deepEqual(errors, []);
 });
+
+test('a run tab shows its actual driving mode, including when the requested runner was coerced', async t => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+        '/api/state': {
+          status: {
+            overall: 'awaiting_chat', stages: [{ name: 'planner', status: 'running' }],
+            executionSurface: 'host-handoff', invocationMode: 'chat', hostClient: 'antigravity',
+            runner: 'host', runnerRequested: 'cursor',
+          },
+          artifacts: [],
+        },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.waitForSelector('[data-role="mode"]');
+  const modeText = await page.locator('[data-role="mode"]').innerText();
+  assert.match(modeText, /chat.*antigravity/);
+  assert.match(modeText, /requested cursor/, 'the coerced request stays visible, not silently dropped');
+  assert.deepEqual(errors, []);
+});

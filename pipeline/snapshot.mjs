@@ -130,7 +130,9 @@ export function buildSnapshot({
       branch: r.branch ?? null,
       costUsd: r.costUsd ?? null,
       owner: r.owner ?? null, handoffId: r.handoffId ?? null,
-      runner: r.runner ?? null, spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null,
+      runner: r.runner ?? null,
+      hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
+      spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null,
       goal: feature
         ? {
           featureId: feature.id,

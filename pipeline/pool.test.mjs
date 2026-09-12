@@ -42,11 +42,15 @@ function tmpPool() {
   return paths;
 }
 
-function fakeRun(paths, runId, { overall = 'running', verb = 'working', featureId = 'F1', pid = process.pid, stage = 'coder' } = {}) {
+function fakeRun(paths, runId, {
+  overall = 'running', verb = 'working', featureId = 'F1', pid = process.pid, stage = 'coder',
+  runner = undefined, hostClient = undefined, invocationMode = undefined, runnerRequested = undefined,
+} = {}) {
   const rp = pipelinePaths(paths.root, { runId });
   fs.mkdirSync(rp.dir, { recursive: true });
   fs.writeFileSync(rp.status, JSON.stringify({
     overall, featureId, stages: [{ name: stage, status: overall === 'running' ? 'running' : 'passed', cycle: 1, maxCycles: 5 }],
+    runner, hostClient, invocationMode, runnerRequested,
   }));
   fs.writeFileSync(rp.runMeta, JSON.stringify({ runId, featureId, ticketId: 'T1', kind: 'ticket', pid, branch: `pipeline/${featureId}/${runId}` }));
   fs.writeFileSync(rp.lock, JSON.stringify({ pid }));
@@ -97,6 +101,23 @@ test('listRunStates reads every run and classifies it', () => {
   assert.equal(runs.length, 2);
   assert.equal(runs.find((r) => r.runId === 'r1').state, 'busy');
   assert.equal(runs.find((r) => r.runId === 'r2').state, 'idle');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('listRunStates and the pool snapshot both carry hostClient/invocationMode/runnerRequested through from a run\'s own status.json', () => {
+  const paths = tmpPool();
+  compile(paths);
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  fakeRun(paths, 'r1', { runner: 'host', hostClient: 'antigravity', invocationMode: 'chat', runnerRequested: 'cursor' });
+  const listed = listRunStates(paths).find((r) => r.runId === 'r1');
+  assert.equal(listed.hostClient, 'antigravity');
+  assert.equal(listed.invocationMode, 'chat');
+  assert.equal(listed.runnerRequested, 'cursor');
+  const snap = snapshot(paths);
+  const r1 = snap.inProgress.find((r) => r.runId === 'r1');
+  assert.equal(r1.hostClient, 'antigravity');
+  assert.equal(r1.invocationMode, 'chat');
+  assert.equal(r1.runnerRequested, 'cursor');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 

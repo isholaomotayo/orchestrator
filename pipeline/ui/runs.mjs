@@ -56,9 +56,23 @@ export function allRuns(pool, singleRunList) {
   return (singleRunList || []).map((r) => ({
     runId: r.id, featureId: r.featureId ?? null, ticketId: r.ticketId ?? null,
     kind: r.kind ?? 'run', stage: r.stage ?? null, state: r.live ? 'busy' : 'idle',
-    overall: r.overall, haltReason: r.haltReason, runner: r.host ?? null,
+    overall: r.overall, haltReason: r.haltReason,
+    runner: r.runner ?? null, hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
     spawnedAt: r.startedAt ?? null, reportRel: r.reportRel ?? null, title: r.task,
   }));
+}
+
+// One label for the Runs table's "Host" column, consistent whether the
+// project is in pool mode (rows already carry hostClient/invocationMode
+// straight from snapshot.mjs) or single-run mode (mapped the same way just
+// above) — previously this column silently meant a runner value in one mode
+// and an IDE host name in the other, both crammed into the same field.
+export function hostLabel(run) {
+  if (run.invocationMode === 'chat') return `chat${run.hostClient ? `: ${run.hostClient}` : ''}`;
+  if (run.invocationMode === 'cli') return `cli: ${run.runner || 'unknown'}`;
+  // A run recorded before mode-tracking existed, or genuinely unmodeled:
+  // fall back to whatever this column always showed before.
+  return run.runner || run.hostClient || '—';
 }
 
 export function filterRuns(runs, f) {

@@ -241,3 +241,23 @@ test('runner, spawnedAt, and reportRel survive from a raw run record into inProg
   assert.equal(r1.spawnedAt, '2026-09-06T11:00:00Z');
   assert.equal(r1.reportRel, '.pipeline/runs/r1/reports/work-done.html');
 });
+
+test('hostClient, invocationMode, and runnerRequested survive into inProgress — the dashboard cannot show a run\'s mode outside its own tab without them', () => {
+  const runsWithMode = [
+    { runId: 'r1', featureId: 'F2', ticketId: 'T1', kind: 'ticket', state: 'awaiting', runner: 'host', hostClient: 'antigravity', invocationMode: 'chat', runnerRequested: 'cursor' },
+  ];
+  const s = buildSnapshot({ roadmap, runs: runsWithMode, decisions: [], attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  const r1 = s.inProgress.find((r) => r.runId === 'r1');
+  assert.equal(r1.hostClient, 'antigravity');
+  assert.equal(r1.invocationMode, 'chat');
+  assert.equal(r1.runnerRequested, 'cursor');
+});
+
+test('hostClient/invocationMode/runnerRequested default to null rather than being omitted for a run recorded before mode-tracking existed', () => {
+  const legacyRun = [{ runId: 'r1', featureId: 'F2', ticketId: 'T1', kind: 'ticket', state: 'busy', runner: 'claude' }];
+  const s = buildSnapshot({ roadmap, runs: legacyRun, decisions: [], attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  const r1 = s.inProgress.find((r) => r.runId === 'r1');
+  assert.equal(r1.hostClient, null);
+  assert.equal(r1.invocationMode, null);
+  assert.equal(r1.runnerRequested, null);
+});

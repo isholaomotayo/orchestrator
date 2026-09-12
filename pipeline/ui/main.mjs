@@ -22,7 +22,7 @@ import {
   describeEvent, isStaleRefresh, conversationItems, estimateItemHeight,
   visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
 } from './feed.mjs';
-import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns } from './runs.mjs';
+import { runBucket, BUCKET_LABEL, ageMs, formatAge, allRuns, filterRuns, hostLabel } from './runs.mjs';
 import { unavailableReason } from './actions.mjs';
 import { patchRegion, patchList } from './patch.mjs';
 
@@ -672,7 +672,7 @@ function viewRuns(wrap, tab) {
       tbody.append(el('tr', {}, [
         el('td', {}, el('a', { href: '#', text: r.ticketId || r.runId, onclick: (e) => { e.preventDefault(); open({ kind: 'run', subject: r.runId, title: r.ticketId || r.runId }); } })),
         el('td', { text: r.featureId || '—' }),
-        el('td', { text: r.runner || '—' }),
+        el('td', { text: hostLabel(r) }),
         el('td', {}, el('span', { class: `chip${bucket === 'blocked' ? ' fail' : bucket === 'disconnected' ? ' warn' : ''}`, text: BUCKET_LABEL[bucket] || bucket })),
         el('td', { text: r.stage || '—' }),
         el('td', { text: formatAge(ageMs(r.lastOutputAt || r.spawnedAt)) }),
@@ -858,6 +858,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
     el('span', { class: 'spacer' }),
     el('span', { class: `pill ${status.overall || ''}`, 'data-role': 'pill', text: (status.overall || 'no state recorded').replace(/_/g, ' ') }),
   ]));
+  wrap.append(el('div', { 'data-role': 'mode', style: 'margin:-6px 0 12px' }));
 
   const railHost = el('div', { 'data-role': 'rail' });
   railHost.append(buildStageRail(stages, active, (name) => { tab.stage = name; render(); }));
@@ -909,6 +910,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   fillControls(wrap, tab, data);
   fillBanners(wrap, status);
   fillArtifact(wrap, tab, active, data);
+  fillMode(wrap, status);
 }
 
 function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
@@ -919,6 +921,7 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
     if (pill.className !== cls) pill.className = cls;
     if (pill.textContent !== label) pill.textContent = label;
   }
+  fillMode(wrap, status);
   const railHost = wrap.querySelector('[data-role="rail"]');
   if (railHost) {
     const railSig = `${active}|${stages.map((s) => `${s.name}:${s.status}`).join(',')}`;
@@ -931,6 +934,37 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   fillControls(wrap, tab, data);
   fillBanners(wrap, status);
   fillArtifact(wrap, tab, active, data);
+}
+
+// Same wording the engine itself already logs at startup (orchestrator.mjs)
+// so the dashboard never invents a second vocabulary for the same fact: is a
+// live chat session driving this, or an unattended agent CLI subprocess.
+function modeLabel(status) {
+  if (status.executionSurface === 'host-handoff') {
+    return `chat (IDE host${status.hostClient ? `: ${status.hostClient}` : ''})`;
+  }
+  if (status.executionSurface === 'cli-subprocess') {
+    return `cli (subprocess: ${status.runner || 'unknown'})`;
+  }
+  return null;
+}
+
+function fillMode(wrap, status) {
+  const host = wrap.querySelector('[data-role="mode"]');
+  if (!host) return;
+  const label = modeLabel(status);
+  const sig = `${label || ''}|${status.runnerRequested || ''}`;
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.replaceChildren();
+  if (!label) return;
+  host.append(el('span', { class: 'chip', text: label }));
+  if (status.runnerRequested) {
+    host.append(el('span', {
+      class: 'chip warn', style: 'margin-left:6px',
+      text: `requested ${status.runnerRequested} — running as this chat session instead`,
+    }));
+  }
 }
 
 function fillGoal(wrap, goal) {

@@ -327,7 +327,9 @@ function listRuns(project) {
     let s = null;
     try { s = JSON.parse(fs.readFileSync(path.join(project.paths.runs, id, 'status.json'), 'utf8')); } catch {}
     return {
-      id, featureId:s?.featureId, ticketId:s?.ticketId, host:s?.hostClient || s?.runner, stage:s?.awaitingStage || s?.stages?.find(x=>x.status==='running')?.name, reportRel:fs.existsSync(path.join(project.paths.runs,id,'reports/work-done.html')) ? `.pipeline/runs/${id}/reports/work-done.html` : null, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
+      id, featureId:s?.featureId, ticketId:s?.ticketId,
+      hostClient: s?.hostClient ?? null, runner: s?.runner ?? null, invocationMode: s?.invocationMode ?? null, runnerRequested: s?.runnerRequested ?? null,
+      stage:s?.awaitingStage || s?.stages?.find(x=>x.status==='running')?.name, reportRel:fs.existsSync(path.join(project.paths.runs,id,'reports/work-done.html')) ? `.pipeline/runs/${id}/reports/work-done.html` : null, kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
       verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt,
       live: s?.overall === 'running' || s?.overall === 'awaiting_chat' || s?.overall === 'awaiting_plan_approval',
     };
@@ -341,6 +343,7 @@ function listRuns(project) {
   if (primary && !primary.pool) {
     runs.unshift({
       id: '', kind: 'single', task: primary.task || '(unknown)', overall: primary.overall,
+      hostClient: primary.hostClient ?? null, runner: primary.runner ?? null, invocationMode: primary.invocationMode ?? null, runnerRequested: primary.runnerRequested ?? null,
       verdict: primary.verdict, haltReason: primary.haltReason, startedAt: primary.startedAt,
       live: primary.overall === 'running' || primary.overall === 'awaiting_chat' || primary.overall === 'awaiting_plan_approval',
     });
