@@ -18,7 +18,7 @@
     "AGENTS.md": "d14ce651650b911b9fbe6a442b4ec93092fc3292983cd58ae58569b08e72f6bc",
     "CLAUDE.md": "6cfbe63c278461a3d2f735d3d128a899a4eafa87148212375a109d5a0ee78893",
     "GEMINI.md": "2fa13bac06ff9baba945a162b0076c7c7f2c47c430787093cae24917cb043643",
-    "package.json": "a3de188abc8a73b1397b638d992d09fb860d3353fe202a661a1238a8dbcabec9",
+    "package.json": "94bd7781ec79afbb31bf253466e5b2c6ed2d73eb7d6daa857a5bcc1c4dd87bcd",
     "pipeline/adapters.mjs": "f0c92844d0fa372ec55263d5c5f6768385763fc9cdfbcc6f3195bbcb0ce564bb",
     "pipeline/adapters.test.mjs": "87d42b18bd5f8b990bc64aa5e6c57ba8929e67aadd8f7a710fccd224ed94ef2f",
     "pipeline/artifacts.mjs": "feddefbbcdcdadeb7e66b13e8ff6e8383341760f5789336a65eed3c5f2ba1b84",

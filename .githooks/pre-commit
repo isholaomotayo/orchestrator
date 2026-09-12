@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# .githooks/pre-commit
+#
+# Auto-regenerate skills/orchestrate/scripts/scaffold.sha256 when any file
+# covered by the integrity manifest is part of this commit.  The regenerated
+# manifest is staged automatically so it is always in sync with the tree.
+#
+# Covered paths mirror scaffold-manifest.mjs: COVERED_ROOTS (pipeline/,
+# .pipeline/, skills/) and COVERED_FILES (package.json, AGENTS.md, …).
+# The manifest file itself is intentionally excluded from the check that
+# triggers regeneration — changing ONLY the manifest doesn't need a re-run
+# because it hashes itself out.
+set -euo pipefail
+
+MANIFEST="skills/orchestrate/scripts/scaffold.sha256"
+GEN_SCRIPT="scripts/gen-scaffold-manifest.mjs"
+
+if command -v bun >/dev/null 2>&1; then JS_RUNNER="bun"; else JS_RUNNER="node"; fi
+
+# Collect staged paths (added, copied, modified, renamed).
+staged=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+# Check whether any staged file falls under a covered root or is a covered file,
+# excluding the manifest itself (changing only it doesn't require re-hashing).
+needs_regen=0
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  [ "$f" = "$MANIFEST" ] && continue
+  case "$f" in
+    pipeline/*|.pipeline/*|skills/*|\
+    package.json|AGENTS.md|CLAUDE.md|GEMINI.md|\
+    .cursorrules|.cursor/commands/orchestrate.md|.agent/rules/orchestrate.md)
+      needs_regen=1
+      break
+      ;;
+  esac
+done <<< "$staged"
+
+if [ "$needs_regen" -eq 0 ]; then
+  exit 0
+fi
+
+echo "[pre-commit] Covered files changed — regenerating scaffold.sha256 ..." >&2
+
+if [ ! -f "$GEN_SCRIPT" ]; then
+  echo "[pre-commit] ERROR: $GEN_SCRIPT not found. Run from the repo root." >&2
+  exit 1
+fi
+
+"$JS_RUNNER" "$GEN_SCRIPT" --ref master >/dev/null
+git add "$MANIFEST"
+echo "[pre-commit] scaffold.sha256 updated and staged." >&2

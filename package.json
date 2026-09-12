@@ -12,6 +12,7 @@
     "test": "node --test pipeline/*.test.mjs pipeline/ui/*.test.mjs evals/*.test.mjs skills/orchestrate/scripts/*.test.mjs",
     "typecheck": "for f in pipeline/*.mjs pipeline/ui/*.mjs evals/*.mjs scripts/*.mjs skills/orchestrate/scripts/*.mjs; do node --check \"$f\" || exit 1; done",
     "release:manifest": "node scripts/gen-scaffold-manifest.mjs",
+    "prepare": "bash scripts/install-hooks.sh",
     "ui": "node pipeline/ui-server.mjs",
     "orchestrate": "bash .pipeline/orchestrate.sh",
     "pipeline": "bash .pipeline/orchestrate.sh",
