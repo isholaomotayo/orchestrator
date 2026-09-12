@@ -564,3 +564,65 @@ test('a run tab shows its actual driving mode, including when the requested runn
   assert.match(modeText, /requested cursor/, 'the coerced request stays visible, not silently dropped');
   assert.deepEqual(errors, []);
 });
+
+test('a run tab allows scrolling to view full stage output and artifacts', async (t) => {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      if (url.pathname === '/api/artifact') {
+        const longMd = '# Title\n\n' + Array.from({ length: 50 }, (_, i) => `Paragraph ${i + 1}: detailed report of work done.\n\n`).join('');
+        return res.end(JSON.stringify({ content: longMd }));
+      }
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+        '/api/state': {
+          status: {
+            overall: 'done', stages: [{ name: 'planner', status: 'passed' }],
+            executionSurface: 'host-handoff', invocationMode: 'chat', hostClient: 'antigravity',
+          },
+          artifacts: ['specs.md'],
+        },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.waitForSelector('.artifact-card');
+
+  // Verify the panel is scrollable and can be scrolled down to read the full report
+  const scrollInfo = await page.evaluate(() => {
+    const panel = document.querySelector('.panel.is-run');
+    if (!panel) return null;
+    const canScroll = panel.scrollHeight > panel.clientHeight;
+    panel.scrollTop = 400;
+    return {
+      scrollHeight: panel.scrollHeight,
+      clientHeight: panel.clientHeight,
+      scrollTop: panel.scrollTop,
+      canScroll,
+    };
+  });
+  assert.ok(scrollInfo, 'panel.is-run must exist');
+  assert.ok(scrollInfo.canScroll, `panel must have scrollable content: scrollHeight=${scrollInfo.scrollHeight}, clientHeight=${scrollInfo.clientHeight}`);
+  assert.ok(scrollInfo.scrollTop > 0, `panel must successfully scroll: scrollTop=${scrollInfo.scrollTop}`);
+  assert.deepEqual(errors, []);
+});
+

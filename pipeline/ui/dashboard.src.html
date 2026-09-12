@@ -266,11 +266,11 @@
   .stagebtn { display:flex; gap:7px; align-items:center; border:1px solid var(--border);
     background:var(--surface); border-radius:999px; padding:4px 12px 4px 4px; cursor:pointer; font-size:12.5px; }
   .stagebtn[aria-current="step"] { border-color:var(--focus); font-weight:600; background:var(--surface-hover); }
-  /* A run view pins the chrome and virtualizes the transcript so a live
-     stream cannot rebuild (or even layout) the whole page on every token. */
-  .panel.is-run { display:flex; flex-direction:column; overflow:hidden; padding-bottom:16px; }
-  .panel.is-run .wrap { flex:1; min-height:0; width:100%; display:flex; flex-direction:column; }
-  .feed-shell { flex:1; min-height:140px; overflow-y:auto; margin:0 0 8px; }
+  /* A run view allows the entire panel to scroll naturally so artifacts,
+     reports, and notes below the transcript are always fully reachable. */
+  .panel.is-run { display:block; overflow-y:auto; padding-bottom:60px; }
+  .panel.is-run .wrap { width:100%; display:block; }
+  .feed-shell { min-height:60px; max-height:420px; overflow-y:auto; margin:0 0 16px; }
   .feed { display:flex; flex-direction:column; gap:9px; }
   .block { background:var(--panel); border:1px solid var(--border); border-radius:10px;
     padding:11px 13px; content-visibility:auto; contain-intrinsic-size:auto 60px; }

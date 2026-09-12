@@ -36,7 +36,7 @@ export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git
 // installed skill before any of it is copied or executed — see
 // skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
 // travel out-of-band from the clone.
-export const DEFAULT_REF = 'v3.0.5';
+export const DEFAULT_REF = 'v3.0.6';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
@@ -299,16 +299,16 @@ export function remoteLatestTag(source, { timeoutMs = 5000 } = {}) {
   return tags[tags.length - 1] || null;
 }
 
-/** Resolve the target ref for an update: trust anchor ref -> remote latest tag -> DEFAULT_REF. */
+/** Resolve the target ref for an update: remote latest tag -> trust anchor ref -> DEFAULT_REF. */
 export function resolveTargetRef(repoRoot, source, { homeDir = os.homedir(), timeoutMs = 4000 } = {}) {
+  const latest = remoteLatestTag(source, { timeoutMs });
+  if (latest) return latest;
   for (const anchor of listTrustAnchors(repoRoot, { homeDir })) {
     try {
       const data = JSON.parse(fs.readFileSync(anchor.manifest, 'utf8'));
       if (data?.ref) return data.ref;
     } catch {}
   }
-  const latest = remoteLatestTag(source, { timeoutMs });
-  if (latest) return latest;
   return DEFAULT_REF;
 }
 
