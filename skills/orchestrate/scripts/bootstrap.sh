@@ -177,14 +177,7 @@ if [ "$UPDATE" -eq 1 ]; then
     echo "[orchestrate] Nothing to update — no scaffold here. Run bootstrap.sh without --update first." >&2
     exit 1
   fi
-  # When updating and no explicit ref was given, discover the latest remote
-  # release tag so an update actually refreshes to the newest upstream release.
-  if [ -z "$ORCHESTRATOR_REF_GIVEN" ]; then
-    REMOTE_LATEST="$(git ls-remote --tags --refs "$ORCHESTRATOR_REPO" 'refs/tags/v*' 2>/dev/null | awk '{print $2}' | sed 's@^refs/tags/@@' | sort -V | tail -n 1)"
-    if [ -n "$REMOTE_LATEST" ]; then
-      ORCHESTRATOR_REF="$REMOTE_LATEST"
-    fi
-  fi
+
   TMP="$(mktemp -d)"
   cleanup_update() { rm -rf "$TMP"; }
   trap cleanup_update EXIT
