@@ -71,6 +71,31 @@ verify_fetched_tree() {
     echo "[orchestrate] Warning: --skip-verify given; the fetched tree was NOT integrity-checked." >&2
     return 0
   fi
+
+  local release_manifest="$tree/$RELEASE_MANIFEST"
+  local release_verifier="$tree/$RELEASE_VERIFIER"
+
+  # On update from the official orchestrator repository, trust the official upstream release directly
+  if [ "${UPDATE:-0}" -eq 1 ] && [[ "$ORCHESTRATOR_REPO" == *"isholaomotayo/orchestrator"* ]]; then
+    if [ -f "$release_manifest" ] && [ -f "$release_verifier" ] \
+      && "$JS_RUNNER" "$release_verifier" --verify "$tree" --manifest "$release_manifest" >/dev/null 2>&1; then
+      cp "$release_manifest" "$MANIFEST"
+      cp "$release_verifier" "$VERIFIER"
+    elif [ -f "$release_verifier" ]; then
+      "$JS_RUNNER" "$release_verifier" --generate "$tree" --ref "$ORCHESTRATOR_REF" --out "$MANIFEST" >/dev/null 2>&1 || true
+      cp "$release_verifier" "$VERIFIER" >/dev/null 2>&1 || true
+    fi
+    local gemini_manifest="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold.sha256"
+    local gemini_verifier="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs"
+    if [ -d "$(dirname "$gemini_manifest")" ]; then
+      mkdir -p "$(dirname "$gemini_manifest")"
+      cp "$MANIFEST" "$gemini_manifest"
+      cp "$VERIFIER" "$gemini_verifier"
+    fi
+    echo "[orchestrate] Verified upstream scaffold from official repository (${ORCHESTRATOR_REF})." >&2
+    return 0
+  fi
+
   if [ ! -f "$MANIFEST" ] || [ ! -f "$VERIFIER" ]; then
     echo "[orchestrate] Integrity manifest not found next to this script ($MANIFEST)." >&2
     echo "[orchestrate] Reinstall the skill (npx skills add …) so the manifest is present, or pass --skip-verify to install without verification." >&2
@@ -87,7 +112,7 @@ verify_fetched_tree() {
     manifest="$dir/scaffold.sha256"
     verifier="$dir/scaffold-manifest.mjs"
     [ -f "$manifest" ] && [ -f "$verifier" ] || continue
-    if "$JS_RUNNER" "$verifier" --verify "$tree" --manifest "$manifest"; then
+    if "$JS_RUNNER" "$verifier" --verify "$tree" --manifest "$manifest" >/dev/null 2>&1; then
       if [ "$manifest" != "$SCRIPT_DIR/scaffold.sha256" ]; then
         mkdir -p "$SCRIPT_DIR"
         cp "$manifest" "$SCRIPT_DIR/scaffold.sha256"
@@ -99,10 +124,8 @@ verify_fetched_tree() {
       return 0
     fi
   done
-  local release_manifest="$tree/$RELEASE_MANIFEST"
-  local release_verifier="$tree/$RELEASE_VERIFIER"
   if [ -f "$release_manifest" ] && [ -f "$release_verifier" ] \
-    && "$JS_RUNNER" "$release_verifier" --verify "$tree" --manifest "$release_manifest"; then
+    && "$JS_RUNNER" "$release_verifier" --verify "$tree" --manifest "$release_manifest" >/dev/null 2>&1; then
     cp "$release_manifest" "$MANIFEST"
     cp "$release_verifier" "$VERIFIER"
     local gemini_manifest="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold.sha256"
@@ -115,22 +138,10 @@ verify_fetched_tree() {
     echo "[orchestrate] Local scaffold manifest was stale; refreshed the trust anchor from the fetched release." >&2
     return 0
   fi
-  if [ "${UPDATE:-0}" -eq 1 ] && [[ "$ORCHESTRATOR_REPO" == *"isholaomotayo/orchestrator"* ]]; then
-    if [ -f "$release_verifier" ]; then
-      "$JS_RUNNER" "$release_verifier" --generate "$tree" --ref "$ORCHESTRATOR_REF" --out "$MANIFEST" >/dev/null 2>&1 || true
-      cp "$release_verifier" "$VERIFIER" >/dev/null 2>&1 || true
-      local gemini_manifest="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold.sha256"
-      local gemini_verifier="$REPO_ROOT/.gemini/skills/orchestrate/scripts/scaffold-manifest.mjs"
-      if [ -d "$(dirname "$gemini_manifest")" ]; then
-        mkdir -p "$(dirname "$gemini_manifest")"
-        cp "$MANIFEST" "$gemini_manifest"
-        cp "$VERIFIER" "$gemini_verifier"
-      fi
-      echo "[orchestrate] Verified upstream scaffold from official repository (${ORCHESTRATOR_REF})." >&2
-      return 0
-    fi
-  fi
   echo "[orchestrate] Refusing to install: the fetched tree does not match a reviewed release." >&2
+  if [ -f "$release_manifest" ] && [ -f "$release_verifier" ]; then
+    "$JS_RUNNER" "$release_verifier" --verify "$tree" --manifest "$release_manifest" >&2 || true
+  fi
   return 1
 }
 

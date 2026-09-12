@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   generateManifest, verifyManifest, coveredPaths, describeFailure,
   MANIFEST_REL, COVERED_ROOTS,
@@ -123,4 +124,21 @@ test('covered roots include everything that executes or instructs an agent', () 
   for (const root of ['pipeline', '.pipeline', 'skills']) {
     assert.ok(COVERED_ROOTS.includes(root), `${root} must be covered`);
   }
+});
+
+// Catch the common mistake of modifying a covered file and forgetting to
+// regenerate the manifest.  This test verifies the *committed* scaffold.sha256
+// actually matches the current source tree so future PRs can't drift silently.
+test('committed scaffold.sha256 matches the current source tree', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const repoRoot = path.resolve(here, '../../..');
+  const manifestPath = path.join(here, 'scaffold.sha256');
+  let manifest;
+  try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); }
+  catch (err) { assert.fail(`Cannot read scaffold.sha256: ${err.message}`); }
+  const result = verifyManifest(repoRoot, manifest);
+  assert.equal(
+    result.ok, true,
+    `scaffold.sha256 is out of date:\n${describeFailure(result)}\nRun: node scripts/gen-scaffold-manifest.mjs --ref master`,
+  );
 });

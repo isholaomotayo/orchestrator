@@ -58,7 +58,7 @@
     "pipeline/models.mjs": "aea884bffbf2bfaddf3d41a6c651940b3951ebcbc083f9843d81114da3e37e90",
     "pipeline/models.test.mjs": "13fed92227828fda265e79fbe39ca304962e1daaed611b2a019e0505b113f99c",
     "pipeline/orchestrator.mjs": "7e677a26fc7ba0290730a9378038c6dbddb0b4a1cd71792906217d4cec084c17",
-    "pipeline/orchestrator.test.mjs": "5baf62aea330ad8052fce459aeaeb5a1658b64064d025f5e529ed3ac1500f468",
+    "pipeline/orchestrator.test.mjs": "e1b413cc76744b19a818bf93033a8a855fe135a3bcbd6a4d6dfc4676a4b2a182",
     "pipeline/pool-cli.mjs": "d8eb78d910fde60e926aabe8ae17e2216983755709cfdae4106aeb972d139f8b",
     "pipeline/pool.integration.test.mjs": "683110d2bf7f688b3eea64ebbae6fe1433efcb05079377a7abbc9b7388e0fb88",
     "pipeline/pool.mjs": "8acc494c28a8df7bfd101258ecfe14f54140d88da2b464e861c465fb9a65681f",
@@ -91,8 +91,8 @@
     "pipeline/state.mjs": "518168fc18951c68c4fb98e50827630ba99c6c3ffb95c6c2b5728d1a63f7d2bd",
     "pipeline/state.test.mjs": "7484c58e53ad11ce22dc92c662f16e0e3d15551854df4dd8f2cf3ba5118b5e05",
     "pipeline/supervisor-bin.mjs": "dfcfcb7b30ea4e5c121179c2f73ac9aa758abe0555a11095ece548e4176edb32",
-    "pipeline/supervisor.mjs": "4be342bf3c7f0731d0be1ccb1a7d78c8af48aee2da7c733ebeeb83a77818225a",
-    "pipeline/supervisor.test.mjs": "39b8d86497e84bfaced8ed8089fb111e366d920f9f05694d5d537bae66c36c2f",
+    "pipeline/supervisor.mjs": "f7958b98c95dd45ba5b60d1e2c393aa98580fb64047b11ca9376c4ac7498fe88",
+    "pipeline/supervisor.test.mjs": "3f00040b8ccaa19dfd690b406c6f29e7df4d5c2a0ab2a0188220cc1177dd1fa8",
     "pipeline/tickets.mjs": "01bff6fffd781d2ad047a929cb06cbf0a5c2c3cc52f2006c59c2146b7760fc54",
     "pipeline/tickets.test.mjs": "037f46303ca32ec62b3fff46f40c7b1b1bea251e4b67bc3f27ffaf2f47de7bc3",
     "pipeline/ui-server.mjs": "0d813ebc3027f2bcf922a0179a20cffe5dc81242f3ca81759317e5adf02379cb",
@@ -122,9 +122,9 @@
     "skills/notes/SKILL.md": "c427f9c92ac95e8775be4a20eb8c8803af50609a3298665d7bf889d300950582",
     "skills/orchestrate/REFERENCE.md": "9a9b5761862b22a0806640ab0761c9d03af72aba2c48d2855a1196888b1f5b1d",
     "skills/orchestrate/SKILL.md": "cfb46b3e6825a67d498153573bd6cd4b3d7152965d1b1e0b309f5bb2146db0da",
-    "skills/orchestrate/scripts/bootstrap.sh": "1f7f43f40eed6db093484a14baa827c36adf53378ddcfcc9032367a8952f004e",
+    "skills/orchestrate/scripts/bootstrap.sh": "804a9b468669eb9bd0dea167a70684513237ddb5bb12a206aace656f0e4d674d",
     "skills/orchestrate/scripts/scaffold-manifest.mjs": "4a5c986fb5010fea25758c5d77b326572068729de97dff952c28c236690d4c2c",
-    "skills/orchestrate/scripts/scaffold-manifest.test.mjs": "dd2c1d43ca07a5cb5470272bfe786c75b8542290f5df8d25ecb306e87548f955",
+    "skills/orchestrate/scripts/scaffold-manifest.test.mjs": "5273d62376f2138677aec9cdb29ef3ebeed6e4cb98e3e658f52b59c1dac03ce5",
     "skills/unattended/SKILL.md": "35a4483ea03d3a481e224076852154bd7a098add733f3b5859b6fca806d34264"
   }
 }
