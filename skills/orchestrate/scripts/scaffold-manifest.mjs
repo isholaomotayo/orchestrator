@@ -36,7 +36,6 @@ export const COVERED_FILES = [
   'AGENTS.md', 'CLAUDE.md', 'GEMINI.md',
   '.cursorrules',
   '.cursor/commands/orchestrate.md',
-  '.agents/workflows/orchestrate.md',
   '.agent/rules/orchestrate.md',
 ];
 

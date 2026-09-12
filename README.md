@@ -184,8 +184,7 @@ After install + bootstrap, your **existing** project gains:
 
 | Path                                    | Purpose                                                                               |
 | --------------------------------------- | ------------------------------------------------------------------------------------- |
-| `.agents/skills/orchestrate/`           | Skill instructions + bootstrap script (`npx skills add` and/or bootstrap)             |
-| `.agents/workflows/orchestrate.md`      | Antigravity workflow — registers `/orchestrate`                                       |
+| `.agents/skills/orchestrate/`           | Skill instructions + bootstrap script — registers `/orchestrate`                      |
 | `.agent/rules/orchestrate.md`           | Antigravity always-on rule (chat-mode mandate)                                        |
 | `.pipeline/`                            | Config, prompts, entrypoint (`orchestrate.sh`), run artifacts (gitignored at runtime) |
 | `.pipeline/install.json`                | Installed version + file manifest — commit it; drives safe updates                     |
@@ -782,7 +781,6 @@ After bootstrap, agents in your project are steered toward `/orchestrate` via:
 | File                                  | Agent                                                                                |
 | ------------------------------------- | ------------------------------------------------------------------------------------ |
 | `.agents/skills/orchestrate/SKILL.md` | Installed skill (`npx skills add` / bootstrap) — slash command `/orchestrate`        |
-| `.agents/workflows/orchestrate.md`    | Antigravity workflow — registers `/orchestrate` in Antigravity chat                  |
 | `.agent/rules/orchestrate.md`         | Antigravity always-on rule (`--mode chat --host-client antigravity`, never delegate) |
 | `.cursor/commands/orchestrate.md`     | Cursor slash command (bootstrapped if missing)                                       |
 | `.cursorrules`                        | Cursor always-on rulebook (bootstrapped if missing)                                  |

@@ -21,8 +21,8 @@ When it has been explicitly requested:
 
 ### Antigravity (IDE chat)
 
-- Antigravity discovers the workflow at `.agents/workflows/orchestrate.md` (registers `/orchestrate`), the always-on rule at `.agent/rules/orchestrate.md`, and the skill at `.agents/skills/orchestrate/SKILL.md`.
-- From an Antigravity chat, ALWAYS invoke with `--mode chat --host-client antigravity` and never delegate to an external agent CLI — this chat completes every stage. See `.agents/workflows/orchestrate.md` for the full loop.
+- Antigravity discovers the always-on rule at `.agent/rules/orchestrate.md` and the skill at `.agents/skills/orchestrate/SKILL.md` (registers `/orchestrate`).
+- From an Antigravity chat, ALWAYS invoke with `--mode chat --host-client antigravity` and never delegate to an external agent CLI — this chat completes every stage. See `.agents/skills/orchestrate/SKILL.md` for the full loop.
 - Auto model profiles adapt to the host client: Antigravity gets Gemini-family suggestions; unknown hosts get the `current-chat` sentinel (use your active chat model).
 
 ### Self-repo guard

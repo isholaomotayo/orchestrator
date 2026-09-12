@@ -9,7 +9,7 @@ ORCHESTRATOR_REF_GIVEN="${ORCHESTRATOR_REF:-}"
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.3}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.4}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from
@@ -129,6 +129,20 @@ verify_fetched_tree() {
   return 1
 }
 
+fetch_scaffold() {
+  local target_dir="$1"
+  local clone_output
+  echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF ..."
+  if ! clone_output="$(git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$target_dir" 2>&1)"; then
+    echo "$clone_output" >&2
+    return 1
+  fi
+  local filtered
+  filtered="$(echo "$clone_output" | grep -v 'is not a commit!' | grep -v '^[[:space:]]*$' || true)"
+  [ -n "$filtered" ] && echo "$filtered" >&2
+  return 0
+}
+
 UPDATE=0
 FORCE=0
 SKIP_VERIFY=0
@@ -169,8 +183,9 @@ if [ "$UPDATE" -eq 1 ]; then
   TMP="$(mktemp -d)"
   cleanup_update() { rm -rf "$TMP"; }
   trap cleanup_update EXIT
-  echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF ..."
-  git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
+  if ! fetch_scaffold "$TMP"; then
+    exit 1
+  fi
   if ! verify_fetched_tree "$TMP"; then
     exit 1
   fi
@@ -197,8 +212,9 @@ TMP="$(mktemp -d)"
 cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
 
-echo "[orchestrate] Fetching scaffold from $ORCHESTRATOR_REPO@$ORCHESTRATOR_REF ..."
-git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$ORCHESTRATOR_REF" "$ORCHESTRATOR_REPO" "$TMP"
+if ! fetch_scaffold "$TMP"; then
+  exit 1
+fi
 
 # Verify BEFORE copying or executing anything from the fetched tree.
 if ! verify_fetched_tree "$TMP"; then
@@ -267,13 +283,11 @@ for SIBLING in digest catchup unattended notes; do
   fi
 done
 
-# Antigravity workflow (registers /orchestrate in Antigravity chat)
-if [ -f "$TMP/.agents/workflows/orchestrate.md" ]; then
-  mkdir -p "$REPO_ROOT/.agents/workflows"
-  if [ ! -f "$REPO_ROOT/.agents/workflows/orchestrate.md" ]; then
-    cp "$TMP/.agents/workflows/orchestrate.md" "$REPO_ROOT/.agents/workflows/"
-    echo "[orchestrate] Antigravity workflow installed → .agents/workflows/orchestrate.md"
-  fi
+# Clean up legacy .agents/workflows/orchestrate.md which caused duplicate
+# /orchestrate slash command collision in Antigravity (SKILL.md is the canonical skill).
+if [ -f "$REPO_ROOT/.agents/workflows/orchestrate.md" ]; then
+  rm -f "$REPO_ROOT/.agents/workflows/orchestrate.md"
+  rmdir "$REPO_ROOT/.agents/workflows" 2>/dev/null || true
 fi
 
 # Antigravity always-on rule (chat-mode mandate + isolation)

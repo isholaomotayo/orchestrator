@@ -457,7 +457,7 @@ test('resolveTargetRef prefers the trust anchor ref when one is installed', () =
 
 test('resolveTargetRef falls back to DEFAULT_REF when no anchor has a ref and remote fails', () => {
   const repo = tmpDir('orch-target-ref-empty-');
-  const ref = resolveTargetRef(repo, 'https://invalid-host-that-does-not-exist.local/repo.git', { homeDir: emptyHome() });
+  const ref = resolveTargetRef(repo, 'http://127.0.0.1:1/repo.git', { homeDir: emptyHome(), timeoutMs: 1000 });
   assert.equal(ref, DEFAULT_REF);
   fs.rmSync(repo, { recursive: true, force: true });
 });

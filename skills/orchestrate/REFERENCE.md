@@ -39,7 +39,7 @@ Copies `.pipeline/`, `pipeline/`, and merges `package.json` scripts from the Git
 ## Supply-chain integrity
 
 Every fetch — the initial bootstrap clone and every `--update` / `--self-update`
-— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v3.0.3`),
+— is **pinned to a tagged release** (`ORCHESTRATOR_REF`, currently `v3.0.4`),
 never a floating branch, and the fetched tree is then **verified file-by-file
 against `scaffold.sha256`** before anything in it is copied or executed.
 
@@ -132,8 +132,7 @@ Bootstrap installs these into consumers (Antigravity, verified July 2026):
 
 | Path | Purpose |
 |------|---------|
-| `.agents/skills/orchestrate/SKILL.md` | Workspace skill (also the agents-standard skill location) |
-| `.agents/workflows/orchestrate.md` | Workflow — registers `/orchestrate` in Antigravity chat |
+| `.agents/skills/orchestrate/SKILL.md` | Workspace skill — registers `/orchestrate` in Antigravity chat |
 | `.agent/rules/orchestrate.md` | Always-on rule: `--mode chat --host-client antigravity`, never delegate to an external CLI |
 
 ## Per-stage model selection

@@ -36,7 +36,7 @@ export const DEFAULT_SOURCE = 'https://github.com/isholaomotayo/orchestrator.git
 // installed skill before any of it is copied or executed — see
 // skills/orchestrate/scripts/scaffold-manifest.mjs for why the manifest must
 // travel out-of-band from the clone.
-export const DEFAULT_REF = 'v3.0.3';
+export const DEFAULT_REF = 'v3.0.4';
 // Relative to the consumer project: the manifest and verifier delivered by the
 // skill install. `.agents/…` is where bootstrap.sh puts them (the source path
 // `skills/…` is deliberately never written into a consumer — it is the
@@ -110,7 +110,6 @@ export const MANAGED = [
   { src: 'skills/catchup', dest: '.gemini/skills/catchup', cls: 'tunable', tree: true, only: ['SKILL.md'] },
   { src: 'skills/unattended', dest: '.gemini/skills/unattended', cls: 'tunable', tree: true, only: ['SKILL.md'] },
   { src: 'skills/notes', dest: '.gemini/skills/notes', cls: 'tunable', tree: true, only: ['SKILL.md'] },
-  { src: '.agents/workflows/orchestrate.md', dest: '.agents/workflows/orchestrate.md', cls: 'tunable' },
   { src: '.agent/rules/orchestrate.md', dest: '.agent/rules/orchestrate.md', cls: 'tunable' },
   { src: '.cursor/commands/orchestrate.md', dest: '.cursor/commands/orchestrate.md', cls: 'tunable' },
   { src: '.cursorrules', dest: '.cursorrules', cls: 'tunable' },
@@ -301,14 +300,14 @@ export function remoteLatestTag(source, { timeoutMs = 5000 } = {}) {
 }
 
 /** Resolve the target ref for an update: trust anchor ref -> remote latest tag -> DEFAULT_REF. */
-export function resolveTargetRef(repoRoot, source, { homeDir = os.homedir() } = {}) {
+export function resolveTargetRef(repoRoot, source, { homeDir = os.homedir(), timeoutMs = 4000 } = {}) {
   for (const anchor of listTrustAnchors(repoRoot, { homeDir })) {
     try {
       const data = JSON.parse(fs.readFileSync(anchor.manifest, 'utf8'));
       if (data?.ref) return data.ref;
     } catch {}
   }
-  const latest = remoteLatestTag(source);
+  const latest = remoteLatestTag(source, { timeoutMs });
   if (latest) return latest;
   return DEFAULT_REF;
 }
