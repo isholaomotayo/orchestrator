@@ -422,5 +422,25 @@ test('the coordinator skills are delivered to consumers, never at the source pat
 });
 
 test('the pinned release ref matches the version being shipped', () => {
-  assert.equal(DEFAULT_REF, 'v2.0.1');
+  // A hardcoded string-equals-string here (the previous form of this test)
+  // proves nothing: it still passes even when a release bumps package.json
+  // and tags a new commit but forgets to move this pin, which is exactly
+  // what happened for v3.0.0 — every consumer's --update kept re-fetching
+  // v2.0.1 forever, silently, with "already up to date" as the only signal.
+  // Deriving the expected value from package.json is what actually catches
+  // that class of mistake on the next release too.
+  const repoRoot = path.dirname(new URL('.', import.meta.url).pathname);
+  const version = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).version;
+  assert.equal(DEFAULT_REF, `v${version}`);
+});
+
+test("bootstrap.sh's own ORCHESTRATOR_REF default is kept in sync with installer.mjs's DEFAULT_REF", () => {
+  // bootstrap.sh cannot import DEFAULT_REF (there is no installed installer.mjs
+  // yet on a first-ever bootstrap), so it carries its own copy of the same
+  // pin — the two are only ever kept honest by a test like this one.
+  const repoRoot = path.dirname(new URL('.', import.meta.url).pathname);
+  const script = fs.readFileSync(path.join(repoRoot, 'skills/orchestrate/scripts/bootstrap.sh'), 'utf8');
+  const match = /ORCHESTRATOR_REF="\$\{ORCHESTRATOR_REF:-(v[\d.]+)\}"/.exec(script);
+  assert.ok(match, 'bootstrap.sh must declare an ORCHESTRATOR_REF default in the expected form');
+  assert.equal(match[1], DEFAULT_REF);
 });
