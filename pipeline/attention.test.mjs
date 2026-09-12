@@ -188,9 +188,13 @@ test('an unchanged claim-run does not re-escalate on every tick', () => {
   assert.equal(ev, null);
 });
 
-test('an unclaimed run resurfaces after the recheck window, same as a paused/held run', () => {
+test('an unclaimed run resurfaces after claimResurfaceMs (24h), not the shorter pauseResurfaceMs (1h)', () => {
   const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } };
-  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.pauseResurfaceMs + 1000), now }, T);
+  // Still within the claim window — must not re-surface.
+  const tooSoon = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.pauseResurfaceMs + 1000), now }, T);
+  assert.equal(tooSoon, null, 'claim-run must not re-surface at the 1h pauseResurfaceMs cadence');
+  // Beyond claimResurfaceMs — now it should resurface.
+  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.claimResurfaceMs + 1000), now }, T);
   assert.equal(later.kind, 'claim-run');
   assert.equal(later.escalate, true);
 });

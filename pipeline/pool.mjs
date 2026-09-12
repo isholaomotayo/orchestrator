@@ -37,6 +37,11 @@ export function poolConfig(config) {
     staleAfterMs: raw.staleAfterMs ?? DEFAULT_THRESHOLDS.staleAfterMs,
     staleEscalateMs: raw.staleEscalateMs ?? DEFAULT_THRESHOLDS.staleEscalateMs,
     pauseResurfaceMs: raw.pauseResurfaceMs ?? DEFAULT_THRESHOLDS.pauseResurfaceMs,
+    // How often an unclaimed host-stage `claim-run` card is re-surfaced.
+    // Deliberately separate from pauseResurfaceMs (which governs held/paused
+    // decisions): host-stage parks should only resurface as a safety net for
+    // forgotten runs, not as a recurring reminder that floods the queue.
+    claimResurfaceMs: raw.claimResurfaceMs ?? DEFAULT_THRESHOLDS.claimResurfaceMs,
     autoResumeMax: raw.autoResumeMax ?? 2,
     serializeOnFileOverlap: raw.serializeOnFileOverlap !== false,
     featurePlanApproval: raw.featurePlanApproval !== false,
@@ -49,6 +54,12 @@ export function poolConfig(config) {
     defaultRunner: raw.defaultRunner ?? (config.runner && config.runner !== 'auto' ? config.runner : 'auto'),
     ticketFlags: raw.ticketFlags || {},
     integrationFlags: raw.integrationFlags || { reviewPanel: true },
+    // Maximum number of host-runner runs allowed to sit in awaiting_chat at
+    // the same time. CLI runners can work in parallel; a host runner relies on
+    // the attending chat session, which is sequential. Set to 1 (default) so
+    // the supervisor only parks the next host stage once the previous one has
+    // been claimed and continued, keeping exactly one claim-run card active.
+    hostConcurrency: raw.hostConcurrency ?? 1,
   };
 }
 

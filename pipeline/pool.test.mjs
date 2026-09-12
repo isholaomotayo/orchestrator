@@ -374,6 +374,23 @@ test('an explicit pool.defaultRunner wins over the top-level runner setting', ()
   assert.equal(poolConfig({ runner: 'claude', pool: { defaultRunner: 'host' } }).defaultRunner, 'host');
 });
 
+test('poolConfig defaults hostConcurrency to 1 (sequential host-mode spawning)', () => {
+  assert.equal(poolConfig({}).hostConcurrency, 1);
+  assert.equal(poolConfig({ pool: {} }).hostConcurrency, 1);
+});
+
+test('poolConfig respects an explicit pool.hostConcurrency override', () => {
+  assert.equal(poolConfig({ pool: { hostConcurrency: 3 } }).hostConcurrency, 3);
+});
+
+test('poolConfig defaults claimResurfaceMs to 24 hours', () => {
+  assert.equal(poolConfig({}).claimResurfaceMs, 86_400_000);
+});
+
+test('poolConfig respects an explicit pool.claimResurfaceMs override', () => {
+  assert.equal(poolConfig({ pool: { claimResurfaceMs: 3_600_000 } }).claimResurfaceMs, 3_600_000);
+});
+
 test('notes are written as committable markdown with provenance', () => {
   const paths = tmpPool();
   const res = addNote(paths, { kind: 'gotcha', text: 'The migration must run before the backfill', runId: 'r1' });

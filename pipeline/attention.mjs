@@ -22,6 +22,11 @@ export const DEFAULT_THRESHOLDS = {
   staleEscalateMs: 240_000,
   // How often a declared wait or hold is put back in front of a human.
   pauseResurfaceMs: 3_600_000,
+  // How often an unclaimed host-stage `claim-run` card is re-surfaced.
+  // Much longer than pauseResurfaceMs: in host mode the attending agent is
+  // expected to drain the queue sequentially on its own initiative. This is
+  // only a safety-net for runs forgotten across a session restart.
+  claimResurfaceMs: 86_400_000, // 24 h
 };
 
 // Verbs that mean the run is waiting on a person rather than on itself.
@@ -101,7 +106,7 @@ export function classifyEvent({
       if (changed) {
         return make('claim-run', true, `Ready for a human to complete the "${stage}" stage in chat — run \`pool claim ${runId}\`.`);
       }
-      if (verbSince && now - Date.parse(verbSince) > thresholds.pauseResurfaceMs) {
+      if (verbSince && now - Date.parse(verbSince) > thresholds.claimResurfaceMs) {
         return make('claim-run', true, `Still waiting to be claimed: "${stage}" — run \`pool claim ${runId}\`.`);
       }
       return null;

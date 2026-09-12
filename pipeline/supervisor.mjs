@@ -276,6 +276,16 @@ export function createSupervisor({
       .filter((t) => t.status === 'running' && t.runId)
       .map((t) => [t.runId, tickets.find((x) => x.id === t.id)?.files || []]));
 
+    // In host mode the attending chat session is sequential — cap the wave to
+    // however many host-concurrent slots are still free so the agent never
+    // sees more than `hostConcurrency` claim-run cards at once.
+    const featureRunner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
+    const isHostFeature = featureRunner === 'host';
+    const hostWaiting = isHostFeature
+      ? runs.filter((r) => r.featureId === feature.id && r.status?.overall === 'awaiting_chat').length
+      : 0;
+    const hostSlotsFree = isHostFeature ? Math.max(0, (poolCfg.hostConcurrency ?? 1) - hostWaiting) : Infinity;
+
     const wave = scheduleTickets(tickets, {
       done, running,
       maxParallel: Math.min(feature.maxParallel || poolCfg.maxParallel, running.length + availableSlots()),
@@ -283,8 +293,12 @@ export function createSupervisor({
       serializeOnFileOverlap: poolCfg.serializeOnFileOverlap,
     });
 
+    // Trim the wave for host-runner features so we never spawn more concurrent
+    // host runs than the concurrency limit allows.
+    const cappedWave = isHostFeature ? wave.slice(0, hostSlotsFree) : wave;
+
     const updated = [...recorded];
-    for (const ticket of wave) {
+    for (const ticket of cappedWave) {
       const foreign = pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
       if (poolCfg.serializeOnFileOverlap && foreign.some(r => !ticket.files.length || !r.meta?.files?.length || ticket.files.some(f => r.meta.files.some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
       const runId = newRunId({ featureId: feature.id, ticketId: ticket.id, kind: 'ticket' });
@@ -326,7 +340,7 @@ export function createSupervisor({
       if (row) { row.runId = runId; row.status = ticketStatus; }
       else { updated.push({ id: ticket.id, title: ticket.title, runId, status: ticketStatus }); }
     }
-    if (wave.length || !feature.tickets?.length) {
+    if (cappedWave.length || !feature.tickets?.length) {
       saveRoadmap(setFeatureStatus(roadmap(), feature.id, 'executing', { tickets: updated }));
     }
   }
@@ -349,6 +363,17 @@ export function createSupervisor({
   /** Every ticket committed: merge them onto the feature branch and review it. */
   function integrateFeature(rm, feature) {
     if (!availableSlots()) return;
+    // In host mode, don't start integration while any ticket run is still
+    // awaiting_chat — the attending agent must finish each ticket before we
+    // land the integration run on top. Without this guard, the integration
+    // `claim-run` would appear before the agent has completed all tickets.
+    const featureRunner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
+    if (featureRunner === 'host') {
+      const hostTicketWaiting = pool.listRunStates(paths, poolCfg, now()).some(
+        (r) => r.featureId === feature.id && r.kind === 'ticket' && r.status?.overall === 'awaiting_chat',
+      );
+      if (hostTicketWaiting) return;
+    }
     const validatedTarget = currentSha(repoRoot, targetRef(rm));
     const runId = newRunId({ featureId: feature.id, kind: 'integration' });
     const runPaths = pipelinePaths(repoRoot, { runId });
