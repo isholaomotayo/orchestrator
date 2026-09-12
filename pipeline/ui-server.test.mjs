@@ -391,3 +391,22 @@ test('continue for a selected pool run writes --run-id into that run directory',
   assert.match(out, /--continue/);
   assert.ok(!fs.existsSync(path.join(root, '.pipeline', 'orchestrator.out')));
 }));
+
+test('/api/run/dismiss marks run dismissed and updates status', withServer(async ({ post, root }) => {
+  const r3 = pipelinePaths(root, { runId: 'r3' });
+  fs.mkdirSync(r3.dir, { recursive: true });
+  fs.writeFileSync(r3.status, JSON.stringify({
+    overall: 'running', awaitingStage: 'planner',
+    stages: [{ name: 'planner', status: 'running' }],
+  }));
+  const res = await post('/api/run/dismiss', { run: 'r3', reason: 'User dismissed test' });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.runId, 'r3');
+
+  const updatedStatus = JSON.parse(fs.readFileSync(r3.status, 'utf8'));
+  assert.equal(updatedStatus.overall, 'halted');
+  assert.equal(updatedStatus.dismissed, true);
+}));
+

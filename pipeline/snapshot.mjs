@@ -94,6 +94,7 @@ export function buildSnapshot({
   }
 
   for (const run of runs) {
+    if (run.dismissed) continue;
     const kind = run.overall === 'halted' ? 'halted' : ['dead','unknown','stale'].includes(run.state) ? run.state : run.state === 'awaiting' ? 'claim-run' : null;
     if (!kind || needsDecision.some(d => d.runId === run.runId)) continue;
     if (kind === 'halted' && features.some(f => f.id === run.featureId && ['landed','accepted'].includes(f.status))) continue;
@@ -110,7 +111,7 @@ export function buildSnapshot({
       reportRel: f.reportRel ?? null,
     }));
 
-  const inProgress = runs.filter(r => !['done','halted'].includes(r.overall)).map((r) => {
+  const inProgress = runs.filter(r => !r.dismissed && !['done','halted'].includes(r.overall)).map((r) => {
     const feature = byFeature.get(r.featureId);
     const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(r.featureId))
       || features.find((f) => f.status === 'queued');
@@ -199,13 +200,13 @@ export function buildSnapshot({
     upNext,
     skills: skills.map((s) => ({ name: s.name, status: s.status })),
     attentionPending: attention.length,
-    history: runs.filter(r => ['done','halted'].includes(r.overall)),
+    history: runs.filter(r => ['done','halted'].includes(r.overall) || r.dismissed),
     totals: { costUsd: runs.some(r => r.costUsd != null) ? costUsd : null, costPartial: runs.some(r => r.costUsd == null || r.costPartial), runsActive: inProgress.filter((r) => r.state === 'busy' || r.state === 'stale').length },
     counts: {
       executing: inProgress.filter(r => r.state === 'busy').length,
       awaitingAgent: inProgress.filter(r => r.state === 'awaiting' && !r.owner).length,
       disconnected: inProgress.filter(r => r.owner?.capability === 'disconnected').length,
-      blocked: runs.filter(r => r.overall === 'halted' || ['dead','unknown','stale'].includes(r.state)).length,
+      blocked: runs.filter(r => !r.dismissed && (r.overall === 'halted' || ['dead','unknown','stale'].includes(r.state))).length,
       awaitingUser: needsDecision.filter(d => d.kind !== 'claim-run').length,
       inProgress: inProgress.length,
       decisions: needsDecision.length,

@@ -99,7 +99,7 @@ function currentTheme() {
 function renderSidebar() {
   const side = $('side');
   side.replaceChildren();
-  const tree = buildTree(state.pool?.snapshot ?? null);
+  const tree = buildTree(state.pool?.snapshot ?? null, state.runs);
 
   if (!tree.enabled) {
     // Single-run project: the sidebar is a plain overview — every run, live
@@ -563,10 +563,24 @@ function decisionCard(item) {
       },
     }));
   }
-  if (item.runId) actions.append(el('button', {
-    class: 'btn ghost', text: item.kind === 'claim-run' ? 'Claim / connect' : 'Open run',
-    onclick: () => open({ kind: 'run', subject: item.runId, title: item.runId }),
-  }));
+  if (item.runId) {
+    actions.append(el('button', {
+      class: 'btn ghost', text: item.kind === 'claim-run' ? 'Claim / connect' : 'Open run',
+      onclick: () => open({ kind: 'run', subject: item.runId, title: item.runId }),
+    }));
+    if (['dead', 'unknown', 'stale', 'halted', 'feature-failed'].includes(item.kind) || !item.decisionId) {
+      actions.append(el('button', {
+        class: 'btn ghost danger', text: 'Dismiss',
+        onclick: async () => {
+          try {
+            await api.dismissRun(item.runId, 'Dismissed from dashboard');
+            toast('Run dismissed.');
+            refresh();
+          } catch (err) { toast(err.message); }
+        },
+      }));
+    }
+  }
 
   return el('div', { class: 'card' }, [
     el('h4', { text: item.question }),
@@ -951,7 +965,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
 
   fillGoal(wrap, data.goal);
   fillControls(wrap, tab, data);
-  fillBanners(wrap, status);
+  fillBanners(wrap, status, active);
   fillArtifact(wrap, tab, active, data);
   fillMode(wrap, status);
 }
@@ -975,7 +989,7 @@ function patchRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   }
   fillGoal(wrap, data.goal);
   fillControls(wrap, tab, data);
-  fillBanners(wrap, status);
+  fillBanners(wrap, status, active);
   fillArtifact(wrap, tab, active, data);
 }
 
@@ -1068,13 +1082,31 @@ function fillControls(wrap, tab, data) {
     onclick: async () => { try { await api.cancelRun(run); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
   }), unavailableReason('cancel', data));
 
+  if (!data.canCancel && run) {
+    list.append(el('div', { class: 'row', style: 'margin-bottom:6px;align-items:center' }, [
+      el('button', {
+        class: 'btn ghost danger', text: 'Dismiss run',
+        onclick: async () => {
+          try {
+            await api.dismissRun(run, 'Dismissed from dashboard');
+            toast('Run dismissed.');
+            refresh();
+          } catch (err) { toast(err.message); }
+        },
+      }),
+      el('span', { class: 'meta', text: 'Dismiss and archive this run.' }),
+    ]));
+  }
+
   host.append(list);
 }
 
-function fillBanners(wrap, status) {
+function fillBanners(wrap, status, active) {
   const host = wrap.querySelector('[data-role="banners"]');
   if (!host) return;
-  const sig = `${status.haltReason || ''}|${status.overall || ''}`;
+  const activeStage = status.stages?.find((s) => s.name === (active || status.awaitingStage));
+  const isAwaitingHost = activeStage?.status === 'awaiting_host' || status.overall === 'awaiting_chat';
+  const sig = `${status.haltReason || ''}|${status.overall || ''}|${isAwaitingHost}`;
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
@@ -1083,6 +1115,10 @@ function fillBanners(wrap, status) {
   }
   if (status.overall === 'awaiting_plan_approval') {
     host.append(el('div', { class: 'banner warn', text: 'This run is waiting for its plan to be approved. Answer it in Decisions, or read the specification below first.' }));
+  }
+  if (isAwaitingHost) {
+    const hostLabel = status.hostClient ? `${status.hostClient} ` : '';
+    host.append(el('div', { class: 'banner', style: 'background:var(--card);border-left:3px solid var(--accent);color:var(--fg)', text: `Active in ${hostLabel}IDE Chat (host) — Stage in progress. Complete work in your IDE chat and run --continue when finished.` }));
   }
 }
 

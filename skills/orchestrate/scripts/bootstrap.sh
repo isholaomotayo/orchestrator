@@ -9,7 +9,7 @@ ORCHESTRATOR_REF_GIVEN="${ORCHESTRATOR_REF:-}"
 # Fetches are pinned to a tagged release, never a floating branch. Keep in sync
 # with pipeline/installer.mjs's DEFAULT_REF (this pre-install path has no local
 # installer.mjs to import it from).
-ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.4}"
+ORCHESTRATOR_REF="${ORCHESTRATOR_REF:-v3.0.5}"
 # Pinning alone is not integrity — a tag can be moved and a repo can be
 # hijacked. The fetched tree is verified file-by-file against the sha256
 # manifest that shipped with THIS skill install, which arrives out-of-band from

@@ -18,6 +18,7 @@ const definitions = {
   'stage.complete': ['Validate and complete the owned stage. Required artifacts, integrity, checks and pending priority messages are enforced by the engine.', ['runId', 'sessionId', 'handoffId', 'leaseToken', 'commandId']],
   'run.inspect': ['Inspect an explicit run and message delivery state.', ['runId']],
   'run.wait': ['Wait up to 60 seconds for a bridge revision change.', ['runId']],
+  'run.dismiss': ['Dismiss and archive an abandoned, stuck, or dead run.', ['runId']],
 };
 const properties = Object.fromEntries(['host','conversationId','sessionId','handoffId','leaseToken','messageId','disposition','reason','text','actualModel','commandId'].map(k => [k,{ type:'string' }]));
 Object.assign(properties, { project: {type:'string'}, runId: {type:['string','null']}, capabilities: {type:'object'}, event: {type:'object'}, reassign: {type:'boolean'}, expectedRevision: {type:'integer'}, afterRevision: {type:'integer'}, timeoutMs: {type:'integer'} });

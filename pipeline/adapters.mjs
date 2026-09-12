@@ -303,6 +303,12 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   }
   handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, instructions: 'Register your host conversation, run.claim this handoff, run.checkpoint before work and after tool batches, acknowledge and resolve operator messages, then stage.complete. Never edit control state directly.', command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
   handoff.eventCommand = hostEventCommand({ runId: paths.runId, stage });
+  const runFlag = paths.runId ? ` --run-id ${paths.runId}` : '';
+  handoff.progressStream = {
+    heartbeat: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind text --text "<action_summary>"`,
+    toolCall: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind tool --tool <tool_name> --file <file_path>`,
+    frequency: 'Run heartbeat immediately upon starting stage, after each major tool batch or file edit, and before stage completion.',
+  };
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }

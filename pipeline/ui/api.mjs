@@ -50,5 +50,6 @@ export function createApi(projectRef) {
     cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
     extendRun: (cycles, run) => post('/api/extend', { cycles, ...(run ? { run } : {}) }),
+    dismissRun: (run, reason) => post('/api/run/dismiss', { run, reason }),
   };
 }

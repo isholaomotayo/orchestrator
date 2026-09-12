@@ -32,6 +32,8 @@ const WAITING_VERBS = ['needs-decision', 'blocked', 'paused', 'held'];
  * @returns {'busy'|'stale'|'awaiting'|'idle'|'dead'|'unknown'}
  */
 export function classifyRun({ status, pidAlive, lastOutputAt, lastVerb = null, meta = null, now = Date.now() }, thresholds = DEFAULT_THRESHOLDS) {
+  if (status?.dismissed || meta?.dismissed) return 'idle';
+
   // No readable status at all: a spawn that has not yet written status.json is
   // still a live start if the worker pid is up; a vanished pid is a crash.
   if (!status?.overall) {

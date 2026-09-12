@@ -60,13 +60,46 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   }
   const stamp = new Date(now).toISOString();
   const input = { ...args }; delete input.commandId; delete input.expectedRevision;
-  return transact(p.control, command, input, state => {
+  return transact(p.control, command, input, (state, stageFile) => {
     if (command === 'session.register') {
       if (!HOSTS.includes(args.host) || !args.conversationId?.trim()) throw new Error('host and conversationId are required.');
       const sessionId = crypto.createHash('sha256').update(`${p.root}\0${args.host}\0${args.conversationId}`).digest('hex').slice(0, 24);
       const prev = state.sessions[sessionId];
       state.sessions[sessionId] = { ...prev, sessionId, host: args.host, conversationId: args.conversationId, project: p.root, capabilities: args.capabilities || prev?.capabilities || {}, actualModel: args.actualModel || prev?.actualModel || null, modelSource: args.actualModel ? 'host-observed' : prev?.modelSource || 'unknown', registeredAt: prev?.registeredAt || stamp, connectedAt: stamp };
       return { sessionId, capabilities: state.sessions[sessionId].capabilities };
+    }
+    if (command === 'run.dismiss') {
+      const key = keyOf(args.runId);
+      const reason = args.reason || 'Dismissed by operator';
+      let statusObj = null;
+      try { statusObj = JSON.parse(fs.readFileSync(p.status, 'utf8')); } catch {}
+      if (statusObj) {
+        statusObj.overall = 'halted';
+        statusObj.haltReason = reason;
+        statusObj.dismissed = true;
+        statusObj.dismissedAt = stamp;
+        stageFile(p.status, JSON.stringify(statusObj, null, 2) + '\n');
+      } else {
+        try {
+          if (fs.existsSync(p.dir)) {
+            const entries = fs.readdirSync(p.dir);
+            if (entries.length === 0) {
+              fs.rmdirSync(p.dir);
+            } else {
+              const fallback = {
+                overall: 'halted',
+                haltReason: reason,
+                dismissed: true,
+                dismissedAt: stamp,
+              };
+              stageFile(p.status, JSON.stringify(fallback, null, 2) + '\n');
+            }
+          }
+        } catch {}
+      }
+      delete state.runs[key];
+      (state.dismissedRuns ||= {})[key] = { at: stamp, reason };
+      return { ok: true, runId: args.runId, dismissed: true, reason };
     }
     const status = loadStatus(p);
     const key = keyOf(args.runId);

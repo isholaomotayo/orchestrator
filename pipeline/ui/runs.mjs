@@ -52,14 +52,18 @@ export function formatAge(ms) {
  * so its history stays reachable long after cleanup removes the worktree.
  */
 export function allRuns(pool, singleRunList) {
-  if (pool) return [...(pool.inProgress || []), ...(pool.history || [])];
-  return (singleRunList || []).map((r) => ({
+  const poolRuns = pool ? [...(pool.inProgress || []), ...(pool.history || [])] : [];
+  const singleRuns = (singleRunList || []).map((r) => ({
     runId: r.id, featureId: r.featureId ?? null, ticketId: r.ticketId ?? null,
     kind: r.kind ?? 'run', stage: r.stage ?? null, state: r.live ? 'busy' : 'idle',
     overall: r.overall, haltReason: r.haltReason,
     runner: r.runner ?? null, hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
     spawnedAt: r.startedAt ?? null, reportRel: r.reportRel ?? null, title: r.task,
   }));
+  if (!pool) return singleRuns;
+  const poolIds = new Set(poolRuns.map((r) => r.runId));
+  const extras = singleRuns.filter((r) => !poolIds.has(r.runId));
+  return [...extras, ...poolRuns];
 }
 
 // One label for the Runs table's "Host" column, consistent whether the

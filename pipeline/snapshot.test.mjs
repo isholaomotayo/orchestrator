@@ -261,3 +261,18 @@ test('hostClient/invocationMode/runnerRequested default to null rather than bein
   assert.equal(r1.invocationMode, null);
   assert.equal(r1.runnerRequested, null);
 });
+
+test('dismissed runs are excluded from needsDecision, inProgress, and blocked count', () => {
+  const stuckRuns = [
+    { runId: 'r_dead', state: 'dead', overall: 'running', dismissed: true },
+    { runId: 'r_unknown', state: 'unknown', overall: null, dismissed: true },
+    { runId: 'r_active', state: 'busy', overall: 'running', dismissed: false },
+  ];
+  const s = buildSnapshot({ roadmap, runs: stuckRuns, decisions: [], attention: [], supervisor, now: new Date('2026-09-06T12:00:00Z') });
+  assert.equal(s.needsDecision.some((d) => d.runId === 'r_dead'), false);
+  assert.equal(s.needsDecision.some((d) => d.runId === 'r_unknown'), false);
+  assert.equal(s.inProgress.some((r) => r.runId === 'r_dead'), false);
+  assert.equal(s.inProgress.some((r) => r.runId === 'r_unknown'), false);
+  assert.equal(s.counts.blocked, 0);
+  assert.equal(s.history.some((r) => r.runId === 'r_dead'), true);
+});

@@ -7,7 +7,7 @@
 // it can be wrong about a recommendation, but it cannot be wrong about state.
 import fs from 'node:fs';
 import { readUsage } from './usage.mjs';
-import { inspectBridge, bridgeCommand } from './bridge.mjs';
+import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -108,12 +108,16 @@ export function compile(paths, { now = new Date() } = {}) {
 export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date.now()) {
   let ids = [];
   try { ids = fs.readdirSync(paths.runs).filter((d) => isValidRunId(d)); } catch { return []; }
+  let dismissedMap = {};
+  try { dismissedMap = readBridge(paths.root)?.dismissedRuns || {}; } catch {}
   const runs = [];
   for (const runId of ids.sort().reverse()) {
     const runPaths = pipelinePaths(paths.root, { runId });
     let status = null;
     try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* unreadable stays unknown */ }
     const meta = readRunMeta(runPaths);
+    const isDismissed = !!(status?.dismissed || meta?.dismissed || dismissedMap[runId]);
+    if (isDismissed && status) status.dismissed = true;
     const lock = readLock(runPaths);
     const verbs = readStatusLog(runPaths);
     // `note` is informational by definition. Letting it become the current verb
@@ -129,6 +133,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
       paths: runPaths,
       status,
       meta,
+      dismissed: isDismissed,
       featureId: meta?.featureId ?? status?.featureId ?? null,
       ticketId: meta?.ticketId ?? status?.ticketId ?? null,
       kind: meta?.kind ?? 'ticket',
@@ -210,6 +215,7 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
       branch: r.branch, costUsd: r.costUsd, costPartial: r.partial, owner: r.owner, handoffId: r.handoffId, overall: r.status?.overall, haltReason: r.status?.haltReason,
       runner: r.runner, hostClient: r.hostClient, invocationMode: r.invocationMode, runnerRequested: r.runnerRequested,
       spawnedAt: r.spawnedAt, reportRel: r.reportRel,
+      dismissed: r.dismissed,
     })),
     decisions: readDecisions(paths),
     attention: pendingAttention(paths),
@@ -507,6 +513,10 @@ export function pause(paths, why = '') {
 export function resume(paths) {
   try { fs.unlinkSync(paths.paused); } catch { /* already running */ }
   return { paused: false };
+}
+
+export function dismissRun(paths, runId, reason = 'Dismissed by operator') {
+  return bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
 }
 
 export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };

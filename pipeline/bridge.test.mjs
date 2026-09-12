@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
 import {
   bridgeCommand, inspectBridge, readBridge, assertMessagesSettled,
-  validateCompletion, commitCompletion, bindHandoff,
+  validateCompletion, commitCompletion, bindHandoff, bridgePaths,
 } from './bridge.mjs';
 
 function project() {
@@ -436,4 +436,37 @@ test('the engine refuses bare continuation after a claimed run is released', () 
   assert.match(result.stderr, /does not own the run/);
   assert.deepEqual(JSON.parse(fs.readFileSync(p.status)), status);
   assert.equal(inspectBridge(root, runId).messages[0].status, 'queued');
+});
+
+test('run.dismiss halts and dismisses an active or waiting run and clears owner', () => {
+  const root = project(), runId = 'r1';
+  const { p, status } = awaitingRun(root, runId);
+  const session = register(root);
+  claim(root, runId, session.sessionId);
+  assert.ok(inspectBridge(root, runId).owner);
+
+  const res = bridgeCommand('run.dismiss', { project: root, runId, reason: 'Operator dismissed test run' });
+  assert.equal(res.ok, true);
+  assert.equal(res.dismissed, true);
+
+  const updatedStatus = JSON.parse(fs.readFileSync(p.status, 'utf8'));
+  assert.equal(updatedStatus.overall, 'halted');
+  assert.equal(updatedStatus.haltReason, 'Operator dismissed test run');
+  assert.equal(updatedStatus.dismissed, true);
+  assert.ok(updatedStatus.dismissedAt);
+
+  assert.equal(inspectBridge(root, runId).owner, null);
+  const bridge = readBridge(root);
+  assert.ok(bridge.dismissedRuns[runId]);
+});
+
+test('run.dismiss safely handles a run without status.json or with an empty dir', () => {
+  const root = project(), runId = 'r_empty';
+  const p = bridgePaths(root, runId);
+  fs.mkdirSync(p.dir, { recursive: true });
+
+  const res = bridgeCommand('run.dismiss', { project: root, runId, reason: 'Clean empty run' });
+  assert.equal(res.ok, true);
+  assert.equal(res.dismissed, true);
+  assert.equal(fs.existsSync(p.dir), false); // empty dir was cleaned up
 });

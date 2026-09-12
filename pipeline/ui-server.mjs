@@ -737,6 +737,19 @@ const server = http.createServer((req, res) => {
       const result = resumeInterruptedRunUi(project, body || {});
       json(res, result, result.code || 200);
     });
+  } else if (req.method === 'POST' && (url.pathname === '/api/run/dismiss' || url.pathname === '/api/dismiss')) {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => {
+      try {
+        const runId = body?.run || body?.runId || null;
+        const reason = body?.reason || 'Dismissed from dashboard';
+        const result = bridgeCommand('run.dismiss', { project: project.repoRoot, runId, reason });
+        json(res, result);
+      } catch (err) {
+        json(res, { error: err.message }, 409);
+      }
+    });
   } else if (url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html')));

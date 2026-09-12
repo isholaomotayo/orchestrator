@@ -64,7 +64,7 @@ export function attentionLevel(item) {
  * Build the sidebar model.
  * @param {object|null} snapshot a pool snapshot, or null in single-run mode
  */
-export function buildTree(snapshot) {
+export function buildTree(snapshot, singleRunList = []) {
   if (!snapshot) return { enabled: false, sections: [] };
 
   const runsByFeature = new Map();
@@ -106,64 +106,83 @@ export function buildTree(snapshot) {
     inProgress.push({ id: '_other', kind: 'feature', label: 'Other runs', sub: '', dot: 'pending', children: orphanRuns });
   }
 
+  const sections = [
+    {
+      key: 'needsDecision',
+      title: 'Needs your decision',
+      count: (snapshot.needsDecision || []).length,
+      emptyText: 'Nothing right now.',
+      items: (snapshot.needsDecision || []).map((d) => ({
+        id: d.decisionId ?? `${d.kind}:${d.featureId ?? d.runId ?? ''}`,
+        kind: 'decision',
+        label: d.question,
+        sub: [d.featureId, d.runId].filter(Boolean).join(' · '),
+        dot: attentionLevel(d) === 'blocked' ? 'fail' : 'warn',
+        decisionId: d.decisionId ?? null,
+        featureId: d.featureId ?? null,
+        runId: d.runId ?? null,
+        level: attentionLevel(d),
+      })),
+    },
+    {
+      key: 'inProgress',
+      title: 'In progress',
+      count: inProgress.length,
+      emptyText: 'Nothing is running.',
+      items: inProgress,
+    },
+    {
+      key: 'recentlyLanded',
+      title: 'Recently landed',
+      count: (snapshot.recentlyLanded || []).length,
+      emptyText: 'Nothing yet.',
+      items: (snapshot.recentlyLanded || []).map((f) => ({
+        id: f.featureId,
+        kind: 'feature',
+        label: `${f.featureId}: ${f.title}`,
+        sub: f.status === 'accepted' ? `accepted · ${f.deliveryBranch || 'roadmap branch'}` : f.pr?.url ? 'merged · pull request' : 'landed',
+        dot: 'done',
+        reportRel: f.reportRel ?? null,
+        pr: f.pr ?? null,
+      })),
+    },
+    {
+      key: 'upNext',
+      title: 'Up next',
+      count: (snapshot.upNext || []).length,
+      emptyText: 'Nothing queued.',
+      items: (snapshot.upNext || []).map((f) => ({
+        id: f.featureId,
+        kind: 'feature',
+        label: `${f.featureId}: ${f.title}`,
+        sub: f.blockedBy?.length ? `waiting on ${f.blockedBy.join(', ')}` : 'ready',
+        dot: 'pending',
+      })),
+    },
+  ];
+
+  const rootRun = (singleRunList || []).find((r) => r.id === '' || r.runId === '');
+  if (rootRun && rootRun.task) {
+    sections.unshift({
+      key: 'currentRun',
+      title: rootRun.live ? 'Active chat run' : 'Recent chat run',
+      count: 1,
+      emptyText: '',
+      items: [{
+        id: '',
+        kind: 'run',
+        label: rootRun.task ? String(rootRun.task).slice(0, 50) + (rootRun.task.length > 50 ? '…' : '') : 'Chat run',
+        sub: [rootRun.hostClient ? `chat: ${rootRun.hostClient}` : 'chat', rootRun.overall, rootRun.verdict].filter(Boolean).join(' · '),
+        dot: rootRun.overall === 'done' ? 'done' : rootRun.overall === 'halted' ? 'fail' : 'run',
+      }],
+    });
+  }
+
   return {
     enabled: true,
     paused: !!snapshot.supervisor?.paused,
     supervisorAlive: !!snapshot.supervisor?.alive,
-    sections: [
-      {
-        key: 'needsDecision',
-        title: 'Needs your decision',
-        count: (snapshot.needsDecision || []).length,
-        emptyText: 'Nothing right now.',
-        items: (snapshot.needsDecision || []).map((d) => ({
-          id: d.decisionId ?? `${d.kind}:${d.featureId ?? d.runId ?? ''}`,
-          kind: 'decision',
-          label: d.question,
-          sub: [d.featureId, d.runId].filter(Boolean).join(' · '),
-          dot: attentionLevel(d) === 'blocked' ? 'fail' : 'warn',
-          decisionId: d.decisionId ?? null,
-          featureId: d.featureId ?? null,
-          runId: d.runId ?? null,
-          level: attentionLevel(d),
-        })),
-      },
-      {
-        key: 'inProgress',
-        title: 'In progress',
-        count: inProgress.length,
-        emptyText: 'Nothing is running.',
-        items: inProgress,
-      },
-      {
-        key: 'recentlyLanded',
-        title: 'Recently landed',
-        count: (snapshot.recentlyLanded || []).length,
-        emptyText: 'Nothing yet.',
-        items: (snapshot.recentlyLanded || []).map((f) => ({
-          id: f.featureId,
-          kind: 'feature',
-          label: `${f.featureId}: ${f.title}`,
-          sub: f.status === 'accepted' ? `accepted · ${f.deliveryBranch || 'roadmap branch'}` : f.pr?.url ? 'merged · pull request' : 'landed',
-          dot: 'done',
-          reportRel: f.reportRel ?? null,
-          pr: f.pr ?? null,
-        })),
-      },
-      {
-        key: 'upNext',
-        title: 'Up next',
-        count: (snapshot.upNext || []).length,
-        emptyText: 'Nothing queued.',
-        items: (snapshot.upNext || []).map((f) => ({
-          id: f.featureId,
-          kind: 'feature',
-          label: `${f.featureId}: ${f.title}`,
-          sub: f.blockedBy?.length ? `waiting on ${f.blockedBy.join(', ')}` : 'ready',
-          dot: 'pending',
-        })),
-      },
-    ],
+    sections,
   };
 }
 
