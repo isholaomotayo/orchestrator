@@ -220,19 +220,61 @@ function open(spec) {
   render();
 }
 
+// Fixed nav — the five destinations — in a strip of its own, separate from
+// whatever you opened. Rendered in DESTINATIONS' own canonical order rather
+// than tabs.list()'s array order, since a restored hash can interleave a
+// destination anywhere among dynamic tabs.
+function renderDestinations() {
+  const strip = $('destinations');
+  strip.replaceChildren();
+  for (const dest of DESTINATIONS) {
+    const tab = tabs.get(dest.kind);
+    if (!tab) continue; // boot() guarantees all five exist before the first render
+    const selected = tab.id === tabs.activeId();
+    strip.append(el('button', {
+      class: 'dest', role: 'tab', 'aria-selected': String(selected),
+      onclick: () => { tabs.activate(tab.id); syncUrl(); render(); },
+    }, [
+      el('span', { class: 't', text: tab.title || tab.id }),
+      tab.badgeCount ? el('span', { class: 'n', text: String(tab.badgeCount) }) : null,
+    ]));
+  }
+}
+
+// A small kind glyph so an open tab's type is scannable before reading its
+// title. review/report reuse stageIcon's existing reviewer/reporter glyphs —
+// a literal fit for what those tabs are, not a repurposing of stage identity.
+const TAB_KIND_ICON = {
+  run: '<svg class="ic" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 3 21 9 15 9"/></svg>',
+  feature: '<svg class="ic" viewBox="0 0 24 24"><polygon points="12 3 21 8 12 13 3 8"/><polyline points="3 14 12 19 21 14"/></svg>',
+  review: stageIcon('reviewer'),
+  report: stageIcon('reporter'),
+};
+
+// Everything you opened — a run, feature, review, or report — separate from
+// the destinations above it. These are the ones that can be closed.
 function renderTabs() {
   const strip = $('tabs');
   strip.replaceChildren();
-  for (const tab of tabs.list()) {
+  const open = tabs.list().filter((t) => !t.pinned);
+  if (!open.length) {
+    strip.append(el('span', { class: 'tabstrip-empty', text: 'No open tabs — open a run, feature, review, or report to see it here.' }));
+    return;
+  }
+  for (const tab of open) {
     const selected = tab.id === tabs.activeId();
     strip.append(el('button', {
       class: 'tab', role: 'tab', 'aria-selected': String(selected),
       onclick: () => { tabs.activate(tab.id); syncUrl(); render(); },
     }, [
+      TAB_KIND_ICON[tab.kind] ? el('span', { html: TAB_KIND_ICON[tab.kind] }) : null,
       tab.attention ? el('span', { class: `badge ${tab.attention}` }) : null,
       el('span', { class: 't', text: tab.title || tab.id }),
+      // Reserved for a per-run mode indicator (chat/live vs. cli/unattended,
+      // see main.mjs's fillMode) — not built here; the full version already
+      // lives in the run's own tab header.
       tab.badgeCount ? el('span', { class: 'n', text: String(tab.badgeCount) }) : null,
-      tab.pinned ? null : el('span', {
+      el('span', {
         class: 'x', text: '×', title: 'Close',
         onclick: (e) => { e.stopPropagation(); tabs.close(tab.id); syncUrl(); render(); },
       }),
@@ -255,6 +297,7 @@ function syncUrl() {
 let lastPanelTabId = null;
 
 function render() {
+  renderDestinations();
   renderTabs();
   const host = $('panels');
   const tab = tabs.active();
@@ -1417,8 +1460,8 @@ async function initProjects() {
 // ---- keyboard -------------------------------------------------------------
 
 const SHORTCUTS = [
-  ['[ / ]', 'previous / next tab'],
-  ['x', 'close tab'],
+  ['[ / ]', 'previous / next open tab'],
+  ['x', 'close open tab'],
   ['g o', 'overview'], ['g r', 'runs'], ['g a', 'attention'], ['g m', 'messages'], ['g p', 'reports'],
   ['?', 'this list'],
 ];

@@ -119,17 +119,28 @@ test('an event already seen does not re-flag a tab', () => {
   assert.equal(tabs.markAttention('r1', 'decision', { seq: 6 }), true);
 });
 
-test('too many tabs evicts the oldest, never the pinned or the active one', () => {
+test('too many open tabs evicts the oldest non-pinned one, and pinned tabs are never evicted', () => {
   const tabs = createTabStore({ max: 3 });
   tabs.open({ kind: 'home', pinned: true });
   tabs.open({ kind: 'run', subject: 'old' });
   tabs.open({ kind: 'run', subject: 'mid' });
-  tabs.activate('run:old');
-  tabs.open({ kind: 'run', subject: 'new' });
+  tabs.open({ kind: 'run', subject: 'third' });
+  tabs.open({ kind: 'run', subject: 'new' }); // 4th non-pinned tab crosses max:3
   const ids = tabs.list().map((t) => t.id);
   assert.ok(ids.includes('home'), 'pinned survives');
-  assert.ok(ids.includes('run:new'));
-  assert.equal(ids.length, 3);
+  assert.ok(!ids.includes('run:old'), 'the oldest non-pinned tab is evicted (opening a new tab always makes it the active one)');
+  assert.ok(ids.includes('run:new'), 'the just-opened tab is never evicted, being both active and newest');
+  assert.equal(ids.filter((id) => id !== 'home').length, 3, 'non-pinned tabs are capped at max');
+});
+
+test('pinned tabs never count toward the open-tab eviction budget', () => {
+  const tabs = createTabStore({ max: 2 });
+  tabs.open({ kind: 'a', pinned: true });
+  tabs.open({ kind: 'b', pinned: true });
+  tabs.open({ kind: 'c', pinned: true });
+  tabs.open({ kind: 'run', subject: 'x' });
+  tabs.open({ kind: 'run', subject: 'y' });
+  assert.equal(tabs.list().length, 5, 'three pinned + two non-pinned, none evicted at max:2');
 });
 
 test('tabs round-trip through the url so a reload restores the workspace', () => {
@@ -199,14 +210,30 @@ test('setBadgeCount marks a specific tab by id, independent of subject matching'
   assert.equal(tabs.setBadgeCount('does-not-exist', 5), null);
 });
 
-test('moving cycles through tabs in both directions', () => {
+test('moving cycles through open (non-pinned) tabs only, skipping pinned destinations', () => {
   const tabs = createTabStore();
+  tabs.open({ kind: 'home', pinned: true });
   tabs.open({ kind: 'run', subject: 'a' });
   tabs.open({ kind: 'run', subject: 'b' });
   tabs.activate('run:a');
   assert.equal(tabs.move(1).id, 'run:b');
-  assert.equal(tabs.move(1).id, 'run:a', 'wraps around');
+  assert.equal(tabs.move(1).id, 'run:a', 'wraps around within open tabs, never lands on home');
   assert.equal(tabs.move(-1).id, 'run:b');
+});
+
+test('moving from an active destination enters the open-tabs list', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'home', pinned: true });
+  tabs.open({ kind: 'run', subject: 'a' });
+  tabs.open({ kind: 'run', subject: 'b' });
+  tabs.activate('home');
+  assert.equal(tabs.move(1).id, 'run:a');
+});
+
+test('moving with no open tabs is a no-op', () => {
+  const tabs = createTabStore();
+  tabs.open({ kind: 'home', pinned: true });
+  assert.equal(tabs.move(1), null);
 });
 
 // ---- sidebar tree ----------------------------------------------------------

@@ -174,12 +174,29 @@
   .side-foot { border-top:1px solid var(--border); padding:8px 10px; display:flex; gap:6px; flex-wrap:wrap; }
   .resize { position:absolute; top:0; right:-3px; width:6px; height:100%; cursor:col-resize; }
 
-  .main { grid-area:main; display:grid; grid-template-rows:auto 1fr; min-height:0; }
+  .main { grid-area:main; display:grid; grid-template-rows:auto auto 1fr; min-height:0; }
+
+  /* The destination nav: five fixed, always-open, never-closable sections —
+     a top-level nav (underline indicator), not a file-folder tab, so it
+     reads as distinct from the open-tabs strip below it. */
+  .destinations { display:flex; gap:4px; align-items:center; min-height:40px; padding:0 10px;
+    background:var(--panel); border-bottom:1px solid var(--border); flex:none; }
+  .dest { display:flex; align-items:center; gap:6px; height:100%; border:0; background:none;
+    padding:0 12px; cursor:pointer; color:var(--muted); font-size:13px; font-weight:550;
+    white-space:nowrap; position:relative; }
+  .dest:hover { color:var(--text); }
+  .dest[aria-selected="true"] { color:var(--text); }
+  .dest[aria-selected="true"]::after { content:''; position:absolute; left:8px; right:8px; bottom:-1px;
+    height:2px; border-radius:2px 2px 0 0; background:var(--focus); }
+  .dest .n { background:var(--amber-bg); color:var(--amber-text); border-radius:999px; padding:0 6px;
+    font-size:10px; flex:none; }
+
   /* align-items must not be stretch: the buttons would take their height from
      the strip, which takes its height from the buttons, and the whole row
      collapses to its padding. */
   .tabstrip { display:flex; gap:2px; align-items:flex-end; min-height:38px; padding:6px 10px 0;
     background:var(--panel); border-bottom:1px solid var(--border); overflow-x:auto; flex:none; }
+  .tabstrip-empty { color:var(--faint); font-size:12.5px; padding:8px 6px; }
   .tab { display:flex; align-items:center; gap:7px; min-height:30px; border:1px solid transparent; border-bottom:0;
     background:none; border-radius:8px 8px 0 0; padding:6px 10px; cursor:pointer;
     color:var(--muted); white-space:nowrap; max-width:230px; }
@@ -187,6 +204,8 @@
   .tab[aria-selected="true"] { background:var(--bg); color:var(--text);
     border-color:var(--border); font-weight:550; }
   .tab .t { overflow:hidden; text-overflow:ellipsis; }
+  .tab .ico { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:2;
+    stroke-linecap:round; stroke-linejoin:round; flex:none; }
   .tab .badge { width:7px; height:7px; border-radius:50%; flex:none; }
   .tab .n { background:var(--amber-bg); color:var(--amber-text); border-radius:999px; padding:0 6px; font-size:10px; flex:none; }
   .badge.decision { background:var(--orange); }
@@ -370,7 +389,8 @@
   </aside>
 
   <main class="main">
-    <nav class="tabstrip" id="tabs" role="tablist"></nav>
+    <nav class="destinations" id="destinations" role="tablist" aria-label="Sections"></nav>
+    <nav class="tabstrip" id="tabs" role="tablist" aria-label="Open tabs"></nav>
     <div id="panels"></div>
   </main>
 </div>

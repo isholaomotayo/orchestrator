@@ -42,7 +42,7 @@ test('Runs search keeps focus while typing and refreshing, and survives API fail
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.locator('#tabs button').filter({ hasText: /^Runs$/ }).click();
+  await page.locator('#destinations button').filter({ hasText: /^Runs$/ }).click();
   const search = page.getByPlaceholder('Search run or ticket id…');
   await search.click();
   await page.keyboard.type('alpha', { delay: 30 });
@@ -114,8 +114,8 @@ test('Attention keeps an in-progress answer across a background refresh, and dro
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
-  const attentionTab = page.locator('#tabs button').filter({ hasText: /^Attention/ });
-  await page.waitForFunction(() => /Attention\s*2/.test(document.querySelector('#tabs')?.innerText || ''));
+  const attentionTab = page.locator('#destinations button').filter({ hasText: /^Attention/ });
+  await page.waitForFunction(() => /Attention\s*2/.test(document.querySelector('#destinations')?.innerText || ''));
   assert.match(await attentionTab.innerText(), /2/, 'the tab itself shows the pending count, not just the sidebar');
   await attentionTab.click();
   await page.waitForSelector('text=Approve the plan for F1?');
@@ -228,10 +228,11 @@ test('a stale hash naming a removed tab kind does not crash boot', async t => {
   // 'diff' was a declared-but-never-implemented tab kind; a hash from an old
   // session (or a hand-edited URL) can still reference it.
   await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('diff:x')}&active=0`);
-  await page.waitForSelector('#tabs button');
+  await page.waitForSelector('#destinations button');
   // Boot must still land on a real, working destination — not a blank page.
-  await page.locator('#tabs button').filter({ hasText: /^Overview$/ }).waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#tabs button').count(), 5, 'only the five real destinations — the bad tab was dropped, not shown as an error tab');
+  await page.locator('#destinations button').filter({ hasText: /^Overview$/ }).waitFor({ state: 'visible' });
+  assert.equal(await page.locator('#destinations button').count(), 5, 'only the five real destinations — the bad tab was dropped, not shown as an error tab');
+  assert.equal(await page.locator('#tabs button').count(), 0, 'no open tabs — the dropped hash entry never became a content tab');
   assert.deepEqual(errors, []);
 });
 
@@ -440,6 +441,83 @@ test('The "Compare with diff" toggle survives a background refresh', async t => 
   await page.waitForTimeout(100);
   assert.equal(await page.locator('input[type=checkbox]').isChecked(), true, 'the toggle itself stays on');
   assert.equal(await page.locator('.compare-grid .artifact-card').count(), 2, 'the two-column view is not reverted by the background refresh');
+  assert.deepEqual(errors, []);
+});
+
+test('the open-tabs strip shows an empty-state message when nothing is open, separate from the destinations above it', async t => {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.waitForSelector('#destinations button');
+  assert.equal(await page.locator('#destinations button').count(), 5);
+  assert.equal(await page.locator('#tabs button').count(), 0);
+  assert.match(await page.locator('.tabstrip-empty').innerText(), /No open tabs/);
+  assert.deepEqual(errors, []);
+});
+
+test('destinations stay present, clickable, and un-evicted even with many open run tabs', async t => {
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      return;
+    }
+    if (url.pathname === '/api/state') {
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify({ status: { overall: 'running', stages: [] }, artifacts: [] }));
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: false },
+        '/api/runs': { runs: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  // 15 run tabs, well past MAX_TABS (12) — restoring each one calls open(),
+  // which evicts as it goes, so this also exercises eviction directly through
+  // a real page load, not just the store's own unit tests.
+  const many = Array.from({ length: 15 }, (_, i) => `run:r${i}`).join(',');
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent(many)}&active=0`);
+  await page.waitForSelector('#destinations button');
+  assert.equal(await page.locator('#destinations button').count(), 5, 'destinations are never evicted, no matter how many run tabs are open');
+  assert.equal(await page.locator('#tabs button').count(), 12, 'open tabs are capped at the eviction budget');
+  await page.locator('#destinations button').filter({ hasText: /^Overview$/ }).click();
+  await page.waitForSelector('h1:has-text("Orchestrator")');
   assert.deepEqual(errors, []);
 });
 

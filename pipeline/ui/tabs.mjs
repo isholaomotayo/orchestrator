@@ -88,7 +88,10 @@ export function createTabStore({ max = MAX_TABS } = {}) {
   function evict() {
     // Never evict what is pinned or being looked at; drop the least recently
     // opened of the rest, so a burst of new runs cannot bury the tab you are in.
-    while (tabs.length > max) {
+    // Pinned tabs (the fixed destinations) never count toward the budget at
+    // all — they render in their own separate strip, not among the things you
+    // opened, so a run of them piling up is not a "too many tabs" situation.
+    while (tabs.filter((t) => !t.pinned).length > max) {
       const victim = tabs
         .filter((t) => !t.pinned && t.id !== activeId)
         .sort((a, b) => a.openedAt - b.openedAt)[0];
@@ -127,10 +130,20 @@ export function createTabStore({ max = MAX_TABS } = {}) {
     return tab ?? null;
   }
 
+  // Cycles only the open (non-pinned) tabs — the fixed destinations already
+  // have direct single-chord access (g o/r/a/m/p), so mixing them into
+  // next/prev-tab traversal would be doubly redundant now that they render in
+  // their own separate strip. Starting from a destination (or nothing open
+  // yet) lands on the nearest edge of the open-tabs list instead of failing.
   function move(delta) {
-    if (!tabs.length) return null;
-    const index = tabs.findIndex((t) => t.id === activeId);
-    const next = tabs[(((index === -1 ? 0 : index) + delta) % tabs.length + tabs.length) % tabs.length];
+    const open = tabs.filter((t) => !t.pinned);
+    if (!open.length) return null;
+    const index = open.findIndex((t) => t.id === activeId);
+    // Currently on a destination (or nothing was open before): enter at the
+    // nearest edge of the open-tabs list rather than arithmetic on a
+    // not-found index producing an arbitrary starting point.
+    if (index === -1) return activate(open[delta > 0 ? 0 : open.length - 1].id);
+    const next = open[((index + delta) % open.length + open.length) % open.length];
     return activate(next.id);
   }
 
