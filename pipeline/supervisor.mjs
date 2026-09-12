@@ -414,11 +414,15 @@ export function createSupervisor({
   }
 
   function tryMerge(worktree, branch) {
-    const res = nodeSpawnSync('git', ['merge', '--no-ff', '--no-edit', branch], { cwd: worktree, encoding: 'utf8' });
+    const res = nodeSpawnSync('git', [
+      '-c', 'user.name=Orchestrator',
+      '-c', 'user.email=orchestrator@local',
+      'merge', '--no-ff', '--no-edit', branch,
+    ], { cwd: worktree, encoding: 'utf8' });
     if (res.status === 0) return { ok: true, files: [] };
     const conflicted = nodeSpawnSync('git', ['diff', '--name-only', '--diff-filter=U'], { cwd: worktree, encoding: 'utf8' });
     nodeSpawnSync('git', ['merge', '--abort'], { cwd: worktree, encoding: 'utf8' });
-    return { ok: false, files: (conflicted.stdout || '').trim().split('\n').filter(Boolean) };
+    return { ok: false, files: (conflicted.stdout || '').trim().split('\n').filter(Boolean), error: (res.stderr || '').trim() };
   }
 
   function collectTicketChanges(feature, runPaths) {
@@ -621,7 +625,10 @@ export function createSupervisor({
     try {
       createRunWorktree({ repoRoot, runDir: p.dir, worktreePath: p.worktree, branch, baseRef: target });
       const merged = tryMerge(p.worktree, inputHead);
-      if (!merged.ok) throw new Error(`Combined roadmap conflicts with target: ${merged.files.join(', ')}`);
+      if (!merged.ok) {
+        if (!merged.files.length && merged.error) throw new Error(`Combined roadmap merge failed: ${merged.error}`);
+        throw new Error(`Combined roadmap conflicts with target: ${merged.files.join(', ')}`);
+      }
       const specs = path.join(p.dir, 'combined-specs.md');
       const parts = rm.features.filter(f => f.status !== 'skipped').map(f => {
         if (!f.specRunId) throw new Error(`Missing specification run for ${f.id}.`);
