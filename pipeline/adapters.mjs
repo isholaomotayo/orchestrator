@@ -47,11 +47,10 @@ function buildGoogleCliInvocation({ combined, readOnly, modelId, level, runner }
 }
 
 // Resolve a pool feature/ticket's declared runner ('auto'/null/a name) to the
-// runner the supervisor should actually use. 'auto' prefers an authenticated
-// CLI so real parallel automation keeps working unattended, but never throws —
-// falling back to 'host' keeps a roadmap runnable with zero CLI auth at all.
+// runner the supervisor should actually use. Pool work stays with the
+// attending chat unless a CLI runner was explicitly selected.
 export function resolvePoolRunner(requested) {
-  if (!requested || requested === 'auto') return firstAuthenticatedRunner() || 'host';
+  if (!requested || requested === 'auto') return 'host';
   return requested;
 }
 
@@ -83,6 +82,7 @@ export function checkRunnerAvailable(runner, config = {}) {
 // these to decide verdicts, cycle budgets, and what the next stage is told to do,
 // so an agent that can write them can rewrite its own grading.
 export const CONTROL_PLANE_FILES = [
+  '.pipeline/plan_review.md',
   '.pipeline/review_report.md',
   '.pipeline/checker_report.md',
   '.pipeline/status.json',
@@ -456,4 +456,3 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
     });
   });
 }
-

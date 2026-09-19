@@ -19,6 +19,20 @@ test('escaping covers the characters that break out of markup', () => {
   assert.equal(esc('<a & b>'), '&lt;a &amp; b&gt;');
 });
 
+test('a fenced sequence diagram becomes SVG with its source retained', () => {
+  const html = renderMd('## Diagrams\n\n```mermaid\nsequenceDiagram\nA->>B: Check & reply\n```');
+  assert.match(html, /<svg[^>]+role="img"/);
+  assert.match(html, /Check &amp; reply/);
+  assert.match(html, /<summary>Sequence source<\/summary>/);
+});
+
+test('code highlighting never rewrites generated span markup', () => {
+  const html = renderMd('```ts\nconst x = "class";\n```');
+  assert.match(html, /<span class="kw">const<\/span>/);
+  assert.match(html, /<span class="str">"class"<\/span>/);
+  assert.doesNotMatch(html, /class=<span/);
+});
+
 test('a diff splits per file and per repository section', () => {
   const patch = [
     '## repo `app`',
@@ -261,9 +275,9 @@ const snapshot = {
   upNext: [{ featureId: 'F3', title: 'Email', blockedBy: ['F2'] }],
 };
 
-test('the sidebar has the four sections in the order an operator reads them', () => {
+test('the sidebar separates the agent queue from human attention', () => {
   const tree = buildTree(snapshot);
-  assert.deepEqual(tree.sections.map((s) => s.key), ['needsDecision', 'inProgress', 'recentlyLanded', 'upNext']);
+  assert.deepEqual(tree.sections.map((s) => s.key), ['needsDecision', 'agentQueue', 'inProgress', 'recentlyLanded', 'upNext']);
   assert.equal(tree.enabled, true);
 });
 

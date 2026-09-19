@@ -57,6 +57,13 @@ test('validateArtifact requires a parseable verdict from the reviewer', () => {
   assert.match(noVerdict.reason, /verdict/i);
 });
 
+test('the Plan Approver must record a verdict, coverage, and required revisions', () => {
+  const body = `# Plan approval review\n## Spec Coverage\nThe requested behavior is covered.\n## Risks and Evidence\nThe repository test suite exercises the boundary.\n## Required Revisions\nNone.\n${'x'.repeat(200)}`;
+  assert.equal(validateArtifact('plan_reviewer', `## Verdict: APPROVED\n${body}`).ok, true);
+  assert.equal(validateArtifact('plan_reviewer', body).ok, false);
+  assert.equal(validateArtifact('plan_reviewer', `## Verdict: APPROVED\n${body.replace('## Required Revisions', '## Notes')}`).ok, false);
+});
+
 test('validateArtifact leaves the handoff artifact unconstrained beyond length', () => {
   assert.equal(validateArtifact('handoff', 'a real handoff document '.repeat(20)).ok, true);
 });

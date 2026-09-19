@@ -2,18 +2,14 @@
 
 Google Antigravity (the `agy` CLI and IDE) still reads this file. The Gemini CLI has been deprecated; use `--host-client antigravity` and runner `antigravity`.
 
-This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → Handoff → Reporter, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift). Handoff and Reporter are mandatory — every run that reaches an `APPROVED` verdict always produces both, with no flag to disable either.
+This repository ships `/orchestrate` — a portable multi-agent pipeline declared in `.pipeline/skill.json` (Planner → Plan Approver → optional Designer → Coder self-healing loop → Tester → Reviewer or Review Panel → Handoff → Reporter, with a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift). The Plan Approver records the default plan verdict in `plan_review.md`; `--approve-plan` adds a human gate. Handoff and Reporter are mandatory — every run that reaches an `APPROVED` verdict always produces both, with no flag to disable either.
 
 Use it only when the user **explicitly** asks for it (`/orchestrate`, "orchestrate this", "run the pipeline", "use the multi-agent pipeline"). Do NOT infer an implicit request from an ordinary "build this feature" / "fix this bug" / "refactor this" ask — do those directly. Never self-invoke, and never use it to hand off a task you were asked to do yourself.
 
 ## When `/orchestrate` was explicitly requested:
 
 1. **Pre-flight**: if `.pipeline/.lock` exists, a pipeline run is active — do not start overlapping autonomous work.
-2. **Model selection (required before starting)**: Ask the user:
-   > Use automatic cost-optimized models per stage, or pick models manually for Planner / Coder / Tester / Reviewer?
-   - **Automatic** → pass `--model-profile auto`
-   - **Manual** → collect four model IDs, then pass `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
-   This is the **only** pre-run question.
+2. **Model selection**: Use `--model-profile auto` by default. If the user explicitly requests manual selection, collect four model IDs and pass `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`.
 3. **Invoke** (you are a chat session — always pass `--mode chat --host-client antigravity`; never pass `--runner` and never delegate stages to another agent CLI; exit code 3 means this is the orchestrator SOURCE repo, which must not be targeted):
    ```bash
    bash .pipeline/orchestrate.sh "<user requirements>" --mode chat --host-client antigravity --model-profile auto

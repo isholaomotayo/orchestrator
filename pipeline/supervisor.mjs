@@ -7,7 +7,8 @@
 // Judgment belongs to the coordinator agent and the operator; this process only
 // notices, classifies, and escalates.
 //
-// One feature runs at a time. Within a feature, tickets run in parallel:
+// Features and explicitly selected CLI tickets may run in parallel. Host
+// stages share one pool-wide attended slot by default:
 //
 //   plan  ──▶ tickets (parallel, one worktree each) ──▶ integrate ──▶ merge
 //    │              │                                      │            │
@@ -24,13 +25,14 @@ import path from 'node:path';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
-  writeStatus, newStatus,
+  writeStatus, newStatus, appendEvent,
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { writeTerminalReport, writeWorkDoneReport } from './report.mjs';
 import { resolvePoolRunner, checkRunnerAvailable, resolveExecutionSurface } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
 import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } from './roadmap.mjs';
-import { classifyEvent, appendAttention, openDecision, openDecisions, readDecisions } from './attention.mjs';
+import { classifyEvent, appendAttention, ackAttention, readAttention, openDecision, openDecisions, readDecisions, resolveDecision } from './attention.mjs';
 import * as pool from './pool.mjs';
 import {
   createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles, branchExists,
@@ -128,6 +130,20 @@ export function createSupervisor({
       brief, pid, phase, spawnedAt: new Date(now()).toISOString(),
       executionSurface: surface,
     });
+    if (haltReason) {
+      const terminal = JSON.parse(fs.readFileSync(runPaths.status, 'utf8'));
+      const report = writeTerminalReport(runPaths, terminal);
+      if (!report.ok) {
+        terminal.reportError = report.error;
+        writeStatus(runPaths, terminal);
+        appendEvent(runPaths, { stage: 'reporter', type: 'report_failed', error: report.error });
+      } else {
+        appendEvent(runPaths, { stage: 'reporter', type: 'report_written', report: report.htmlRel });
+      }
+      recordDurableRun({ runId, featureId, ticketId, kind, runner, overall: 'halted',
+        haltReason, finishedAt: terminal.endedAt, reportRel: report.ok ? report.htmlRel : null,
+        reportError: report.ok ? null : report.error });
+    }
   }
 
   function alreadyPending(runId, kind, handoffId = null) {
@@ -243,8 +259,17 @@ export function createSupervisor({
 
   function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).length); }
 
+  function canStartRunner(runner) {
+    if (!availableSlots()) return false;
+    if (runner !== 'host') return true;
+    const occupied = pool.activeRuns(pool.listRunStates(paths, poolCfg, now()))
+      .filter((run) => run.runner === 'host').length;
+    return occupied < poolCfg.hostConcurrency;
+  }
+
   function startFeature(rm, feature) {
-    if (!availableSlots()) return;
+    const runner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
+    if (!canStartRunner(runner)) return;
     if (feature.specRunId) {
       let existing = null;
       try { existing = JSON.parse(fs.readFileSync(pipelinePaths(repoRoot, { runId: feature.specRunId }).status, 'utf8')); } catch { /* gone */ }
@@ -257,11 +282,11 @@ export function createSupervisor({
       mode: feature.mode, base: baseRef, branch: feature.branch,
       body: planBriefBody(rm, feature),
     });
-    const wantPlanApproval = poolCfg.featurePlanApproval && rm.review !== 'end';
+    const wantPlanApproval = poolCfg.featurePlanApproval;
     const spawned = spawnWorker({
       runId, featureId: feature.id, ticketId: null, kind: 'plan',
       brief, branch: `pipeline/work/${feature.id}/plan-${runId}`, baseRef,
-      runner: resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner)),
+      runner,
       extra: ['--plan-only', ...(wantPlanApproval ? ['--approve-plan'] : [])],
     });
     if (spawned.blocked) {
@@ -293,16 +318,6 @@ export function createSupervisor({
       .filter((t) => t.status === 'running' && t.runId)
       .map((t) => [t.runId, tickets.find((x) => x.id === t.id)?.files || []]));
 
-    // In host mode the attending chat session is sequential — cap the wave to
-    // however many host-concurrent slots are still free so the agent never
-    // sees more than `hostConcurrency` claim-run cards at once.
-    const featureRunner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
-    const isHostFeature = featureRunner === 'host';
-    const hostWaiting = isHostFeature
-      ? runs.filter((r) => r.featureId === feature.id && r.status?.overall === 'awaiting_chat').length
-      : 0;
-    const hostSlotsFree = isHostFeature ? Math.max(0, (poolCfg.hostConcurrency ?? 1) - hostWaiting) : Infinity;
-
     const wave = scheduleTickets(tickets, {
       done, running,
       maxParallel: Math.min(feature.maxParallel || poolCfg.maxParallel, running.length + availableSlots()),
@@ -310,12 +325,11 @@ export function createSupervisor({
       serializeOnFileOverlap: poolCfg.serializeOnFileOverlap,
     });
 
-    // Trim the wave for host-runner features so we never spawn more concurrent
-    // host runs than the concurrency limit allows.
-    const cappedWave = isHostFeature ? wave.slice(0, hostSlotsFree) : wave;
-
     const updated = [...recorded];
-    for (const ticket of cappedWave) {
+    let started = 0;
+    for (const ticket of wave) {
+      const runner = resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner));
+      if (!canStartRunner(runner)) continue;
       const foreign = pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
       if (poolCfg.serializeOnFileOverlap && foreign.some(r => !ticket.files.length || !r.meta?.files?.length || ticket.files.some(f => r.meta.files.some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
       const runId = newRunId({ featureId: feature.id, ticketId: ticket.id, kind: 'ticket' });
@@ -346,7 +360,7 @@ export function createSupervisor({
       const spawned = spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
         brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: ticketBase,
-        runner: resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner)),
+        runner,
         extra: [
           '--specs-file', sliceFile,
           ...(poolCfg.ticketFlags.reviewPanel ? ['--review-panel'] : []),
@@ -356,8 +370,9 @@ export function createSupervisor({
       const ticketStatus = spawned.blocked ? 'failed' : 'running';
       if (row) { row.runId = runId; row.status = ticketStatus; }
       else { updated.push({ id: ticket.id, title: ticket.title, runId, status: ticketStatus }); }
+      started++;
     }
-    if (cappedWave.length || !feature.tickets?.length) {
+    if (started || !feature.tickets?.length) {
       saveRoadmap(setFeatureStatus(roadmap(), feature.id, 'executing', { tickets: updated }));
     }
   }
@@ -379,18 +394,8 @@ export function createSupervisor({
 
   /** Every ticket committed: merge them onto the feature branch and review it. */
   function integrateFeature(rm, feature) {
-    if (!availableSlots()) return;
-    // In host mode, don't start integration while any ticket run is still
-    // awaiting_chat — the attending agent must finish each ticket before we
-    // land the integration run on top. Without this guard, the integration
-    // `claim-run` would appear before the agent has completed all tickets.
-    const featureRunner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
-    if (featureRunner === 'host') {
-      const hostTicketWaiting = pool.listRunStates(paths, poolCfg, now()).some(
-        (r) => r.featureId === feature.id && r.kind === 'ticket' && r.status?.overall === 'awaiting_chat',
-      );
-      if (hostTicketWaiting) return;
-    }
+    const runner = resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner));
+    if (!canStartRunner(runner)) return;
     const validatedTarget = currentSha(repoRoot, targetRef(rm));
     const runId = newRunId({ featureId: feature.id, kind: 'integration' });
     const runPaths = pipelinePaths(repoRoot, { runId });
@@ -443,7 +448,7 @@ export function createSupervisor({
     spawnWorker({
       runId, featureId: feature.id, ticketId: null, kind: 'integration',
       brief, branch: null, baseRef: feature.baseRef,
-      runner: resolvePoolRunner(pickRunner(feature.runner, poolCfg.defaultRunner)),
+      runner,
       extra: [
         '--worktree', path.relative(repoRoot, runPaths.worktree),
         '--specs-file', specRunPaths.specs,
@@ -667,7 +672,8 @@ export function createSupervisor({
       }
       return;
     }
-    if (!availableSlots()) return;
+    const validationRunner = resolvePoolRunner(pickRunner(poolCfg.defaultRunner));
+    if (!canStartRunner(validationRunner)) return;
     const runId = newRunId({ featureId: 'roadmap', kind: 'integration' });
     const p = pipelinePaths(repoRoot, { runId });
     const target = currentSha(repoRoot, rm.base), inputHead = currentSha(repoRoot, rm.workingBranch);
@@ -690,7 +696,7 @@ export function createSupervisor({
       const brief = writeBrief({ runId, title: `Revalidate ${rm.title}`, featureId: 'roadmap', mode: 'integration', base: target, branch,
         body: `Test and review the entire combined roadmap against target ${target}. Candidate input: ${inputHead}. Retain all accepted features. Human landing approval is still required.` });
       spawnWorker({ runId, featureId: 'roadmap', kind: 'integration', brief, branch: null, baseRef: target,
-        runner: resolvePoolRunner(pickRunner(poolCfg.defaultRunner)),
+        runner: validationRunner,
         extra: ['--worktree', path.relative(repoRoot, p.worktree), '--specs-file', specs, '--start-at', 'tester'],
       });
     } catch (error) {
@@ -819,92 +825,59 @@ export function createSupervisor({
   function archiveFeatureReport(feature, landedSha) {
     const controlReportsDir = path.join(paths.control, 'reports', feature.id);
     fs.mkdirSync(controlReportsDir, { recursive: true });
-
-    // Look for reports in candidate runs: integration run first, then tickets (reverse order), then specRunId
-    const candidates = [
-      feature.integrationRunId,
-      ...((feature.tickets || []).map((t) => t.runId).filter(Boolean).reverse()),
-      feature.specRunId,
-    ].filter(Boolean);
-
-    let srcReportDir = null;
-    let foundRunId = null;
-    for (const runId of candidates) {
-      const p = pipelinePaths(repoRoot, { runId });
-      if (fs.existsSync(path.join(p.reports, 'work-done.html'))) {
-        srcReportDir = p.reports;
-        foundRunId = runId;
-        break;
+    const related = pool.listRunStates(paths, poolCfg, now())
+      .filter((r) => r.featureId === feature.id)
+      .sort((a, b) => String(a.spawnedAt || '').localeCompare(String(b.spawnedAt || '')));
+    const relatedRuns = related.map((r) => ({
+      runId: r.runId, kind: r.kind, ticketId: r.ticketId,
+      overall: r.status?.overall || r.overall || 'unknown',
+      haltReason: r.status?.haltReason || null,
+      stages: (r.status?.stages || []).filter((s) => s.status !== 'pending').map((s) => ({ name: s.name, status: s.status })),
+      evidencePath: path.relative(repoRoot, r.paths.dir),
+      reportRel: fs.existsSync(path.join(r.paths.reports, 'work-done.html')) ? path.relative(repoRoot, path.join(r.paths.reports, 'work-done.html')) : null,
+      reportError: r.status?.reportError || (!fs.existsSync(path.join(r.paths.reports, 'work-done.html')) ? 'Run report unavailable' : null),
+      captureGap: r.status?.executionSurface === 'host-handoff' ? 'Private reasoning unavailable; host progress depends on recorded checkpoints.' : null,
+    }));
+    const preferred = [feature.integrationRunId, ...related.map((r) => r.runId).reverse()].filter(Boolean);
+    const sourceId = preferred.find((id) => fs.existsSync(path.join(pipelinePaths(repoRoot, { runId: id }).reports, 'work-done.html')));
+    const source = sourceId ? pipelinePaths(repoRoot, { runId: sourceId }) : null;
+    const read = (file) => { try { return fs.readFileSync(file, 'utf8'); } catch { return ''; } };
+    const legacyMd = path.join(controlReportsDir, 'work-done.legacy.md');
+    const legacyHtml = path.join(controlReportsDir, 'work-done.legacy.html');
+    const legacyReport = !source && fs.existsSync(legacyHtml)
+      ? { path: path.relative(repoRoot, legacyHtml), markdown: read(legacyMd) }
+      : null;
+    let diagrams = [];
+    if (source) {
+      try { diagrams = (JSON.parse(read(path.join(source.reports, 'report.json'))).diagrams || []).map((d) => ({ ...d, htmlRel: d.htmlRel || `${d.id}.html` })); } catch {}
+      if (fs.existsSync(path.join(source.reports, 'diagrams'))) {
+        fs.cpSync(path.join(source.reports, 'diagrams'), path.join(controlReportsDir, 'diagrams'), { recursive: true });
       }
     }
-
-    if (srcReportDir && fs.existsSync(srcReportDir)) {
-      try {
-        const files = fs.readdirSync(srcReportDir);
-        for (const file of files) {
-          const srcPath = path.join(srcReportDir, file);
-          const destPath = path.join(controlReportsDir, file);
-          if (fs.statSync(srcPath).isFile()) {
-            fs.copyFileSync(srcPath, destPath);
-          }
-        }
-      } catch (err) {
-        log(`warning: failed to copy reports for ${feature.id}: ${err.message}`);
-      }
-    }
-
-    const htmlPath = path.join(controlReportsDir, 'work-done.html');
-    const mdPath = path.join(controlReportsDir, 'work-done.md');
-    if (!fs.existsSync(htmlPath)) {
-      const title = `${feature.id}: ${feature.title}`;
-      const completedTickets = (feature.tickets || [])
-        .map((t) => `<li><strong>${t.id}</strong>: ${t.title || 'Completed'} (run: <code>${t.runId || 'direct'}</code>)</li>`)
-        .join('\n');
-      const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <title>${title} — Work Done Report</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.6; color: #1f2937; background: #fff; }
-    h1 { font-size: 1.8rem; margin-bottom: 0.5rem; color: #111827; }
-    .badge { display: inline-block; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: uppercase; background: #ecfdf5; color: #065f46; margin-bottom: 1.5rem; }
-    .meta { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 0.9rem; }
-    .meta p { margin: 4px 0; }
-    .meta code { background: #e5e7eb; padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
-    h2 { font-size: 1.3rem; margin-top: 24px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
-    ul { padding-left: 20px; }
-    li { margin-bottom: 6px; }
-  </style>
-</head>
-<body>
-  <h1>${title}</h1>
-  <span class="badge">Landed</span>
-  <div class="meta">
-    <p><strong>Status:</strong> Landed / Accepted</p>
-    <p><strong>Landed SHA:</strong> <code>${landedSha || 'unknown'}</code></p>
-    <p><strong>Landed At:</strong> ${new Date(now()).toISOString()}</p>
-    ${foundRunId ? `<p><strong>Source Run:</strong> <code>${foundRunId}</code></p>` : ''}
-  </div>
-  ${feature.acceptance ? `<h2>Acceptance Criteria</h2><p>${feature.acceptance}</p>` : ''}
-  <h2>Completed Tickets</h2>
-  <ul>
-    ${completedTickets || '<li>All changes reviewed and merged.</li>'}
-  </ul>
-</body>
-</html>`;
-      fs.writeFileSync(htmlPath, html, 'utf8');
-      const md = `# ${title}\n\n- **Status**: Landed / Accepted\n- **Landed SHA**: \`${landedSha || 'unknown'}\`\n- **Date**: ${new Date(now()).toISOString()}\n\n## Completed Tickets\n${(feature.tickets || []).map((t) => `- **${t.id}**: ${t.title || 'Completed'}`).join('\n') || '- Completed'}\n`;
-      fs.writeFileSync(mdPath, md, 'utf8');
-    }
-
-    return path.relative(repoRoot, htmlPath);
+    const written = writeWorkDoneReport({ root: repoRoot, reports: controlReportsDir }, {
+      title: `Work done — ${feature.id}: ${feature.title}`,
+      status: source ? (related.find((r) => r.runId === sourceId)?.status || { overall: 'done', verdict: 'UNKNOWN' }) : { overall: 'done', verdict: 'UNKNOWN', endedAt: new Date(now()).toISOString() },
+      runId: sourceId || null, feature: { id: feature.id, title: feature.title },
+      narrative: source ? read(source.reporterDoc) : '',
+      specs: source ? read(source.specs) : '', review: source ? read(source.reviewReport) : '',
+      testSuite: source ? read(source.testSuite) : '', diff: source ? read(source.diff) : '',
+      diagrams, relatedRuns, legacyReport,
+      operations: { outcome: 'landed', landedSha, relatedRunIds: relatedRuns.map((r) => r.runId),
+        limitations: source ? [] : ['No completed run report was available; inspect each run directory directly.'] },
+    });
+    return written.ok
+      ? { ok: true, reportRel: written.htmlRel, reportError: source ? null : legacyReport ? 'Source run report unavailable; original completion report preserved.' : 'Source run report was unavailable.' }
+      : { ok: false, reportRel: null, reportError: written.error };
   }
 
   function finishLanding(feature, landedSha, { deferred = false } = {}) {
     const runPaths = feature.integrationRunId ? pipelinePaths(repoRoot, { runId: feature.integrationRunId }) : null;
     if (runPaths) appendRunVerb(runPaths, 'landed', landedSha?.slice(0, 8) || '');
-    const reportRel = archiveFeatureReport(feature, landedSha);
+    let archivedReport;
+    try { archivedReport = archiveFeatureReport(feature, landedSha); }
+    catch (error) { archivedReport = { ok: false, reportRel: null, reportError: error.message }; }
+    if (archivedReport.reportError) log(`report issue for ${feature.id}: ${archivedReport.reportError}`);
+    const reportRel = archivedReport.reportRel;
     let rm = setFeatureStatus(roadmap(), feature.id, deferred ? 'accepted' : 'landed', {
       mergeState: deferred ? 'accepted' : 'landed',
       acceptedSha: deferred ? landedSha : null,
@@ -912,6 +885,7 @@ export function createSupervisor({
       landedSha,
       landedAt: new Date(now()).toISOString(),
       reportRel,
+      reportError: archivedReport.reportError ?? null,
     });
     saveRoadmap(rm);
 
@@ -932,6 +906,7 @@ export function createSupervisor({
         stage: 'reporter',
         landedSha: landedSha || null,
         reportRel,
+        reportError: archivedReport.reportError ?? null,
       });
     }
     const branch = rm.workingBranch;
@@ -981,8 +956,45 @@ export function createSupervisor({
     const paused = fs.existsSync(paths.paused);
     resumingThisTick = new Set();
 
+    // Keep the append-only decision ledger truthful when a gate is passed by
+    // another path (retry, request changes, or an older run completing).
+    for (const decision of openDecisions(paths)) {
+      const featureStatus = rm.features?.find((feature) => feature.id === decision.featureId)?.status;
+      const runStatus = runs.find((run) => run.runId === decision.runId)?.status?.overall;
+      const obsolete = decision.kind === 'merge-approval' && featureStatus !== 'awaiting_merge_approval'
+        || decision.kind === 'plan-approval' && runStatus !== 'awaiting_plan_approval'
+        || decision.kind === 'roadmap-merge' && rm.roadmapStatus !== 'awaiting_final_review';
+      if (obsolete) resolveDecision(paths, decision.decisionId, {
+        decision: 'superseded', note: 'The approval gate is no longer current.', by: 'supervisor', via: 'state-reconciliation',
+      });
+    }
+
     // 1. Notice what changed, and tell a human when it matters.
+    const pendingAtTickStart = pool.pendingAttention(paths);
+    const historicalAttention = readAttention(paths);
     for (const run of runs) {
+      for (const item of pendingAtTickStart) {
+        if (item.runId !== run.runId) continue;
+        if (run.status?.overall === 'awaiting_chat' &&
+          (['claim-run', 'awaiting-chat'].includes(item.kind) ||
+            (item.kind === 'needs-decision' && /awaiting-chat:/i.test(item.summary || '')))) {
+          ackAttention(paths, item.id, { by: 'supervisor:agent-queue' });
+          continue;
+        }
+        if (item.kind === 'halted' && run.status?.overall === 'halted') {
+          const featureStatus = rm.features?.find((feature) => feature.id === item.featureId)?.status;
+          if (!item.featureId || ['failed', 'held'].includes(featureStatus)) continue;
+          ackAttention(paths, item.id, { by: 'supervisor:retry-advanced' });
+          continue;
+        }
+        if (['dead', 'stale', 'unknown'].includes(item.kind) && run.state === item.kind) continue;
+        if (['needs-decision', 'plan-approval', 'blocked'].includes(item.kind) && run.state === 'awaiting'
+          && run.status?.overall !== 'awaiting_chat') continue;
+        if (['claim-run', 'awaiting-chat', 'dead', 'stale', 'unknown', 'needs-decision', 'plan-approval', 'blocked'].includes(item.kind)
+          || ['done', 'halted'].includes(run.status?.overall)) {
+          ackAttention(paths, item.id, { by: 'supervisor:state-advanced' });
+        }
+      }
       const previous = seen.get(run.runId) || { state: null, verb: null };
       const current = {
         state: run.state, verb: run.verb, detail: run.verbDetail, status: run.status,
@@ -992,7 +1004,10 @@ export function createSupervisor({
         staleSince: run.lastOutputAt, verbSince: run.verbSince, now: now(),
       }, poolCfg);
       if (event) {
-        if (event.escalate && !alreadyPending(run.runId, event.kind, event.handoffId)) {
+        const episodeKey = [run.runId, event.kind, run.status?.endedAt || run.meta?.spawnedAt || '',
+          event.kind === 'stale' ? run.lastOutputAt : run.verbSince || '', event.handoffId || ''].join('|');
+        const alreadyRaised = historicalAttention.some((item) => item.type === 'item' && item.episodeKey === episodeKey);
+        if (event.escalate && !alreadyRaised && !alreadyPending(run.runId, event.kind, event.handoffId)) {
           const decisionId = event.kind === 'plan-approval'
             ? openDecision(paths, {
               runId: run.runId, featureId: run.featureId, kind: 'plan-approval', stage: 'planner',
@@ -1001,7 +1016,7 @@ export function createSupervisor({
               artifacts: [path.relative(repoRoot, pipelinePaths(repoRoot, { runId: run.runId }).specs)],
             }).id
             : null;
-          appendAttention(paths, { ...event, ...(decisionId ? { decisionId } : {}) });
+          appendAttention(paths, { ...event, episodeKey, ...(decisionId ? { decisionId } : {}) });
         }
         log(`${run.runId}: ${event.kind} — ${event.summary}`);
       }
@@ -1287,7 +1302,7 @@ export function createSupervisor({
     if (signal) process.exit(0);
   }
 
-  return { tick, start, stop, paths, config, poolCfg, mergeCfg };
+  return { tick, start, stop, archiveFeatureReport, paths, config, poolCfg, mergeCfg };
 }
 
 // Small helpers kept at the bottom so the lifecycle above reads top to bottom.

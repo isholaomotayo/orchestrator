@@ -29,7 +29,7 @@ function tmpRepo({ config = null } = {}) {
   spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: root });
   const paths = pipelinePaths(root);
   fs.mkdirSync(paths.prompts, { recursive: true });
-  for (const stage of ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']) {
+  for (const stage of ['planner', 'plan_reviewer', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']) {
     fs.writeFileSync(path.join(paths.prompts, `${stage}_prompt.txt`), `prompt for ${stage}`);
   }
   if (config) fs.writeFileSync(paths.config, JSON.stringify(config));
@@ -43,6 +43,99 @@ function readStatus(paths) {
 function run(root, args) {
   return spawnSync(process.execPath, [ENGINE, ...args], { cwd: root, encoding: 'utf8', timeout: 15000 });
 }
+
+function validSpec() {
+  return [
+    '# Specification', '', '## Objective', 'Deliver the requested module with a test.', '',
+    '## Tracer-Bullet Tickets', 'Ticket 1 adds the module and verifies its public behavior.', '',
+    '## Failure Modes', 'Missing input is rejected without changing repository state.', '',
+    '## Acceptance', 'The baseline and new behavior must pass the repository test suite.', '',
+  ].join('\n');
+}
+
+function planVerdict(verdict) {
+  return [
+    '# PLAN APPROVAL REVIEW', '', `## Verdict: ${verdict}`, '',
+    '## Spec Coverage', 'The objective, ticket, acceptance check, and missing-input failure are addressed.', '',
+    '## Risks and Evidence', 'The existing README and baseline test show this is an additive change.', '',
+    '## Required Revisions', verdict === 'APPROVED' ? 'None.' : 'Name the exact public export and a boundary test.', '',
+  ].join('\n');
+}
+
+test('a plan-only host run requires the Plan Approver verdict before it completes', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    const started = run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--no-ui']);
+    assert.equal(started.status, 0, started.stdout + started.stderr);
+    assert.equal(readStatus(paths).awaitingStage, 'planner');
+    fs.writeFileSync(paths.specs, validSpec());
+    const planned = run(root, ['--continue', '--no-ui']);
+    assert.equal(planned.status, 0, planned.stdout + planned.stderr);
+    assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
+    assert.equal(readStatus(paths).planApproved, false);
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    const reviewed = run(root, ['--continue', '--no-ui']);
+    assert.equal(reviewed.status, 0, reviewed.stdout + reviewed.stderr);
+    assert.equal(readStatus(paths).overall, 'done');
+    assert.equal(readStatus(paths).planReviewVerdict, 'APPROVED');
+    assert.equal(readStatus(paths).planApproved, true);
+    assert.equal(fs.existsSync(path.join(paths.planReviews, 'pass-1.md')), true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a blocked plan asks for a human decision with the review visible', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    assert.equal(run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.planReview, planVerdict('BLOCK'));
+    const blocked = run(root, ['--continue', '--no-ui']);
+    assert.equal(blocked.status, 0, blocked.stdout + blocked.stderr);
+    assert.equal(readStatus(paths).overall, 'awaiting_plan_approval');
+    assert.equal(readStatus(paths).planReviewVerdict, 'BLOCK');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('--approve-plan adds a human gate after agent approval', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    assert.equal(run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--approve-plan', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).overall, 'awaiting_plan_approval');
+    assert.equal(readStatus(paths).planAgentApproved, true);
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).overall, 'done');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('requested plan changes return to Planner and require a fresh approval', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    assert.equal(run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    fs.writeFileSync(paths.planReview, planVerdict('REQUEST_CHANGES'));
+    const revision = run(root, ['--continue', '--no-ui']);
+    assert.equal(revision.status, 0, revision.stdout + revision.stderr);
+    assert.equal(readStatus(paths).awaitingStage, 'planner');
+    assert.match(JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')).task, /Name the exact public export/);
+    fs.writeFileSync(paths.specs, `${validSpec()}\nThe public export is moduleValue; a boundary test checks empty input.\n`);
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).overall, 'done');
+    assert.equal(readStatus(paths).planReviewPass, 2);
+    assert.match(fs.readFileSync(path.join(paths.planReviews, 'pass-1.md'), 'utf8'), /REQUEST_CHANGES/);
+    assert.match(fs.readFileSync(path.join(paths.planReviews, 'pass-2.md'), 'utf8'), /APPROVED/);
+    assert.doesNotMatch(fs.readFileSync(path.join(paths.planReviews, 'pass-1-specs.md'), 'utf8'), /moduleValue/);
+    assert.match(fs.readFileSync(path.join(paths.planReviews, 'pass-2-specs.md'), 'utf8'), /moduleValue/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 
 test('a fresh chat-mode run with a forced external runner coerces to host and records runnerRequested', () => {
   const { root, paths } = tmpRepo();

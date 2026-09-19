@@ -5,8 +5,59 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs';
 import { chromium } from 'playwright';
+import { compileWorkDoneReport } from '../../pipeline/report.mjs';
 
 const dashboard = fs.readFileSync(new URL('../../pipeline/dashboard.html', import.meta.url));
+const systemChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const launchChromium = () => chromium.launch({
+  headless: true,
+  ...(!fs.existsSync(chromium.executablePath()) && fs.existsSync(systemChrome) ? { executablePath: systemChrome } : {}),
+});
+
+test('a sandboxed report opens the exact recorded run stage, and ignores unrelated messages', async t => {
+  const report = compileWorkDoneReport({
+    title: 'Feature report', status: { verdict: 'APPROVED' },
+    relatedRuns: [
+      { runId: 'run-1', kind: 'ticket', overall: 'done', evidencePath: '.pipeline/runs/run-1', stages: [{ name: 'tester', status: 'passed' }] },
+      { runId: 'run-early', kind: 'ticket', overall: 'halted', evidencePath: '.pipeline/runs/run-early', stages: [] },
+    ],
+  }).html;
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') { res.writeHead(200, { 'Content-Type': 'text/event-stream' }); req.on('close', () => res.end()); return; }
+    if (url.pathname === '/api/report') { res.setHeader('Content-Type', 'text/html'); return res.end(report); }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: true, snapshot: { roadmap: { title: 'Fixture', features: [{ id: 'F1', title: 'Feature', status: 'landed', reportRel: '.pipeline/control/reports/F1/work-done.html' }] }, supervisor: { alive: true, paused: false }, counts: { landed: 1, executing: 0, awaitingAgent: 0, awaitingUser: 0, blocked: 0, disconnected: 0, queued: 0 }, needsDecision: [], agentQueue: { current: null, backlogCount: 0 }, recentlyLanded: [], inProgress: [], upNext: [], history: [], skills: [] } },
+        '/api/runs': { runs: [] },
+        '/api/state': { status: { overall: 'done', stages: [{ name: 'tester', status: 'passed' }] }, events: {}, artifacts: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const browser = await launchChromium();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.locator('#destinations button').filter({ hasText: /^Reports$/ }).click();
+  await page.getByRole('link', { name: 'F1: Feature' }).click();
+  await page.locator('iframe.report').waitFor();
+  await page.evaluate(() => window.postMessage({ type: 'orchestrator:open-run-stage', runId: 'run-1', stage: 'tester' }, '*'));
+  assert.equal(await page.locator('.agent-header').count(), 0, 'messages from the parent are ignored');
+  await page.frameLocator('iframe.report').getByRole('button', { name: 'tester' }).click();
+  await page.waitForFunction(() => location.hash.includes('run-1'));
+  await page.locator('.agent-header').waitFor();
+  assert.match(page.url(), /run-1/);
+  await page.locator('#destinations button').filter({ hasText: /^Reports$/ }).click();
+  await page.getByRole('link', { name: 'F1: Feature' }).click();
+  await page.frameLocator('iframe.report').getByRole('button', { name: 'run-early' }).click();
+  await page.waitForFunction(() => location.hash.includes('run-early'));
+});
 
 test('Runs search keeps focus while typing and refreshing, and survives API failures', async t => {
   let degraded = false;
@@ -36,7 +87,7 @@ test('Runs search keeps focus while typing and refreshing, and survives API fail
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -79,6 +130,57 @@ function decisionFixture(id, question) {
   return { decisionId: id, kind: 'plan-approval', featureId: id, question, options: ['approve', 'revise'], artifacts: [] };
 }
 
+test('merge gates show explicit approval buttons and send the chosen target', async t => {
+  const approvals = [];
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      req.on('close', () => res.end());
+      return;
+    }
+    if (url.pathname === '/api/merge/approve' && req.method === 'POST') {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => { approvals.push(JSON.parse(body)); res.setHeader('Content-Type', 'application/json'); res.end('{"ok":true}'); });
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      const data = {
+        '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+        '/api/pool': { enabled: true, snapshot: {
+          roadmap: { title: 'Fixture', features: [{ id: 'F1', title: 'Feature one', status: 'awaiting_merge_approval' }] },
+          counts: { landed: 0, executing: 0, awaitingAgent: 0, awaitingUser: 2, blocked: 0, disconnected: 0, queued: 0, decisions: 2 },
+          supervisor: { alive: true, paused: false }, skills: [], recentlyLanded: [], inProgress: [], upNext: [], history: [],
+          needsDecision: [
+            { decisionId: 'd1', kind: 'merge-approval', featureId: 'F1', question: 'Merge F1?', options: ['approve', 'request-changes'] },
+            { decisionId: null, kind: 'roadmap-merge', question: 'Land roadmap?', options: ['approve'] },
+          ],
+        } },
+        '/api/runs': { runs: [] },
+      }[url.pathname] || {};
+      return res.end(JSON.stringify(data));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const browser = await launchChromium();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  await page.locator('#destinations button').filter({ hasText: /^Attention/ }).click();
+  await page.getByRole('button', { name: 'Approve merge', exact: true }).click();
+  await page.getByRole('button', { name: 'Approve roadmap landing' }).click();
+  await page.waitForFunction(() => document.querySelector('#toast')?.textContent?.includes('Approval recorded'));
+  assert.deepEqual(approvals, [{ featureId: 'F1' }, { featureId: null }]);
+  assert.deepEqual(errors, []);
+});
+
 test('Attention keeps an in-progress answer across a background refresh, and drops a resolved decision', async t => {
   const streams = new Set();
   let decisions = [decisionFixture('d1', 'Approve the plan for F1?'), decisionFixture('d2', 'Approve the plan for F2?')];
@@ -108,7 +210,7 @@ test('Attention keeps an in-progress answer across a background refresh, and dro
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -177,7 +279,7 @@ test('Overview\'s decision list uses the same draft-preserving behavior as Atten
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -220,7 +322,7 @@ test('a stale hash naming a removed tab kind does not crash boot', async t => {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -231,7 +333,7 @@ test('a stale hash naming a removed tab kind does not crash boot', async t => {
   await page.waitForSelector('#destinations button');
   // Boot must still land on a real, working destination — not a blank page.
   await page.locator('#destinations button').filter({ hasText: /^Overview$/ }).waitFor({ state: 'visible' });
-  assert.equal(await page.locator('#destinations button').count(), 5, 'only the five real destinations — the bad tab was dropped, not shown as an error tab');
+  assert.equal(await page.locator('#destinations button').count(), 6, 'only real destinations — the bad tab was dropped, not shown as an error tab');
   assert.equal(await page.locator('#tabs button').count(), 0, 'no open tabs — the dropped hash entry never became a content tab');
   assert.deepEqual(errors, []);
 });
@@ -260,7 +362,7 @@ test('Review keeps a "Request changes" draft across a background refresh', async
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -314,7 +416,7 @@ test("Overview's Roadmap groups features into status lanes and shows their depen
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -369,7 +471,7 @@ test("A pending stage's rail row is disabled and names why, while the running st
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -424,7 +526,7 @@ test('The "Compare with diff" toggle survives a background refresh', async t => 
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -465,14 +567,14 @@ test('the open-tabs strip shows an empty-state message when nothing is open, sep
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   await page.waitForSelector('#destinations button');
-  assert.equal(await page.locator('#destinations button').count(), 5);
+  assert.equal(await page.locator('#destinations button').count(), 6);
   assert.equal(await page.locator('#tabs button').count(), 0);
   assert.match(await page.locator('.tabstrip-empty').innerText(), /No open tabs/);
   assert.deepEqual(errors, []);
@@ -503,7 +605,7 @@ test('destinations stay present, clickable, and un-evicted even with many open r
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -514,7 +616,7 @@ test('destinations stay present, clickable, and un-evicted even with many open r
   const many = Array.from({ length: 15 }, (_, i) => `run:r${i}`).join(',');
   await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent(many)}&active=0`);
   await page.waitForSelector('#destinations button');
-  assert.equal(await page.locator('#destinations button').count(), 5, 'destinations are never evicted, no matter how many run tabs are open');
+  assert.equal(await page.locator('#destinations button').count(), 6, 'destinations are never evicted, no matter how many run tabs are open');
   assert.equal(await page.locator('#tabs button').count(), 12, 'open tabs are capped at the eviction budget');
   await page.locator('#destinations button').filter({ hasText: /^Overview$/ }).click();
   await page.waitForSelector('h1:has-text("Orchestrator")');
@@ -552,7 +654,7 @@ test('a run tab shows its actual driving mode, including when the requested runn
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -599,7 +701,7 @@ test('a run tab allows scrolling to view full stage output and artifacts', async
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
-  const browser = await chromium.launch({ headless: true });
+  const browser = await launchChromium();
   t.after(() => browser.close());
   const page = await browser.newPage();
   const errors = [];
@@ -625,4 +727,3 @@ test('a run tab allows scrolling to view full stage output and artifacts', async
   assert.ok(scrollInfo.scrollTop > 0, `panel must successfully scroll: scrollTop=${scrollInfo.scrollTop}`);
   assert.deepEqual(errors, []);
 });
-

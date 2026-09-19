@@ -2,13 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { pipelinePaths, appendEvent, readLock, pidAlive, acquireLockFile, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, readLock, pidAlive, acquireLockFile, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { transact, commandState, recoverCommands } from './commands.mjs';
+import { appendHostOutput } from './events.mjs';
 
 export const BRIDGE_VERSION = 2;
 export const HOSTS = ['codex', 'claude', 'cursor', 'antigravity'];
+const validHost = (host) => typeof host === 'string' && /^[a-z][a-z0-9-]{0,63}$/.test(host);
 export const LEASE_MS = 120000;
 const CLOSED = new Set(['addressed', 'deferred', 'rejected', 'cancelled']);
 const rootOf = project => {
@@ -62,7 +64,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   const input = { ...args }; delete input.commandId; delete input.expectedRevision;
   return transact(p.control, command, input, (state, stageFile) => {
     if (command === 'session.register') {
-      if (!HOSTS.includes(args.host) || !args.conversationId?.trim()) throw new Error('host and conversationId are required.');
+      if (!validHost(args.host) || !args.conversationId?.trim()) throw new Error('host and conversationId are required.');
       const sessionId = crypto.createHash('sha256').update(`${p.root}\0${args.host}\0${args.conversationId}`).digest('hex').slice(0, 24);
       const prev = state.sessions[sessionId];
       state.sessions[sessionId] = { ...prev, sessionId, host: args.host, conversationId: args.conversationId, project: p.root, capabilities: args.capabilities || prev?.capabilities || {}, actualModel: args.actualModel || prev?.actualModel || null, modelSource: args.actualModel ? 'host-observed' : prev?.modelSource || 'unknown', registeredAt: prev?.registeredAt || stamp, connectedAt: stamp };
@@ -135,7 +137,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       owner.expiresAt = new Date(now + LEASE_MS).toISOString(); owner.lastCheckpointAt = stamp;
       if (args.text || args.event) owner.lastActivityAt = stamp;
       if (args.actualModel) { const session = state.sessions[args.sessionId]; session.actualModel = args.actualModel; session.modelSource = 'host-observed'; }
-      if (args.text || args.event) appendEvent(p, { type: 'agent_output', host: true, stage: status.awaitingStage, handoffId: status.handoffId, sessionId: args.sessionId, kind: args.event?.kind || 'text', text: String(args.text || args.event?.text || '').slice(0, 2000), tool: args.event?.tool, status: args.event?.status, file: args.event?.file });
+      if (args.text || args.event) appendHostOutput(p, { type: 'agent_output', host: true, stage: status.awaitingStage, handoffId: status.handoffId, sessionId: args.sessionId, kind: args.event?.kind || 'text', text: String(args.text || args.event?.text || '').slice(0, 2000), tool: args.event?.tool, status: args.event?.status, file: args.event?.file });
       const messages = (command === 'run.report' ? [] : state.messages.filter(m => relevant(m, args, status) && ['queued', 'delivered'].includes(m.status))).sort((a,b) => (a.priority === 'priority' ? 0 : 1) - (b.priority === 'priority' ? 0 : 1) || a.sequence - b.sequence);
       for (const m of messages) { m.status = 'delivered'; m.deliveries.push({ sessionId: args.sessionId, at: stamp }); }
       return { messages, expiresAt: owner.expiresAt, pendingDisposition: state.messages.filter(m => relevant(m, args, status) && m.status === 'acknowledged') };

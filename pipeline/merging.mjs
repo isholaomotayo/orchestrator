@@ -102,7 +102,31 @@ export function openPullRequest({ cwd, provider, base, head, title, bodyFile, ex
 
   const created = run(exec, bin, createArgs, cwd);
   if (created.status !== 0) {
-    return { ok: false, error: (created.stderr || created.stdout || '').trim() || `${bin} exited ${created.status}` };
+    const combined = (created.stderr || created.stdout || '').trim();
+    if (combined.includes('already exists') || combined.includes('A pull request already exists')) {
+      const match = combined.match(/https:\/\/[^\s]+/);
+      if (match) {
+        const existingUrl = match[0];
+        const viewArgs = provider === 'gitlab'
+          ? ['mr', 'view', existingUrl, '--output', 'json']
+          : ['pr', 'view', existingUrl, '--json', 'url,number,headRefOid,state'];
+        const viewed = run(exec, bin, viewArgs, cwd);
+        if (viewed.status === 0) {
+          let json = {};
+          try { json = JSON.parse(viewed.stdout); } catch {}
+          const url = json.url || json.web_url || existingUrl;
+          const parsed = parsePrUrl(url);
+          return {
+            ok: true,
+            provider,
+            url,
+            number: json.number ?? json.iid ?? parsed?.number ?? null,
+            head: json.headRefOid ?? json.sha ?? null,
+          };
+        }
+      }
+    }
+    return { ok: false, error: combined || `${bin} exited ${created.status}` };
   }
   const printed = (created.stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean).pop() || '';
 

@@ -59,6 +59,8 @@ export function pipelinePaths(repoRoot, { runId = null } = {}) {
     events: path.join(dir, 'events.jsonl'),
     vagueRequest: path.join(dir, 'vague_request.txt'),
     specs: path.join(dir, 'specs.md'),
+    planReview: path.join(dir, 'plan_review.md'),
+    planReviews: path.join(dir, 'plan_reviews'),
     changes: path.join(dir, 'changes.md'),
     checkerReport: path.join(dir, 'checker_report.md'),
     testSuite: path.join(dir, 'test_suite.md'),

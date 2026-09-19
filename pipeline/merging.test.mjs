@@ -127,6 +127,17 @@ test('a failed PR creation reports the error instead of inventing a url', () => 
   assert.equal(pr.url, undefined);
 });
 
+test('an existing PR is read back and reused after create reports a duplicate', () => {
+  const url = 'https://github.com/acme/app/pull/42';
+  const { exec, calls } = fakeExec({
+    'pr create': { status: 1, stdout: '', stderr: `A pull request already exists: ${url}` },
+    'pr view': { status: 0, stdout: JSON.stringify({ url, number: 42, headRefOid: 'sha1' }) },
+  });
+  const pr = openPullRequest({ cwd: '/repo', provider: 'github', base: 'main', head: 'pipeline/F1', title: 't', bodyFile: '/tmp/b.md', exec });
+  assert.deepEqual(pr, { ok: true, provider: 'github', url, number: 42, head: 'sha1' });
+  assert.ok(calls.some((call) => call.includes(`pr view ${url}`)));
+});
+
 test('mergeability is read live and refuses a conflicting branch', () => {
   const { exec } = fakeExec({
     'pr view': { status: 0, stdout: JSON.stringify({ state: 'OPEN', mergeable: 'CONFLICTING', mergeStateStatus: 'DIRTY', headRefOid: 'sha1' }) },

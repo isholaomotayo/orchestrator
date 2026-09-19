@@ -69,7 +69,7 @@ const IDLE_TIMEOUT_MS = process.env.PIPELINE_UI_IDLE_TIMEOUT_MS !== undefined
   : defaultConfig.uiIdleTimeoutMs;
 let lastActivityAt = Date.now();
 
-const ARTIFACTS = ['specs.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'reporter.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
+const ARTIFACTS = ['specs.md', 'plan_review.md', 'design.md', 'changes.md', 'checker_report.md', 'test_suite.md', 'review_report.md', 'review_correctness.md', 'review_security.md', 'review_architecture.md', 'handoff.md', 'reporter.md', 'diff.patch', 'vague_request.txt', 'stage-handoff.json'];
 const RUNNERS = ['auto', 'host', 'claude', 'cursor', 'codex', 'antigravity'];
 const EVENTS_PER_STAGE = 250;
 
@@ -335,7 +335,7 @@ function listRuns(project) {
         ? `.pipeline/runs/${id}/reports/work-done.html`
         : (controlReportExists ? `.pipeline/control/reports/${s.featureId}/work-done.html` : null),
       kind: 'pool', task: s?.task || '(unknown)', overall: s?.overall || 'unknown',
-      verdict: s?.verdict, haltReason: s?.haltReason, startedAt: s?.startedAt,
+      verdict: s?.verdict, haltReason: s?.haltReason, reportError: s?.reportError ?? null, startedAt: s?.startedAt,
       live: s?.overall === 'running' || s?.overall === 'awaiting_chat' || s?.overall === 'awaiting_plan_approval',
     };
   });
@@ -361,15 +361,16 @@ function listRuns(project) {
             runner: entry.runner ?? null,
             invocationMode: entry.invocationMode ?? null,
             runnerRequested: entry.runnerRequested ?? null,
-            stage: 'reporter',
+            stage: entry.stage ?? null,
             reportRel: entry.reportRel || (entry.featureId && fs.existsSync(path.join(project.paths.control, 'reports', entry.featureId, 'work-done.html'))
               ? `.pipeline/control/reports/${entry.featureId}/work-done.html`
               : null),
             kind: 'pool',
             task: entry.task || `${entry.kind || 'run'} ${entry.featureId || ''}${entry.ticketId ? `/${entry.ticketId}` : ''}`,
-            overall: entry.overall || 'done',
-            verdict: 'APPROVED',
+            overall: entry.overall || 'unknown',
+            verdict: entry.verdict ?? null,
             haltReason: entry.haltReason ?? null,
+            reportError: entry.reportError ?? null,
             startedAt: entry.spawnedAt || entry.recordedAt || null,
             live: false,
           });
@@ -407,10 +408,11 @@ function listRuns(project) {
           runnerRequested: null,
           stage: 'reporter',
           reportRel,
+          reportError: feature.reportError ?? null,
           kind: 'pool',
           task: item.title || feature.title,
           overall: isDone ? 'done' : 'unknown',
-          verdict: isDone ? 'APPROVED' : null,
+          verdict: null,
           haltReason: null,
           startedAt,
           live: false,
@@ -428,7 +430,7 @@ function listRuns(project) {
     runs.unshift({
       id: '', kind: 'single', task: primary.task || '(unknown)', overall: primary.overall,
       hostClient: primary.hostClient ?? null, runner: primary.runner ?? null, invocationMode: primary.invocationMode ?? null, runnerRequested: primary.runnerRequested ?? null,
-      verdict: primary.verdict, haltReason: primary.haltReason, startedAt: primary.startedAt,
+      verdict: primary.verdict, haltReason: primary.haltReason, reportError: primary.reportError ?? null, startedAt: primary.startedAt,
       live: primary.overall === 'running' || primary.overall === 'awaiting_chat' || primary.overall === 'awaiting_plan_approval',
     });
   }
@@ -637,13 +639,13 @@ function serveReport(project, url, res) {
   const runId = url.searchParams.get('run');
   const featureId = url.searchParams.get('feature');
 
-  // Normalize full paths like ".pipeline/runs/r1/reports/diagrams/map.html" to
-  // just "diagrams/map.html" — everything after the last "reports" segment.
-  // Relative paths like "diagrams/map.html" are left unchanged.
-  if (rel.includes('/')) {
+  if (rel.startsWith('.pipeline/') || rel.includes('/')) {
     const parts = rel.split('/');
-    if (parts.includes('reports')) {
-      rel = parts.slice(parts.lastIndexOf('reports') + 1).join('/') || 'work-done.html';
+    const repIdx = parts.indexOf('reports');
+    if (repIdx !== -1) {
+      let tail = parts.slice(repIdx + 1);
+      if (featureId && tail[0] === featureId) tail = tail.slice(1);
+      rel = tail.join('/') || 'work-done.html';
     }
   }
 
@@ -966,6 +968,11 @@ const server = http.createServer((req, res) => {
     readBody(req, (body) => {
       if (!body?.decisionId || !body.answer) return json(res, { error: 'expected { decisionId, answer }' }, 400);
       try {
+        const decision = pool.readDecisions(project.paths).find((row) => row.decisionId === body.decisionId);
+        if (decision?.kind === 'merge-approval' || decision?.kind === 'roadmap-merge') {
+          const guard = selfGuardError(project);
+          if (guard) return json(res, { error: guard.error }, guard.code);
+        }
         json(res, { ok: true, decision: pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' }) });
       } catch (err) {
         json(res, { error: err.message }, 409);

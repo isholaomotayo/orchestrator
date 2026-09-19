@@ -170,6 +170,31 @@ test('a diagram beside the report is served too', withServer(async ({ get }) => 
   assert.match(await res.text(), /Map/);
 }));
 
+test('a report can be served by featureId or via cross-lookup when run dir is removed', withServer(async ({ get, root }) => {
+  const paths = pipelinePaths(root);
+  const controlReportDir = path.join(paths.control, 'reports', 'F1');
+  fs.mkdirSync(controlReportDir, { recursive: true });
+  fs.writeFileSync(path.join(controlReportDir, 'work-done.html'), '<!doctype html><title>F1 Report</title><p>F1 done</p>');
+
+  // 1. Serving by featureId
+  const res1 = await get('/api/report?feature=F1&file=work-done.html');
+  assert.equal(res1.status, 200);
+  assert.match(await res1.text(), /F1 done/);
+
+  // 2. Serving by full pipeline relative path in file param
+  const res2 = await get('/api/report?feature=F1&file=.pipeline/control/reports/F1/work-done.html');
+  assert.equal(res2.status, 200);
+  assert.match(await res2.text(), /F1 done/);
+
+  // 3. Cross-lookup: run directory is removed, but query for run=r1 finds the feature report in control
+  const run = pipelinePaths(root, { runId: 'r1' });
+  fs.rmSync(run.reports, { recursive: true, force: true });
+  const res3 = await get('/api/report?run=r1&file=work-done.html');
+  assert.equal(res3.status, 200);
+  assert.match(await res3.text(), /F1 done/);
+}));
+
+
 test('report paths cannot escape the reports directory', withServer(async ({ get }) => {
   for (const attempt of [
     '../../secret.txt',
@@ -197,12 +222,13 @@ test('an unsupported report file type is refused rather than sniffed', withServe
   assert.equal((await get('/api/report?run=r1&file=run.sh')).status, 415);
 }));
 
-test('answering a decision from the dashboard records it and notifies the worker', withServer(async ({ post, get, paths }) => {
+test('answering a merge decision from the dashboard records approval and advances the merge gate', withServer(async ({ post, get, paths }) => {
   const res = await post('/api/decisions/answer', { decisionId: 'd1', answer: 'approve' });
   assert.equal(res.status, 200);
   assert.equal((await (await get('/api/decisions')).json()).decisions.length, 0);
-  const note = fs.readFileSync(path.join(paths.runs, 'r1', 'followups', 'reviewer.txt'), 'utf8');
-  assert.match(note, /approve/);
+  const roadmap = JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8'));
+  assert.equal(roadmap.features[0].status, 'merge_approved');
+  assert.equal(roadmap.features[0].mergeApproval.via, 'dashboard');
 }));
 
 test('answering an unknown decision is refused', withServer(async ({ post }) => {
@@ -409,4 +435,3 @@ test('/api/run/dismiss marks run dismissed and updates status', withServer(async
   assert.equal(updatedStatus.overall, 'halted');
   assert.equal(updatedStatus.dismissed, true);
 }));
-

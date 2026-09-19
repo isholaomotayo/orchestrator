@@ -24,7 +24,7 @@ import { parseVerdict, validateArtifactFile, detectTestWeakening, compactChangel
 import { classifyFailure, backoffMs, sleep } from './retry.mjs';
 import { discoverRepos, captureBaseRefs, buildDiffArtifact } from './repos.mjs';
 import { LENSES, aggregatePanel } from './review-panel.mjs';
-import { isValidRunId, parseBrief, appendRunVerb, writeRunMeta } from './run-registry.mjs';
+import { isValidRunId, parseBrief, appendRunVerb, appendRunLifecycle, writeRunMeta } from './run-registry.mjs';
 import { createRunWorktree } from './worktrees.mjs';
 import { resolveSkills, renderSkillsPromptSection, skillToolAllowances, extractDiagramSpecs, stripDiagramSpecs, renderDiagrams } from './skills.mjs';
 import { writeWorkDoneReport, writeTerminalReport } from './report.mjs';
@@ -81,7 +81,7 @@ function parseArgs(argv) {
   return args;
 }
 
-const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
+const USAGE = 'Usage: node pipeline/orchestrator.mjs (--task "description" | --task-file <path> | --brief-file <path>) [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client <host-name>] [--model-profile auto|manual] [--models \'{"planner":"...","coder":"..."}\'] [--approve-plan] [--design] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n]\n   pool: [--run-id <id>] [--worktree <path|auto>] [--branch <name>] [--base-ref <sha>] [--feature-id <id>] [--ticket-id <id>] [--specs-file <path>] [--changes-file <path>] [--start-at tester]\n   or: node pipeline/orchestrator.mjs --continue\n   or: node pipeline/orchestrator.mjs --resume [--extend <n>] [--runner ...]\n\n--task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line. Exit codes: 1=error/lock, 2=usage, 3=self-target guard (this is the orchestrator source repo; override with --allow-self or ORCH_ALLOW_SELF=1).';
 
 const repoRoot = process.cwd();
 const args = parseArgs(process.argv.slice(2));
@@ -258,6 +258,9 @@ function loadHistory() {
 function ensureRunDefaults(status) {
   status.flags = status.flags || { design: false, approvePlan: false, reviewPanel: false };
   if (status.planApproved == null) status.planApproved = true; // legacy runs never gated
+  if (status.planAgentApproved == null) status.planAgentApproved = true; // do not retroactively gate old runs
+  if (status.planReviewPass == null) status.planReviewPass = 0;
+  if (status.planReviewAttempt == null) status.planReviewAttempt = status.planReviewPass;
   status.limits = status.limits || { coderMax: config.maxCoderCycles, postTesterMax: config.maxPostTesterCycles, reviewMax: config.maxReviewCycles };
   if (status.limits.reviewMax == null) status.limits.reviewMax = config.maxReviewCycles;
   if (status.reviewPass == null) status.reviewPass = 0;
@@ -428,7 +431,7 @@ if (args.continue) {
   }
 
   // ---- Archive previous run, then fresh-run reset -----------------------------
-  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.reporterDoc, paths.testHistory, paths.diff, paths.stageHandoff];
+  const RUN_FILES = [paths.status, paths.events, paths.vagueRequest, paths.specs, paths.planReview, paths.design, paths.changes, paths.checkerReport, paths.testSuite, paths.reviewReport, paths.handoffDoc, paths.reporterDoc, paths.testHistory, paths.diff, paths.stageHandoff];
   // Archiving only makes sense for the v1 layout, where every run reuses one
   // directory. A pooled run already owns a private directory keyed by run id,
   // so there is nothing to move aside — and moving would destroy a sibling.
@@ -438,6 +441,7 @@ if (args.continue) {
     const dest = path.join(paths.runs, archiveId);
     fs.mkdirSync(dest, { recursive: true });
     for (const f of RUN_FILES) { try { fs.renameSync(f, path.join(dest, path.basename(f))); } catch {} }
+    try { fs.renameSync(paths.planReviews, path.join(dest, 'plan_reviews')); } catch {}
     try { fs.renameSync(paths.logs, path.join(dest, 'logs')); } catch {}
     console.log(`[Orchestrator] Archived previous run to .pipeline/runs/${archiveId}`);
   }
@@ -475,6 +479,9 @@ if (args.continue) {
   status.flags = { ...runFlags, planOnly: args.planOnly };
   status.intent = { version: 2, kind: args.planOnly ? 'plan' : args.startAt === 'tester' ? 'integration' : 'ticket', planOnly: args.planOnly, startAt: args.startAt, executionSurface, enabledStages: status.stages.filter(s => s.status !== 'skipped').map(s => s.name) };
   status.planApproved = false;
+  status.planAgentApproved = false;
+  status.planReviewPass = 0;
+  status.planReviewAttempt = 0;
   status.executionSurface = executionSurface;
   status.invocationMode = executionSurface === 'host-handoff' ? 'chat' : invocationMode;
   status.runner = runner;
@@ -589,7 +596,26 @@ function finalize() {
   }
   if (['done','halted'].includes(status.overall)) {
     const report = writeTerminalReport(paths,status,history,inspectBridge(repoRoot,args.runId).messages);
-    if (!report.ok) { status.reportError = report.error; writeStatus(paths,status); }
+    if (!report.ok) {
+      status.reportError = report.error;
+      appendEvent(paths, { stage: 'reporter', type: 'report_failed', error: report.error });
+    } else {
+      delete status.reportError;
+      appendEvent(paths, { stage: 'reporter', type: 'report_written', report: report.htmlRel });
+    }
+    writeStatus(paths, status);
+    try {
+      appendRunLifecycle(paths, {
+        featureId: status.featureId ?? null, ticketId: status.ticketId ?? null,
+        runner: status.runner, overall: status.overall, verdict: status.verdict,
+        haltReason: status.haltReason ?? null, finishedAt: status.endedAt,
+        reportRel: report.ok ? report.htmlRel : null, reportError: report.ok ? null : report.error,
+      });
+    } catch (error) {
+      status.ledgerError = error.message;
+      writeStatus(paths, status);
+      appendEvent(paths, { stage: 'orchestrator', type: 'ledger_failed', error: error.message });
+    }
   }
 }
 function halt(stageName, reason, detail, extra = {}) {
@@ -653,7 +679,7 @@ function requestChatHandoff(stageName, chatResume) {
   // human, not dead — see attention.mjs's 'awaiting_chat' handling. The verb
   // gives the supervisor a timestamp to resurface an unclaimed run against
   // (mirrors requestPlanApproval's own needs-decision verb, below).
-  appendRunVerb(paths, 'needs-decision', `awaiting-chat: ${stageName}`);
+  appendRunVerb(paths, 'awaiting-agent', stageName);
   writeRunMeta(paths, { phase: 'awaiting_chat' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
@@ -672,18 +698,18 @@ function requestChatHandoff(stageName, chatResume) {
 // Optional human gate: pause after the Planner so the developer can read
 // specs.md before any code is written. Approval = `orchestrate.sh --continue`;
 // queueing a planner follow-up note first triggers one re-plan instead.
-function requestPlanApproval() {
+function requestPlanApproval(reason = 'Human plan approval requested') {
   commitPendingCompletion();
   status.overall = 'awaiting_plan_approval';
-  status.awaitingStage = 'planner';
+  status.awaitingStage = 'plan_reviewer';
   status.resumePoint = { step: 'plan_approval', context: {} };
-  setStage('planner', { detail: 'Awaiting human plan approval' });
+  setStage('plan_reviewer', { detail: reason });
   // A gate is an open item for a human, not a stage in progress: say so in the
   // verb log so the supervisor escalates instead of waiting for work to resume.
   appendRunVerb(paths, 'needs-decision', 'plan-approval');
   writeRunMeta(paths, { phase: 'awaiting' });
   finalize();
-  console.log('\n[Orchestrator] Plan approval gate — review .pipeline/specs.md.');
+  console.log(`\n[Orchestrator] Plan approval gate — ${reason}. Review .pipeline/specs.md and .pipeline/plan_review.md.`);
   console.log('  Approve & continue:  bash .pipeline/orchestrate.sh --continue');
   console.log('  Request changes:     queue a note in .pipeline/followups/planner.txt (or the dashboard follow-up box), then run --continue to re-plan.');
   if (dashboardUrl) console.log(`  Dashboard: ${dashboardUrl}`);
@@ -700,13 +726,19 @@ async function runCoderOnward() {
 // continues, and interrupted resumes so the approval gate cannot be bypassed
 // by any one path. (Task 7 inserts the Designer stage here.)
 async function continueAfterPlanner() {
-  if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval();
+  if (!status.planAgentApproved && stage('plan_reviewer')?.status !== 'skipped') {
+    await runPlanReviewerStage();
+    return;
+  }
+  if (!status.planApproved) {
+    if (status.flags?.approvePlan) requestPlanApproval();
+    status.planApproved = true;
+  }
   if (status.intent?.planOnly || status.flags?.planOnly) {
     requireArtifact('planner', paths.specs);
     status.overall = 'done'; status.awaitingStage = null; status.chatResume = null;
     finalize(); return;
   }
-  if (status.flags?.approvePlan && !status.planApproved) requestPlanApproval(); // exits the process
   await runDesignerStage();
   await runCoderOnward();
 }
@@ -1046,17 +1078,56 @@ async function runDesignerStage() {
   setStage('designer', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'design.md' });
 }
 
-async function runPlannerStage() {
+async function runPlannerStage(reviewFeedback = '') {
   status.resumePoint = { step: 'planner', context: {} };
-  setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: 1 });
+  setStage('planner', { status: 'running', startedAt: new Date().toISOString(), cycle: (stage('planner')?.cycle || 0) + 1 });
   console.log('[Stage] Planner...');
-  await runStageAgent('planner', `Produce a technical specification for this feature request:\n\n${taskBlock(status.task)}\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.`, {
+  await runStageAgent('planner', `Produce a technical specification for this feature request:\n\n${taskBlock(status.task)}\n\nThe raw request is also in .pipeline/vague_request.txt. Write the spec to .pipeline/specs.md.${reviewFeedback ? `\n\nThe Plan Approver requested these revisions. Address them before resubmitting:\n${reviewFeedback}` : ''}`, {
     chatResume: { step: 'after_planner', context: {} },
   });
   status.resumePoint = { step: 'after_planner', context: {} };
   writeStatus(paths, status);
   requireArtifact('planner', paths.specs);
   setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md' });
+}
+
+async function runPlanReviewerStage() {
+  const pass = (status.planReviewPass || 0) + 1;
+  status.resumePoint = { step: 'plan_reviewer', context: {} };
+  setStage('plan_reviewer', { status: 'running', startedAt: new Date().toISOString(), cycle: pass, maxCycles: status.limits.reviewMax });
+  console.log(`[Stage] Plan Approver (read-only review ${pass}/${status.limits.reviewMax})...`);
+  await runStageAgent('plan_reviewer', `Review and approve the proposed plan for this request:\n\n${taskBlock(status.task)}\n\nRead .pipeline/vague_request.txt and .pipeline/specs.md. Check repository evidence and write your verdict to .pipeline/plan_review.md.`, {
+    cycle: pass, readOnly: true, chatResume: { step: 'after_plan_reviewer', context: {} },
+  });
+  await afterPlanReview();
+}
+
+async function afterPlanReview() {
+  requireArtifact('plan_reviewer', paths.planReview);
+  const review = fs.readFileSync(paths.planReview, 'utf8');
+  const { verdict } = parseVerdict(review);
+  status.planReviewPass = (status.planReviewPass || 0) + 1;
+  status.planReviewAttempt = (status.planReviewAttempt || 0) + 1;
+  fs.mkdirSync(paths.planReviews, { recursive: true });
+  const reviewRecord = path.join(paths.planReviews, `pass-${status.planReviewAttempt}.md`);
+  fs.writeFileSync(reviewRecord, review);
+  fs.copyFileSync(paths.specs, path.join(paths.planReviews, `pass-${status.planReviewAttempt}-specs.md`));
+  status.planReviewVerdict = verdict;
+  status.planAgentApproved = verdict === 'APPROVED';
+  setStage('plan_reviewer', { status: verdict === 'APPROVED' ? 'passed' : 'failed', endedAt: new Date().toISOString(), artifact: 'plan_review.md', detail: `Verdict: ${verdict}` });
+  appendEvent(paths, { stage: 'plan_reviewer', type: 'plan_verdict', verdict, pass: status.planReviewPass, artifact: path.relative(repoRoot, reviewRecord) });
+  if (verdict === 'APPROVED') {
+    await continueAfterPlanner();
+    return;
+  }
+  if (verdict === 'REQUEST_CHANGES' && status.planReviewPass < status.limits.reviewMax) {
+    appendEvent(paths, { stage: 'planner', type: 'plan_revision_start', reviewPass: status.planReviewPass });
+    setStage('plan_reviewer', { status: 'pending', detail: `Revising after review ${status.planReviewPass}` });
+    await runPlannerStage(review.slice(0, 12000));
+    await continueAfterPlanner();
+    return;
+  }
+  requestPlanApproval(verdict === 'BLOCK' ? 'Plan Approver blocked this plan' : 'Plan revision limit reached');
 }
 
 async function runCoderStage() {
@@ -1382,13 +1453,18 @@ async function planApprovalContinueRun() {
   if (hasFollowup) {
     console.log('[Orchestrator] Plan revision requested — re-running Planner with the queued follow-up note.');
     status.planApproved = false;
+    status.planAgentApproved = false;
+    status.planReviewPass = 0;
+    setStage('plan_reviewer', { status: 'pending', cycle: 0, startedAt: null, endedAt: null, artifact: null, detail: null });
     await runPlannerStage(); // consumeFollowups injects & clears the note; hands off in chat mode
     await continueAfterPlanner(); // CLI mode: gate re-arms here
     return;
   }
   console.log('[Orchestrator] Plan approved — continuing pipeline.');
   status.planApproved = true;
-  setStage('planner', { detail: null });
+  status.planAgentApproved = true; // explicit human override when the agent blocked or exhausted revisions
+  appendEvent(paths, { stage: 'orchestrator', type: 'human_plan_approval', agentVerdict: status.planReviewVerdict || null });
+  setStage('plan_reviewer', { detail: status.planReviewVerdict === 'APPROVED' ? 'Verdict: APPROVED; human approved' : `Verdict: ${status.planReviewVerdict || 'unknown'}; human override` });
   writeStatus(paths, status);
   await continueAfterPlanner();
 }
@@ -1412,6 +1488,7 @@ async function chatContinueRun() {
   const context = resume.context || {};
 
   const completedStage = step === 'after_planner' ? 'planner' :
+                        step === 'after_plan_reviewer' ? 'plan_reviewer' :
                         step === 'after_designer' ? 'designer' :
                         step === 'after_coder' ? 'coder' :
                         step === 'after_tester' ? 'tester' :
@@ -1450,6 +1527,9 @@ async function freshRun() {
     seedArtifact('planner', args.specsFile, paths.specs, 'specs.md');
     setStage('planner', { status: 'passed', endedAt: new Date().toISOString(), artifact: 'specs.md', detail: 'Seeded from the feature specification', mode: 'seeded', model: 'seeded', actualModel: 'seeded', modelSource: 'seeded' });
     status.planApproved = true;
+    status.planAgentApproved = true;
+    setStage('plan_reviewer', { status: 'skipped', detail: 'Approved by the parent plan run' });
+    status.intent.enabledStages = status.stages.filter((s) => s.status !== 'skipped').map((s) => s.name);
   }
   if (args.changesFile) {
     seedArtifact('coder', args.changesFile, paths.changes, 'changes.md');
@@ -1494,6 +1574,9 @@ function getResumePoint() {
   
   if (planner.status !== 'passed') {
     return { step: 'planner', context: {} };
+  }
+  if (!status.planAgentApproved && stage('plan_reviewer')?.status !== 'skipped') {
+    return { step: 'plan_reviewer', context: {} };
   }
   const designer = stage('designer');
   if (designer && designer.status !== 'passed' && designer.status !== 'skipped') {
@@ -1543,6 +1626,9 @@ async function dispatchResumeStep(step, context = {}) {
     await continueAfterPlanner();
     return;
   }
+
+  if (step === 'plan_reviewer') { await runPlanReviewerStage(); return; }
+  if (step === 'after_plan_reviewer') { await afterPlanReview(); return; }
 
   if (step === 'designer') {
     await runDesignerStage();

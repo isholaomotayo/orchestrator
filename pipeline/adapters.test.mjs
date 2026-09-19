@@ -269,10 +269,9 @@ test('resolvePoolRunner passes an explicit runner through untouched', () => {
   assert.equal(resolvePoolRunner('host'), 'host');
 });
 
-test('resolvePoolRunner never throws for auto/unset and always resolves to a real runner or host', () => {
+test('resolvePoolRunner keeps auto/unset pool work with the attending host', () => {
   for (const requested of ['auto', null, undefined]) {
-    const resolved = resolvePoolRunner(requested);
-    assert.ok(Object.keys(RUNNER_BINS).includes(resolved), `"${resolved}" should be a known runner`);
+    assert.equal(resolvePoolRunner(requested), 'host');
   }
 });
 

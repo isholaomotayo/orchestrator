@@ -161,12 +161,12 @@ export function normalizeEffort(effort) {
 // transcribe (handoff). The ladder is runner-independent.
 export const DEFAULT_STAGE_EFFORT = {
   planner: 'high',
+  plan_reviewer: 'high',
   designer: 'high',
   coder: 'medium',
   tester: 'medium',
   reviewer: 'high',
   handoff: 'low',
-  reporter: 'low',
   reporter: 'low',
 };
 
@@ -250,7 +250,7 @@ function pickAutoStages(config, runner, { hostClient = null } = {}) {
   }
   const profiles = config.modelProfiles?.auto || DEFAULT_MODEL_PROFILES.auto;
   const byRunner = profiles[key] || DEFAULT_MODEL_PROFILES.auto[key] || DEFAULT_MODEL_PROFILES.auto.host;
-  return { ...byRunner };
+  return { ...byRunner, plan_reviewer: byRunner.plan_reviewer || byRunner.reviewer };
 }
 
 function validateStageMap(stages, label = 'models') {
@@ -268,6 +268,7 @@ function validateStageMap(stages, label = 'models') {
   // Optional stages default to a sensible sibling when omitted: the designer is
   // architecture work (planner tier); the handoff doc is summarisation (reviewer tier).
   out.designer = typeof stages.designer === 'string' && stages.designer.trim() ? stages.designer.trim() : out.planner;
+  out.plan_reviewer = typeof stages.plan_reviewer === 'string' && stages.plan_reviewer.trim() ? stages.plan_reviewer.trim() : out.reviewer;
   out.handoff = typeof stages.handoff === 'string' && stages.handoff.trim() ? stages.handoff.trim() : out.reviewer;
   return out;
 }

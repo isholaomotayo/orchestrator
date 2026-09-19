@@ -1,6 +1,6 @@
 ---
 name: orchestrate
-description: Runs a self-healing multi-agent pipeline for one task (Planner → optional Designer → Coder fix loop → Tester → Reviewer → Handoff → Reporter, the last two mandatory), or a whole roadmap of features as a pool of parallel workers, with approval gates and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or run a roadmap. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
+description: Runs a self-healing multi-agent pipeline for one task (Planner → Plan Approver → optional Designer → Coder fix loop → Tester → Reviewer → Handoff → Reporter, the last two mandatory), or a whole roadmap of features as a pool of parallel workers, with approval gates and a live dashboard. Use only when the user explicitly invokes /orchestrate or explicitly asks to orchestrate, run the pipeline, or run a roadmap. Do not self-invoke for ordinary "build/fix/refactor this" requests, and never re-invoke it from within a stage you are already executing as part of an active run (see the self-invocation guard).
 when_to_use: Trigger only on explicit phrases like "/orchestrate", "orchestrate this", "run the pipeline", "use the multi-agent pipeline", or when the user provides a task directly after /orchestrate. Do not trigger on generic build/implement/refactor requests, and never trigger while already completing a stage handoff for an active run.
 argument-hint: "[task] [--roadmap <file>] [--model-profile auto|manual] [--mode chat|cli] [--host-client <name>] [--approve-plan] [--design] [--allow-self]"
 arguments:
@@ -14,7 +14,9 @@ allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool.mjs
 
 # Orchestrate
 
-Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (builder-checker loop) → Tester → Reviewer → Handoff → Reporter**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift. Handoff and Reporter are mandatory: every run that reaches an `APPROVED` verdict always produces a continuation document for the next agent and a human-facing report — there is no flag to skip either.
+Self-healing multi-agent workflow: **Planner → Plan Approver → (optional Designer) → Coder (builder-checker loop) → Tester → Reviewer → Handoff → Reporter**, with artifacts saved to `.pipeline/*.md` and a live dashboard whose URL is dynamically selected and saved to `.pipeline/ui.url` to prevent port drift. The read-only Plan Approver is the default gate: it records its verdict in `plan_review.md`, automatically returns `REQUEST_CHANGES` to Planner, and escalates `BLOCK` or exhausted revisions for a human decision. `--approve-plan` adds a human gate after agent approval. Handoff and Reporter are mandatory: every run that reaches an `APPROVED` verdict always produces a continuation document for the next agent and a human-facing report — there is no flag to skip either.
+
+The operating contract is one skill and one command for the whole request; an inspectable record during and after every run; and an attending chat that can own stages on any host without extra runner setup. Record visible progress and decision/evidence summaries, and mark unavailable transcript or private reasoning capture honestly. In pool mode, only an explicitly named CLI runner may launch an external agent; keep host runs sequential across features.
 
 ## Current environment
 
@@ -32,7 +34,7 @@ Self-healing multi-agent workflow: **Planner → (optional Designer) → Coder (
 
 If the user invoked this skill with arguments, extract them:
 - **`$task`** — The feature or task description to implement (e.g. "implement JWT auth")
-- **`$model-profile`** — `auto` or `manual` (if not provided, ask)
+- **`$model-profile`** — `auto` or `manual` (defaults to `auto`)
 - **`$mode`** — `chat` or `cli` override (optional; auto-detected from environment)
 - **`$runner`** — `claude`, `cursor`, `codex`, `antigravity`, or `host` (optional; `gemini` is a deprecated alias for `antigravity`)
 
@@ -40,8 +42,8 @@ If `$task` was not provided as an argument, extract it from the user's message (
 
 **Two shapes of work.**
 
-- **One task** → single-run mode. You are a chat session: invoke with `--mode chat --host-client <your-client>` (`claude`, `cursor`, `codex`, or `antigravity`), never pass `--runner`, and complete each stage yourself from `.pipeline/stage-handoff.json`, then run `--continue`.
-- **A roadmap of features** → pool mode. You are the **coordinator**: you do intake, answer decisions, and approve merges. The supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with a `- runner: claude|cursor|codex|antigravity` bullet in `roadmap.md`, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere — the supervisor instead raises a `claim-run` item, and you (or whoever is attending chat) complete that one stage directly, exactly as in single-run mode above, via `pool claim <runId>` (see step 6b).
+- **One task** → single-run mode. You are a chat session: invoke with `--mode chat --host-client <your-client>` (any lowercase host name), never pass `--runner`, and complete each stage yourself from `.pipeline/stage-handoff.json`, then run `--continue`.
+- **A roadmap of features** → pool mode. You are the attending chat: drain host stages sequentially, and handle intake and decisions. The supervisor spawns a real OS process only for an explicitly selected authenticated CLI runner. Everything else defaults to `runner: host` and appears in the Agent queue without a human notification. Complete each queued stage directly via `pool claim <runId>` (see step 6b).
 
 ### 2. Pre-flight Check
 
@@ -54,18 +56,10 @@ Before running anything:
   ```
 - **Self-repo guard**: the pipeline exits with code 3 if the target is the orchestrator SOURCE repository (it must only run against consumer projects). Do not override on your own; maintainers can pass `--allow-self` or set `ORCH_ALLOW_SELF=1`.
 
-### 3. Model Selection (Required Before Start)
+### 3. Model Selection
 
-If `$model-profile` was **not** passed as an argument, ask exactly this question before proceeding:
-
-> **Which model profile would you like to use?**
-> - **`auto`** — Cost-optimized per stage (recommended). Planner gets a high-tier model, Coder/Tester/Reviewer get mid-tier.
-> - **`manual`** — You pick a model for each stage: Planner, Coder, Tester, Reviewer.
-
-This is the **only** pre-run question. Do not ask about mode, runner, or other flags unless the user brings them up.
-
-- **Automatic**: run with `--model-profile auto`
-- **Manual**: collect four model names from the user, then build `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
+- **Default**: run with `--model-profile auto`; it selects cost-optimized models per stage for the current host, with `current-chat` as the fallback for unfamiliar hosts.
+- **Manual, only when explicitly requested**: collect four model names from the user, then build `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`.
 
 ### 4. Execute the Pipeline
 
@@ -120,26 +114,26 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
    ```
 6. Repeat until the pipeline finishes or halts.
 
-When status is `awaiting_plan_approval` (only when `--approve-plan` is set): present `.pipeline/specs.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
+When status is `awaiting_plan_approval` (an explicit `--approve-plan` gate, a blocked agent verdict, or exhausted revisions): present `.pipeline/specs.md` and `.pipeline/plan_review.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
 
 ### 6b. Roadmap (pool) mode
 
 When the user hands you a roadmap, or a body of work too large for one run:
 
-1. Write `.pipeline/roadmap.md` — flat frontmatter (`title`, `base`, `merge: pr|local-only`, optional `review: feature|end`), then one `## <ID>: <title>` per feature with `- depends_on:`, a `### Description` and a `### Acceptance` list. Features run in order; tickets inside a feature run in parallel. A feature may also declare `- runner: auto|host|claude|cursor|codex|antigravity` (default `auto`: prefer an authenticated CLI, else `host`) — leave it unset unless the user specifically wants that feature to run unattended on a real CLI. If the user wants a whole product / long list to run start to finish with one review at the end, set `review: end` and prefer an authenticated CLI runner.
+1. Write `.pipeline/roadmap.md` — flat frontmatter (`title`, `base`, `merge: pr|local-only`, optional `review: feature|end`), then one `## <ID>: <title>` per feature with `- depends_on:`, a `### Description` and a `### Acceptance` list. Features run in order; explicitly selected CLI tickets may run in parallel, while host stages run one at a time across the pool. A feature may declare `- runner: host|claude|cursor|codex|antigravity`; unset or `auto` means the attending host. Name a CLI only when the user wants unattended execution.
 2. Compile and show it, so validation errors surface before anything runs:
    ```bash
    bash .pipeline/orchestrate.sh roadmap compile
    ```
-3. Confirm the feature list with the user, ask the one model-profile question, then start:
+3. Start with the compiled feature list and automatic model selection unless the user explicitly requested manual models:
    ```bash
    bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md
    ```
-4. From then on you are the coordinator. Each turn: `bash .pipeline/orchestrate.sh pool digest`, then act on what is waiting with exactly one verb:
+4. Read `bash .pipeline/orchestrate.sh pool status --json`. While `agentQueue.current` exists, claim that run, complete its current handoff, continue it, and read status again. Do this without waiting for another user message. Respect existing bridge ownership and leases. When the queue is empty, handle genuine human decisions and other pool actions:
 
    | Waiting on | Verb |
    |---|---|
-   | a run parked at a chat handoff (`claim-run`) | `pool claim <runId>`, then complete that stage yourself exactly as in single-run mode, then `--continue --run-id <runId>` |
+   | `agentQueue.current` | `pool claim <runId>`, complete that stage yourself, then `--continue --run-id <runId>`; repeat |
    | a plan gate | `pool approve-plan <runId>` |
    | a question | `pool decide <decisionId> "<answer>"` |
    | a cycle budget | `pool extend <runId> <n>` |
@@ -178,7 +172,7 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 /orchestrate implement JWT authentication middleware --model-profile auto
 ```
 
-→ Task is `implement JWT authentication middleware`, model profile is `auto`. Skip the model selection question and proceed directly to execution.
+→ Task is `implement JWT authentication middleware`, model profile is `auto`. Proceed directly to execution.
 
 ### Example 2: Plain invocation (conversational)
 
@@ -186,11 +180,11 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 /orchestrate
 ```
 
-→ Ask the user for the task description and model profile before proceeding.
+→ Ask the user for the task description, then use the automatic model profile.
 
 ### Example 3: Manual model selection
 
-*User chooses manual profile.*
+*User explicitly requests the manual profile.*
 *Agent collects:* Planner = `opus-5`, Coder = `sonnet-5`, Tester = `sonnet-5`, Reviewer = `opus-5`.
 *Agent runs:*
 ```bash

@@ -14,10 +14,17 @@ import { atomicWrite, appendLine } from './state.mjs';
 
 export const RUN_META_CONTRACT = 'orchestrator-run-meta.v1';
 
+/** Append a recoverable pool-wide lifecycle observation for this run. */
+export function appendRunLifecycle(paths, entry) {
+  if (!paths.runId || !paths.runsLedger) return;
+  appendLine(paths.runsLedger, JSON.stringify({ recordedAt: new Date().toISOString(), runId: paths.runId, ...entry }));
+}
+
 // The complete, closed set of run verbs. A typo must fail loudly rather than
 // invent a state nothing downstream knows how to classify or clear.
 export const RUN_VERBS = [
   'working',        // the run is executing a stage
+  'awaiting-agent', // a chat handoff is queued for the attending agent
   'needs-decision', // parked on a question only the operator can answer
   'blocked',        // cannot proceed without intervention
   'paused',         // a declared external wait

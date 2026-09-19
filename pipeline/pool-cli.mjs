@@ -5,18 +5,21 @@
 // them: 0 ok, 1 error, 2 usage, 3 self-target guard, 4 no supervisor running.
 import fs from 'node:fs';
 import path from 'node:path';
-import { pipelinePaths, loadConfig } from './state.mjs';
+import { pipelinePaths, loadConfig, appendLine } from './state.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 import * as pool from './pool.mjs';
 import { renderDigest } from './snapshot.mjs';
+import { createSupervisor } from './supervisor.mjs';
+import { writeTerminalReport } from './report.mjs';
 
 const USAGE = `Usage: node pipeline/pool.mjs <verb> [options]
 
 Reading:
   status [--json]              the pool snapshot
-  digest                       the four-section status digest
+  digest                       decisions, agent queue and progress
   attention [--pending] [--json]
   decisions [--open] [--json]
+  reports rebuild [--dry-run] [--json]  rebuild run and feature reports from recorded runs
 
 Roadmap:
   roadmap compile              compile .pipeline/roadmap.md into control state
@@ -74,9 +77,9 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
         return 0;
       }
       case 'attention': {
-        const items = args.includes('--pending') ? pool.pendingAttention(paths) : pool.pendingAttention(paths);
+        const items = pool.snapshot(paths, { config }).needsDecision;
         out(json, items, items.length
-          ? items.map((i) => `- [${i.kind}] ${i.summary} (${i.runId ?? '-'}) — ack with \`pool ack ${i.id}\``).join('\n')
+          ? items.map((i) => `- [${i.kind}] ${i.question} (${i.runId ?? '-'})${i.attentionId ? ` — ack with \`pool ack ${i.attentionId}\`` : ''}`).join('\n')
           : 'Nothing is waiting for you.');
         return 0;
       }
@@ -86,6 +89,83 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
           ? items.map((d) => `- ${d.decisionId}: ${d.question} [${(d.options || []).join(', ')}]`).join('\n')
           : 'No open decisions.');
         return 0;
+      }
+      case 'reports': {
+        if (args[1] !== 'rebuild') { console.error(USAGE); return 2; }
+        const roadmap = pool.readRoadmap(paths);
+        if (!roadmap) { console.error('No compiled roadmap to rebuild reports from.'); return 1; }
+        const features = (roadmap.features || []).filter((feature) => ['accepted', 'landed'].includes(feature.status));
+        // Roadmap and ledger entries can describe runs whose directories no
+        // longer exist. Keep them in feature history, but do not invent a
+        // per-run report or activity for those synthetic records.
+        const terminalRuns = pool.listRunStates(paths).filter((run) =>
+          ['done', 'halted'].includes(run.status?.overall) && fs.existsSync(run.paths.status));
+        if (args.includes('--dry-run')) {
+          out(json, { runs: terminalRuns.map((run) => run.runId), features: features.map((feature) => feature.id) }, `Would rebuild ${terminalRuns.length} terminal run report(s) and ${features.length} completed feature report(s).`);
+          return 0;
+        }
+        if (pool.snapshot(paths, { config }).supervisor.alive) {
+          console.error('Stop the live supervisor before rebuilding historical reports.');
+          return 1;
+        }
+        const reportBuilder = createSupervisor({ repoRoot: cwd });
+        const results = [];
+        const updated = { ...roadmap, features: roadmap.features.map((feature) => ({ ...feature })) };
+        for (const run of terminalRuns) {
+          const reportDir = run.paths.reports;
+          const oldJson = path.join(reportDir, 'report.json');
+          let diagrams = [];
+          try {
+            diagrams = (JSON.parse(fs.readFileSync(oldJson, 'utf8')).diagrams || []).map((diagram) => {
+              const rel = diagram.htmlRel || `${diagram.id}.html`;
+              const safe = typeof rel === 'string' && !path.isAbsolute(rel) && !rel.split(/[\\/]/).includes('..');
+              return safe && fs.existsSync(path.join(reportDir, 'diagrams', rel))
+                ? { ...diagram, htmlRel: rel }
+                : { ...diagram, ok: false, error: 'The original diagram file is unavailable.' };
+            });
+          } catch {}
+          fs.mkdirSync(reportDir, { recursive: true });
+          for (const [name, legacy] of [['work-done.html', 'work-done.legacy.html'], ['work-done.md', 'work-done.legacy.md'], ['report.json', 'report.legacy.json'], ['operations.json', 'operations.legacy.json']]) {
+            const source = path.join(reportDir, name);
+            const backup = path.join(reportDir, legacy);
+            if (fs.existsSync(source) && !fs.existsSync(backup)) fs.copyFileSync(source, backup);
+          }
+          const legacyMd = path.join(reportDir, 'work-done.legacy.md');
+          const legacyHtml = path.join(reportDir, 'work-done.legacy.html');
+          const narrativeMissing = !fs.existsSync(run.paths.reporterDoc);
+          const legacyReport = narrativeMissing && fs.existsSync(legacyHtml)
+            ? { path: path.relative(cwd, legacyHtml), markdown: fs.existsSync(legacyMd) ? fs.readFileSync(legacyMd, 'utf8') : '',
+              reason: 'The original report is retained because its reporter artifact is unavailable.' }
+            : null;
+          const result = writeTerminalReport(run.paths, run.status, null, [], { diagrams, legacyReport });
+          const record = { ts: new Date().toISOString(), runId: run.runId,
+            reportRel: result.ok ? result.htmlRel : null, reportError: result.error || null,
+            outcome: result.ok ? 'rebuilt' : 'failed' };
+          appendLine(path.join(paths.control, 'report-rebuilds.jsonl'), JSON.stringify(record));
+          results.push(record);
+        }
+        for (const feature of updated.features.filter((item) => ['accepted', 'landed'].includes(item.status))) {
+          const reportDir = path.join(paths.controlReports, feature.id);
+          for (const [name, legacy] of [['work-done.html', 'work-done.legacy.html'], ['work-done.md', 'work-done.legacy.md'], ['report.json', 'report.legacy.json']]) {
+            const source = path.join(reportDir, name);
+            const backup = path.join(reportDir, legacy);
+            if (fs.existsSync(source) && !fs.existsSync(backup)) fs.copyFileSync(source, backup);
+          }
+          let result;
+          try { result = reportBuilder.archiveFeatureReport(feature, feature.landedSha || null); }
+          catch (error) { result = { ok: false, reportRel: null, reportError: error.message }; }
+          if (result.reportRel) feature.reportRel = result.reportRel;
+          feature.reportError = result.reportError ?? null;
+          const record = { ts: new Date().toISOString(), featureId: feature.id,
+            previousReport: roadmap.features.find((item) => item.id === feature.id)?.reportRel || null,
+            reportRel: result.reportRel || null, reportError: result.reportError || null,
+            outcome: result.ok ? 'rebuilt' : 'failed' };
+          appendLine(path.join(paths.control, 'report-rebuilds.jsonl'), JSON.stringify(record));
+          results.push(record);
+        }
+        pool.writeRoadmap(paths, updated);
+        out(json, results, `Rebuilt ${results.filter((item) => item.outcome === 'rebuilt').length}/${results.length} completed feature report(s).`);
+        return results.some((item) => item.outcome === 'failed') ? 1 : 0;
       }
       case 'roadmap': {
         const sub = args[1];

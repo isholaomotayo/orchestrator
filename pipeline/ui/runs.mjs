@@ -56,7 +56,7 @@ export function allRuns(pool, singleRunList) {
   const singleRuns = (singleRunList || []).map((r) => ({
     runId: r.id, featureId: r.featureId ?? null, ticketId: r.ticketId ?? null,
     kind: r.kind ?? 'run', stage: r.stage ?? null, state: r.live ? 'busy' : 'idle',
-    overall: r.overall, haltReason: r.haltReason,
+    overall: r.overall, haltReason: r.haltReason, reportError: r.reportError ?? null,
     runner: r.runner ?? null, hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
     spawnedAt: r.startedAt ?? null, reportRel: r.reportRel ?? null, title: r.task,
   }));

@@ -159,6 +159,7 @@ test('recordHostProgress writes a validated assistant line', () => {
   assert.equal(events[0].kind, 'text');
   assert.equal(events[0].host, true);
   assert.equal(events[0].stage, 'planner');
+  assert.match(fs.readFileSync(path.join(paths.logs, 'planner.log'), 'utf8'), /Drafting the spec/);
   fs.rmSync(root, { recursive: true, force: true });
 });
 
