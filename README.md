@@ -713,18 +713,19 @@ The waiting states call for different actions:
 Attention cards for completed or superseded handoffs are retained in the
 append-only event history but removed from the active queue.
 
-**Roadmap mode needs no authenticated agent CLI by default.** A feature/ticket's
-`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|antigravity`,
-default `host`) stays with the attending chat when unset or `auto`. Naming a CLI
-runner explicitly opts that feature into unattended external execution.
+**Roadmap mode prefers unattended execution when possible.** A feature/ticket's
+`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|antigravity`)
+defaults to `auto`. When unset or `auto`, the supervisor prefers an authenticated
+CLI runner (`claude`, `cursor`, `codex`, or `antigravity`, in probe order) for
+unattended parallel execution; it falls back to `host` — the attending chat —
+only when no authenticated CLI is available. Set `host` explicitly to keep a
+feature with the attending chat regardless of CLI availability.
 The supervisor spawns a real worker process only for a CLI-resolved run; a
 `host` run is instead left `awaiting_chat` in the Agent queue. An attending
 chat picks it up with `pool claim <runId>`, completes the stage, continues the
 run, and immediately checks the queue again. It needs no new user instruction
 for each stage, and a closed chat leaves the task queued without reminders.
 The supervisor keeps one host run active across the whole pool by default.
-Opt a feature into a real CLI only when you actually want it to run
-unattended in parallel.
 
 ## Third-party skills
 
@@ -845,7 +846,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 ## Limitations and known trade-offs
 
 - **One run per repo at a time in single-run mode.** Roadmap mode lifts this: many workers run concurrently in one repo, each in its own worktree. Cross-*repo* parallelism is still out of scope.
-- **A feature/ticket opted into a real CLI runner needs one authenticated.** That's opt-in per feature (`- runner:` in `roadmap.md`); the host default needs nothing and parks only one attended run across the pool.
+- **A CLI-resolved runner must be authenticated.** When `runner` is unset or `auto`, the supervisor prefers an authenticated CLI and falls back to `host` when none is available. Explicitly setting `host` forces the attending chat regardless.
 - **Ticket parallelism is a planner's estimate.** Files declared by a ticket are used to hold back likely conflicts; the fan-in merge is the ground truth, and a real conflict becomes a decision rather than a guess.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.

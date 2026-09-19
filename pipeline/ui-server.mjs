@@ -637,12 +637,13 @@ function serveReport(project, url, res) {
   const runId = url.searchParams.get('run');
   const featureId = url.searchParams.get('feature');
 
+  // Normalize full paths like ".pipeline/runs/r1/reports/diagrams/map.html" to
+  // just "diagrams/map.html" — everything after the last "reports" segment.
+  // Relative paths like "diagrams/map.html" are left unchanged.
   if (rel.includes('/')) {
     const parts = rel.split('/');
     if (parts.includes('reports')) {
       rel = parts.slice(parts.lastIndexOf('reports') + 1).join('/') || 'work-done.html';
-    } else {
-      rel = parts[parts.length - 1] || 'work-done.html';
     }
   }
 
