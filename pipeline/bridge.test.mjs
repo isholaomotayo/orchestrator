@@ -53,9 +53,11 @@ test('session.register is stable for the same host+conversation and refreshes ca
   assert.deepEqual(second.capabilities, { hooks: false });
 });
 
-test('session.register rejects an unsupported host or a missing conversation id', () => {
+test('session.register accepts a generic host and rejects malformed identity', () => {
   const root = project();
-  assert.throws(() => bridgeCommand('session.register', { project: root, host: 'notepad', conversationId: 'c' }), /host and conversationId/);
+  const generic = bridgeCommand('session.register', { project: root, host: 'notepad', conversationId: 'c' });
+  assert.ok(generic.sessionId);
+  assert.throws(() => bridgeCommand('session.register', { project: root, host: '../bad', conversationId: 'c' }), /host and conversationId/);
   assert.throws(() => bridgeCommand('session.register', { project: root, host: 'claude', conversationId: '  ' }), /host and conversationId/);
 });
 

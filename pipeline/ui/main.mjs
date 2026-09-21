@@ -103,7 +103,7 @@ function renderSidebar() {
 
   if (!tree.enabled) {
     // Single-run project: the sidebar is a plain overview — every run, live
-    // one first. The pipeline itself (all 7 stages, with progress) lives in
+    // one first. The pipeline itself (all 8 stages, with progress) lives in
     // that run's own tab, not here — the sidebar has to stay a navigation
     // list once more than one run's tab can be open at a time.
     side.append(sectionNode({
@@ -146,7 +146,7 @@ function buildStageRail(stages, activeName, onSelect, status) {
     }, [
       el('div', { class: 'rail-top' }, [
         el('span', { class: `agent-ico ${stage.name}`, html: stageIcon(stage.name) }),
-        el('span', { class: 'rail-nm', text: cap(stage.name) }),
+        el('span', { class: 'rail-nm', text: agentMeta(stage.name).label || cap(stage.name) }),
       ]),
       el('div', { class: 'rail-sub', text: reason || agentMeta(stage.name).sub }),
       el('span', { class: 'rail-track' }, el('span', { class: 'rail-bar' })),
@@ -221,7 +221,7 @@ function open(spec) {
   render();
 }
 
-// Fixed nav — the five destinations — in a strip of its own, separate from
+  // Fixed nav destinations in a strip of their own, separate from
 // whatever you opened. Rendered in DESTINATIONS' own canonical order rather
 // than tabs.list()'s array order, since a restored hash can interleave a
 // destination anywhere among dynamic tabs.
@@ -350,6 +350,7 @@ const VIEWS = {
   feature: viewFeature,
   review: viewReview,
   attention: viewAttention,
+  agentQueue: viewAgentQueue,
   report: viewReport,
   runs: viewRuns,
   messages: viewMessages,
@@ -357,12 +358,13 @@ const VIEWS = {
   unknown: viewUnknown,
 };
 
-// The five fixed destinations, always open, always in this order, never
+// Fixed destinations, always open, always in this order, never
 // closable — the plan calls these "clear destinations", not tabs you opened.
 const DESTINATIONS = [
   { kind: 'overview', title: 'Overview' },
   { kind: 'runs', title: 'Runs' },
   { kind: 'attention', title: 'Attention' },
+  { kind: 'agentQueue', title: 'Agent queue' },
   { kind: 'messages', title: 'Messages' },
   { kind: 'reports', title: 'Reports' },
 ];
@@ -371,7 +373,7 @@ const DESTINATIONS = [
 // signature computation share one definition.
 const OVERVIEW_TILES = [
   { key: 'executing', label: 'Executing', filter: { bucket: 'executing' } },
-  { key: 'awaitingAgent', label: 'Awaiting agent', filter: { bucket: 'awaiting-agent' } },
+  { key: 'awaitingAgent', label: 'Awaiting agent', dest: 'agentQueue' },
   { key: 'awaitingUser', label: 'Awaiting you', cls: 'warn', dest: 'attention' },
   { key: 'blocked', label: 'Blocked', cls: 'fail', filter: { bucket: 'blocked' } },
   { key: 'disconnected', label: 'Disconnected', cls: 'warn', filter: { bucket: 'disconnected' } },
@@ -384,7 +386,7 @@ const OVERVIEW_TILES = [
 // and Attention so patching one list keeps both consistent — see pool-tree.mjs
 // for the same decisionId-or-kind:featureId/runId scheme used in the sidebar.
 function decisionKey(d) { return d.decisionId ?? `${d.kind}:${d.featureId ?? d.runId ?? ''}`; }
-function decisionSig(d) { return JSON.stringify([d.question, d.options, d.recommended, d.artifacts, d.decisionId]); }
+function decisionSig(d) { return JSON.stringify([d.question, d.kind, d.options, d.recommended, d.artifacts, d.decisionId]); }
 
 // Status lanes for Overview's Roadmap section — the same vocabulary
 // pool-tree.mjs's FEATURE_DOT/FEATURE_LABEL already classify each feature
@@ -404,6 +406,7 @@ function featureCard(feature) {
   return el('div', { class: 'card' }, [
     el('h4', { text: `${feature.id}: ${feature.title}` }),
     el('div', { class: 'meta', text: featureLabel(feature.status) + (feature.pr?.url ? ' · pull request open' : '') }),
+    feature.reportError ? el('div', { class: 'meta', text: `Report issue: ${feature.reportError}` }) : null,
     depLine ? el('div', { class: 'meta', text: depLine }) : null,
     el('div', { class: 'row', style: 'margin-top:8px' }, [
       feature.reportRel ? el('button', { class: 'btn ghost', text: 'Report', onclick: () => open({ kind: 'report', subject: feature.id, file: feature.reportRel, title: `${feature.id} report` }) }) : null,
@@ -425,7 +428,7 @@ function roadmapRows(features) {
     for (const feature of inLane) {
       rows.push({
         key: feature.id,
-        sig: JSON.stringify([feature.status, feature.pr?.url, feature.reportRel, feature.dependsOn]),
+        sig: JSON.stringify([feature.status, feature.pr?.url, feature.reportRel, feature.reportError, feature.dependsOn]),
         render: () => featureCard(feature),
       });
     }
@@ -464,7 +467,7 @@ function viewOverview(wrap) {
     wrap.append(el('p', { class: 'sub', 'data-role': 'sub' }));
     wrap.append(el('div', { 'data-role': 'tiles' }));
     wrap.append(el('div', { 'data-role': 'banners' }));
-    wrap.append(el('h2', { text: 'Needs your decision', 'data-role': 'decisions-heading' }));
+    wrap.append(el('h2', { text: 'Needs attention', 'data-role': 'decisions-heading' }));
     wrap.append(el('div', { 'data-role': 'decisions' }));
     wrap.append(el('h2', { text: 'Roadmap' }));
     wrap.append(el('div', { 'data-role': 'roadmap' }));
@@ -492,7 +495,7 @@ function viewOverview(wrap) {
       h.append(el('button', {
         class: `stat-tile${t.cls && n ? ` ${t.cls}` : ''}`,
         disabled: dest === null,
-        onclick: dest ? () => open({ kind: dest, title: dest === 'attention' ? 'Attention' : 'Runs', runsFilter: t.filter || null }) : null,
+        onclick: dest ? () => open({ kind: dest, title: DESTINATIONS.find((d) => d.kind === dest)?.title || 'Runs', runsFilter: t.filter || null }) : null,
       }, [el('span', { class: 'n', text: String(n) }), el('span', { class: 'lbl', text: t.label })]));
     });
   });
@@ -531,13 +534,14 @@ const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held']);
 
 function decisionCard(item) {
   const isFeatureAction = !item.decisionId && item.featureId && FEATURE_ACTION_KINDS.has(item.kind);
+  const isMerge = item.kind === 'merge-approval' || item.kind === 'roadmap-merge';
   const answer = el('textarea', {
     placeholder: isFeatureAction ? 'Optional reason, recorded with whichever action you pick below.'
       : item.options?.length ? `One of: ${item.options.join(', ')}` : 'Your answer',
   });
   const actions = el('div', { class: 'row', style: 'margin-top:8px' });
 
-  for (const option of item.options || []) {
+  for (const option of isMerge ? [] : (item.options || [])) {
     actions.append(el('button', {
       class: 'btn ghost', text: option,
       onclick: isFeatureAction
@@ -551,7 +555,26 @@ function decisionCard(item) {
         : () => { answer.value = option; },
     }));
   }
-  if (item.decisionId) {
+  if (isMerge) {
+    actions.append(el('button', {
+      class: 'btn', text: item.kind === 'roadmap-merge' ? 'Approve roadmap landing' : 'Approve merge',
+      onclick: async () => {
+        try {
+          await api.approveMerge(item.kind === 'roadmap-merge' ? null : item.featureId);
+          toast('Approval recorded. The supervisor will verify the target before landing the work.');
+          refresh();
+        } catch (err) { toast(err.message); }
+      },
+    }));
+    if (item.kind === 'merge-approval') actions.append(el('button', {
+      class: 'btn ghost', text: 'Request changes',
+      onclick: async () => {
+        if (!answer.value.trim()) return toast('Describe the changes you need first.');
+        try { await api.requestChanges(item.featureId, answer.value.trim()); toast('Changes requested.'); refresh(); }
+        catch (err) { toast(err.message); }
+      },
+    }));
+  } else if (item.decisionId) {
     actions.append(el('button', {
       class: 'btn', text: 'Answer',
       onclick: async () => {
@@ -566,10 +589,10 @@ function decisionCard(item) {
   }
   if (item.runId) {
     actions.append(el('button', {
-      class: 'btn ghost', text: item.kind === 'claim-run' ? 'Claim / connect' : 'Open run',
+      class: 'btn ghost', text: 'Open run',
       onclick: () => open({ kind: 'run', subject: item.runId, title: item.runId }),
     }));
-    if (['dead', 'unknown', 'stale', 'halted', 'feature-failed'].includes(item.kind) || !item.decisionId) {
+    if (['dead', 'unknown', 'stale', 'halted', 'feature-failed'].includes(item.kind)) {
       actions.append(el('button', {
         class: 'btn ghost danger', text: 'Dismiss',
         onclick: async () => {
@@ -588,8 +611,8 @@ function decisionCard(item) {
     el('div', { class: 'meta', text: [item.featureId, item.runId, item.kind].filter(Boolean).join(' · ') }),
     item.recommended ? el('div', { class: 'meta', text: `Recommended: ${item.recommended}` }) : null,
     ...(item.artifacts || []).map((a) => el('div', { class: 'meta', html: `<code>${esc(a)}</code>` })),
-    item.decisionId || isFeatureAction ? answer
-      : item.kind === 'claim-run' ? el('div', { class: 'meta', text: 'Run `pool claim` (or open the run and complete its stage) to pick this up.' })
+    item.decisionId && !isMerge || isFeatureAction || item.kind === 'merge-approval' ? answer
+      : item.kind === 'roadmap-merge' ? el('div', { class: 'meta', text: 'Human approval required: this lands the reviewed roadmap work onto its target.' })
         : el('div', { class: 'meta', text: 'This needs action elsewhere — see the run.' }),
     actions,
   ]);
@@ -608,6 +631,23 @@ function viewAttention(wrap) {
   wrap.querySelector('[data-role="sub"]').textContent = 'Every open question and escalation, oldest first. Answering one lets its run continue.';
   wrap.querySelector('[data-role="empty"]').hidden = !!items.length;
   renderDecisionList(wrap.querySelector('[data-role="decisions"]'), items);
+}
+
+function viewAgentQueue(wrap) {
+  const queue = state.pool?.snapshot?.agentQueue || {};
+  wrap.replaceChildren(el('h1', { text: 'Agent queue' }));
+  if (!queue.current) {
+    wrap.append(el('p', { class: 'empty', text: 'No host stage is waiting for the attending chat.' }));
+    return;
+  }
+  const task = queue.current;
+  wrap.append(el('p', { class: 'sub', text: `${queue.backlogCount || 0} more host task(s) queued. The attending chat works through them one at a time.` }));
+  wrap.append(el('div', { class: 'card' }, [
+    el('h2', { text: task.stage || 'Host stage' }),
+    el('p', { class: 'meta', text: [task.featureId, task.ticketId, task.runId].filter(Boolean).join(' · ') }),
+    el('p', { class: 'meta', text: task.owner ? 'This handoff has a chat owner.' : 'Ready for the attending chat.' }),
+    el('button', { class: 'btn', text: 'Open run', onclick: () => open({ kind: 'run', subject: task.runId, stage: task.stage, title: task.runId }) }),
+  ]));
 }
 
 function viewFeature(wrap, tab) {
@@ -655,7 +695,7 @@ function viewFeature(wrap, tab) {
   for (const run of runs) {
     wrap.append(el('div', { class: 'card' }, [
       el('h4', { text: run.ticketId || run.kind }),
-      el('div', { class: 'meta', text: `${run.overall ?? run.state}${run.stage ? ` · ${run.stage}` : ''}${run.haltReason ? ` · ${run.haltReason}` : ''}` }),
+      el('div', { class: 'meta', text: `${run.overall ?? run.state}${run.stage ? ` · ${run.stage}` : ''}${run.haltReason ? ` · ${run.haltReason}` : ''}${run.reportError ? ` · Report error: ${run.reportError}` : ''}` }),
       el('button', { class: 'btn ghost', text: 'Open', onclick: () => open({ kind: 'run', subject: run.runId, title: run.ticketId || run.runId }) }),
     ]));
   }
@@ -855,6 +895,7 @@ function viewReports(wrap) {
 // output of the stage you are looking at rather than everything at once.
 const STAGE_ARTIFACT = {
   planner: 'specs.md',
+  plan_reviewer: 'plan_review.md',
   designer: 'design.md',
   coder: 'changes.md',
   tester: 'test_suite.md',
@@ -926,7 +967,7 @@ function mountRunChrome(wrap, tab, { status, stages, active, meta, data }) {
   wrap.append(el('div', { 'data-role': 'goal' }));
   wrap.append(el('div', { 'data-role': 'controls' }));
   wrap.append(el('div', { 'data-role': 'banners' }));
-  wrap.append(el('h3', { 'data-role': 'feed-title', text: `${active} activity` }));
+  wrap.append(el('h3', { 'data-role': 'feed-title', text: `${agentMeta(active).label || cap(active)} activity` }));
   wrap.append(el('div', { class: 'feed-shell' }, el('div', { class: 'feed' })));
   wrap.append(el('div', { 'data-role': 'artifact' }));
 
@@ -1118,12 +1159,15 @@ function fillBanners(wrap, status, active) {
   if (!host) return;
   const activeStage = status.stages?.find((s) => s.name === (active || status.awaitingStage));
   const isAwaitingHost = activeStage?.status === 'awaiting_host' || status.overall === 'awaiting_chat';
-  const sig = `${status.haltReason || ''}|${status.overall || ''}|${isAwaitingHost}`;
+  const sig = `${status.haltReason || ''}|${status.reportError || ''}|${status.overall || ''}|${isAwaitingHost}`;
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
   if (status.haltReason) {
     host.append(el('div', { class: 'banner fail', text: `Halted: ${status.haltReason}. ${status.stages?.find((s) => s.detail)?.detail || ''}` }));
+  }
+  if (status.reportError) {
+    host.append(el('div', { class: 'banner fail', text: `Report could not be written: ${status.reportError}` }));
   }
   if (status.overall === 'awaiting_plan_approval') {
     host.append(el('div', { class: 'banner warn', text: 'This run is waiting for its plan to be approved. Answer it in Decisions, or read the specification below first.' }));
@@ -1286,6 +1330,7 @@ function eventBlock(ev) {
 // actually reviews in: verdict first, evidence after. Module-level since
 // viewReview's patchList needs the same list identity across calls.
 const REVIEW_SECTION_DEFS = [
+  ['plan_review.md', 'Plan approval'],
   ['review_report.md', 'Review'],
   ['review_correctness.md', 'Correctness'],
   ['review_security.md', 'Security'],
@@ -1405,14 +1450,37 @@ function viewReport(wrap, tab) {
   // — a run's own directory (and its reports) are never removed, only its
   // worktree is.
   const runReport = /^\.pipeline\/runs\/([^/]+)\/reports\/(.+)$/.exec(tab.file || '');
-  const params = runReport
-    ? { run: runReport[1], file: runReport[2] }
-    : { feature: tab.subject, file: tab.file || 'work-done.html' };
+  const controlReport = /^\.pipeline\/control\/reports\/([^/]+)\/(.+)$/.exec(tab.file || '');
+  let params;
+  if (controlReport) {
+    params = { feature: controlReport[1], file: controlReport[2] };
+  } else if (runReport) {
+    params = { run: runReport[1], file: runReport[2] };
+  } else {
+    const raw = tab.file || 'work-done.html';
+    const fileName = raw.includes('/') ? raw.split('/').pop() : raw;
+    params = { feature: tab.subject, file: fileName || 'work-done.html' };
+  }
   const src = api.reportUrl(params);
   wrap.append(el('p', { class: 'sub' }, el('a', { href: src, target: '_blank', rel: 'noreferrer', text: 'Open in a new tab' })));
   // Sandboxed without same-origin: a report may run its own scripts to be
   // interactive, but can never read this page or call the API.
   wrap.append(el('iframe', { class: 'report', src, sandbox: 'allow-scripts', referrerpolicy: 'no-referrer', title: 'Work-done report' }));
+}
+
+async function onReportNavigation(event) {
+  if (event.data?.type !== 'orchestrator:open-run-stage') return;
+  const active = tabs.active();
+  const frame = active?.kind === 'report' ? document.querySelector('iframe.report') : null;
+  if (!frame || event.source !== frame.contentWindow) return;
+  const { runId, stage } = event.data;
+  if (typeof runId !== 'string' || !/^[A-Za-z0-9_.-]{1,180}$/.test(runId) || (stage !== null && !STAGE_ORDER.includes(stage))) return;
+  const project = state.project;
+  try {
+    const data = await api.state(runId);
+    if (project !== state.project || !data?.status || (stage && !data.status.stages?.some((s) => s.name === stage && s.status !== 'pending'))) return;
+    open({ kind: 'run', subject: runId, ...(stage ? { stage } : {}), title: runId });
+  } catch { /* The run may have been removed since this report was generated. */ }
 }
 
 // ---- data -----------------------------------------------------------------
@@ -1510,10 +1578,10 @@ async function initProjects() {
 const SHORTCUTS = [
   ['[ / ]', 'previous / next open tab'],
   ['x', 'close open tab'],
-  ['g o', 'overview'], ['g r', 'runs'], ['g a', 'attention'], ['g m', 'messages'], ['g p', 'reports'],
+  ['g o', 'overview'], ['g r', 'runs'], ['g a', 'attention'], ['g q', 'agent queue'], ['g m', 'messages'], ['g p', 'reports'],
   ['?', 'this list'],
 ];
-const DESTINATION_KEYS = { o: 'overview', r: 'runs', a: 'attention', m: 'messages', p: 'reports' };
+const DESTINATION_KEYS = { o: 'overview', r: 'runs', a: 'attention', q: 'agentQueue', m: 'messages', p: 'reports' };
 
 function onKey(event) {
   const target = event.target;
@@ -1563,6 +1631,7 @@ async function boot() {
   };
   $('help').onclick = showHelp;
   document.addEventListener('keydown', onKey, true);
+  window.addEventListener('message', onReportNavigation);
   initResize();
 
   await initProjects();
@@ -1580,7 +1649,7 @@ async function boot() {
     });
     restoredActive = tabs.activeId();
   }
-  // The five destinations are always open, in this fixed order, and never
+  // The destinations are always open, in this fixed order, and never
   // closable — restoring an older saved workspace (or a first boot) must not
   // leave one of them missing. Opening one activates it, so the deliberate
   // tab the hash asked for (if any) is restored as active afterward.

@@ -19,7 +19,7 @@ import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } f
 import {
   parseRoadmapMd, compileRoadmap, setFeatureStatus, setRoadmapStatus, nextFeature, FEATURE_STATUSES,
 } from './roadmap.mjs';
-import { binExists, isHostSurface, resolveExecutionSurface } from './adapters.mjs';
+import { isHostSurface, resolveExecutionSurface } from './adapters.mjs';
 import { classifyRun, DEFAULT_THRESHOLDS,
   appendAttention, pendingAttention, ackAttention,
   openDecisions, resolveDecision, readDecisions,
@@ -37,28 +37,16 @@ export function poolConfig(config) {
     staleAfterMs: raw.staleAfterMs ?? DEFAULT_THRESHOLDS.staleAfterMs,
     staleEscalateMs: raw.staleEscalateMs ?? DEFAULT_THRESHOLDS.staleEscalateMs,
     pauseResurfaceMs: raw.pauseResurfaceMs ?? DEFAULT_THRESHOLDS.pauseResurfaceMs,
-    // How often an unclaimed host-stage `claim-run` card is re-surfaced.
-    // Deliberately separate from pauseResurfaceMs (which governs held/paused
-    // decisions): host-stage parks should only resurface as a safety net for
-    // forgotten runs, not as a recurring reminder that floods the queue.
-    claimResurfaceMs: raw.claimResurfaceMs ?? DEFAULT_THRESHOLDS.claimResurfaceMs,
     autoResumeMax: raw.autoResumeMax ?? 2,
     serializeOnFileOverlap: raw.serializeOnFileOverlap !== false,
-    featurePlanApproval: raw.featurePlanApproval !== false,
-    // The runner a feature/ticket falls back to when it declares none of its
-    // own. Inherits the pre-existing top-level `runner` setting when the
-    // operator has one (so an existing single-runner preference still
-    // applies in pool mode); otherwise 'auto', which prefers an
-    // authenticated CLI, else host — a roadmap runs end to end with zero CLI
-    // auth on the machine by default.
-    defaultRunner: raw.defaultRunner ?? (config.runner && config.runner !== 'auto' ? config.runner : 'auto'),
+    featurePlanApproval: raw.featurePlanApproval === true,
+    // An attended chat owns stages by default. A named runner in the pool or
+    // top-level config is an explicit opt-in to unattended CLI execution.
+    defaultRunner: raw.defaultRunner ?? (config.runner && config.runner !== 'auto' ? config.runner : 'host'),
     ticketFlags: raw.ticketFlags || {},
     integrationFlags: raw.integrationFlags || { reviewPanel: true },
-    // Maximum number of host-runner runs allowed to sit in awaiting_chat at
-    // the same time. CLI runners can work in parallel; a host runner relies on
-    // the attending chat session, which is sequential. Set to 1 (default) so
-    // the supervisor only parks the next host stage once the previous one has
-    // been claimed and continued, keeping exactly one claim-run card active.
+    // Pool-wide limit for active host runs, including plans, tickets,
+    // integration and approval gates. The attending chat is sequential.
     hostConcurrency: raw.hostConcurrency ?? 1,
   };
 }
@@ -102,16 +90,7 @@ export function compile(paths, { now = new Date() } = {}) {
   const sourceSha256 = crypto.createHash('sha256').update(source).digest('hex');
   const compiled = compileRoadmap(roadmap, readRoadmap(paths), { sourceSha256, now });
   writeRoadmap(paths, compiled);
-  const warnings = [];
-  if (compiled.review === 'end') {
-    const hasCli = ['claude', 'cursor-agent', 'codex', 'agy'].some((bin) => binExists(bin));
-    if (!hasCli) {
-      warnings.push({
-        message: 'review: end will run as attended claim-run items until a CLI (claude, cursor, codex, or antigravity/`agy`) is installed and authenticated.',
-      });
-    }
-  }
-  return { ok: true, roadmap: compiled, errors: [], warnings };
+  return { ok: true, roadmap: compiled, errors: [], warnings: [] };
 }
 
 function parseRunSpawnTime(runId) {
@@ -190,6 +169,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
         : (meta?.featureId && fs.existsSync(path.join(paths.control, 'reports', meta.featureId, 'work-done.html'))
           ? path.relative(paths.root, path.join(paths.control, 'reports', meta.featureId, 'work-done.html'))
           : null),
+      reportError: status?.reportError ?? null,
     });
   }
 
@@ -212,7 +192,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
             runId: entry.runId,
             paths: runPaths,
             status: {
-              overall: entry.overall || 'done',
+              overall: entry.overall || 'unknown',
               haltReason: entry.haltReason || null,
               startedAt: spawnedAt,
               endedAt: entry.finishedAt || entry.recordedAt || null,
@@ -233,14 +213,14 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
             worktree: null,
             pid: null,
             pidAlive: false,
-            verb: entry.overall === 'halted' ? 'failed' : 'landed',
+            verb: entry.overall === 'halted' ? 'failed' : entry.overall === 'done' ? 'done' : 'note',
             verbDetail: entry.haltReason || null,
             verbSince: entry.recordedAt ?? null,
             lastOutputAt: entry.finishedAt ?? entry.recordedAt ?? null,
-            stage: 'reporter',
-            cycle: 1,
-            maxCycles: 1,
-            state: entry.overall === 'halted' ? 'halted' : 'idle',
+            stage: entry.stage ?? null,
+            cycle: null,
+            maxCycles: null,
+            state: ['done', 'halted'].includes(entry.overall) ? 'idle' : 'unknown',
             costUsd: null,
             tokens: null,
             owner: inspectBridge(paths.root, entry.runId).owner,
@@ -253,6 +233,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
             reportRel: entry.reportRel || (entry.featureId && fs.existsSync(path.join(paths.control, 'reports', entry.featureId, 'work-done.html'))
               ? path.relative(paths.root, path.join(paths.control, 'reports', entry.featureId, 'work-done.html'))
               : null),
+            reportError: entry.reportError ?? null,
           });
         } catch {}
       }
@@ -319,6 +300,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
           runnerRequested: null,
           spawnedAt,
           reportRel,
+          reportError: feature.reportError ?? null,
         });
       }
     }
@@ -367,7 +349,7 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
       verb: r.verb, lastOutputAt: r.lastOutputAt, worktree: r.worktree,
       branch: r.branch, costUsd: r.costUsd, costPartial: r.partial, owner: r.owner, handoffId: r.handoffId, overall: r.status?.overall, haltReason: r.status?.haltReason,
       runner: r.runner, hostClient: r.hostClient, invocationMode: r.invocationMode, runnerRequested: r.runnerRequested,
-      spawnedAt: r.spawnedAt, reportRel: r.reportRel,
+      spawnedAt: r.spawnedAt, reportRel: r.reportRel, reportError: r.reportError,
       dismissed: r.dismissed,
     })),
     decisions: readDecisions(paths),
@@ -436,7 +418,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   else if (snap.supervisor.paused) status.overall = 'halted', status.haltReason = 'POOL_PAUSED';
   else if (allDone) status.overall = 'done';
   else if (awaitingChat) status.overall = 'awaiting_chat';
-  else if (awaitingPlan || awaitingFinal || (snap.needsDecision.length && !snap.counts.inProgress)) status.overall = 'awaiting_plan_approval';
+  else if (awaitingPlan) status.overall = 'awaiting_plan_approval';
   else status.overall = 'running';
 
   status.pool = {
@@ -445,6 +427,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
     featureId: roadmap?.currentFeatureId ?? null,
     runIds: runs.map((r) => r.runId),
     decisions: snap.needsDecision.length,
+    gate: awaitingFinal ? 'roadmap-merge' : awaitingPlan ? 'plan-approval' : null,
   };
   atomicWrite(paths.status, JSON.stringify(status, null, 2));
   return status;
@@ -466,6 +449,14 @@ export function queueFollowup(paths, runId, stage, text) {
 export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli' } = {}) {
   const decision = readDecisions(paths).find((d) => d.decisionId === decisionId);
   if (!decision) throw new Error(`Unknown decision "${decisionId}".`);
+  if (decision.kind === 'merge-approval' && /^approve$/i.test(String(answer).trim())) {
+    return approveMerge(paths, decision.featureId, { by, via, note: answer });
+  }
+  if (decision.kind === 'merge-approval' && /^request-changes\b/i.test(String(answer).trim())) {
+    const reason = String(answer).trim().replace(/^request-changes\s*:?\s*/i, '');
+    if (!reason) throw new Error('Describe the changes requested after "request-changes:".');
+    return requestChanges(paths, decision.featureId, reason, { by, via });
+  }
   if (decision.kind === 'roadmap-merge' && /^approve$/i.test(String(answer).trim())) {
     return approveRoadmapMerge(paths, { by, via, note: answer });
   }
@@ -583,6 +574,8 @@ export function requestChanges(paths, featureId, text, { by = 'operator', via = 
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
+  const open = openDecisions(paths).find((d) => d.featureId === featureId && d.kind === 'merge-approval');
+  if (open) resolveDecision(paths, open.decisionId, { decision: 'request-changes', note: text, by, via });
   const runId = feature.integrationRunId || feature.tickets?.[0]?.runId;
   if (runId) {
     queueFollowup(paths, runId, 'coder', `Changes requested by the operator: ${text}`);

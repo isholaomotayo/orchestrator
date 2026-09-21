@@ -169,17 +169,14 @@ test('an unchanged escalated state does not re-escalate on every tick', () => {
   assert.equal(ev, null);
 });
 
-test('a host-runner chat handoff is its own kind, distinct from a generic decision', () => {
+test('a host-runner chat handoff does not notify a human', () => {
   const ev = classifyEvent({
     ...base,
     previous: { state: 'busy', verb: 'working' },
     current: { state: 'awaiting', verb: 'needs-decision', detail: 'awaiting-chat: coder', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } },
     now,
   }, T);
-  assert.equal(ev.kind, 'claim-run');
-  assert.equal(ev.escalate, true);
-  assert.match(ev.summary, /coder/);
-  assert.match(ev.summary, /pool claim r1/);
+  assert.equal(ev, null);
 });
 
 test('an unchanged claim-run does not re-escalate on every tick', () => {
@@ -188,15 +185,14 @@ test('an unchanged claim-run does not re-escalate on every tick', () => {
   assert.equal(ev, null);
 });
 
-test('an unclaimed run resurfaces after claimResurfaceMs (24h), not the shorter pauseResurfaceMs (1h)', () => {
+test('an unclaimed host run stays quiet even after the old resurface window', () => {
   const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } };
   // Still within the claim window — must not re-surface.
   const tooSoon = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.pauseResurfaceMs + 1000), now }, T);
   assert.equal(tooSoon, null, 'claim-run must not re-surface at the 1h pauseResurfaceMs cadence');
-  // Beyond claimResurfaceMs — now it should resurface.
-  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.claimResurfaceMs + 1000), now }, T);
-  assert.equal(later.kind, 'claim-run');
-  assert.equal(later.escalate, true);
+  // Beyond the old claim window it still belongs to the agent queue.
+  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(86_400_000 + 1000), now }, T);
+  assert.equal(later, null);
 });
 
 test('a declared pause resurfaces only after the recheck window', () => {

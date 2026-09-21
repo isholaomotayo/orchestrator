@@ -14,6 +14,8 @@ import path from 'node:path';
 import { atomicWrite } from './state.mjs';
 import { hashFile } from './integrity.mjs';
 import { skipReason } from './ui/stages.mjs';
+import { readDecisions } from './attention.mjs';
+import { renderSequenceDiagramSvg } from './sequence-diagram.mjs';
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -42,6 +44,8 @@ export function renderMarkdownLite(md) {
   const lines = String(md || '').split('\n');
   const out = [];
   let inCode = false;
+  let codeLines = [];
+  let codeLanguage = '';
   let listType = null;
 
   const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
@@ -49,11 +53,19 @@ export function renderMarkdownLite(md) {
     const line = raw.replace(/\s+$/, '');
     if (/^```/.test(line)) {
       closeList();
-      out.push(inCode ? '</code></pre>' : '<pre><code>');
+      if (inCode) {
+        const source = codeLines.join('\n');
+        const sequence = codeLanguage === 'mermaid' || /^sequenceDiagram\b/.test(source.trim());
+        const svg = sequence ? renderSequenceDiagramSvg(source) : null;
+        out.push(svg
+          ? `<figure class="sequence-diagram">${svg}<details><summary>Sequence source</summary><pre><code>${escapeHtml(source)}</code></pre></details></figure>`
+          : `${sequence ? '<p class="note">Sequence diagram could not be rendered; source follows.</p>' : ''}<pre><code>${escapeHtml(source)}</code></pre>`);
+        codeLines = [];
+      } else codeLanguage = line.slice(3).trim().toLowerCase();
       inCode = !inCode;
       continue;
     }
-    if (inCode) { out.push(escapeHtml(raw)); continue; }
+    if (inCode) { codeLines.push(raw); continue; }
     if (!line.trim()) { closeList(); continue; }
 
     const heading = /^(#{1,4})\s+(.*)$/.exec(line);
@@ -75,7 +87,7 @@ export function renderMarkdownLite(md) {
     out.push(`<p>${inline(line)}</p>`);
   }
   closeList();
-  if (inCode) out.push('</code></pre>');
+  if (inCode) out.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
   return out.join('\n');
 }
 
@@ -207,6 +219,8 @@ th{background:var(--code-bg);font-weight:600}
 .covered{color:var(--green-text)} .missing,.unmentioned{color:var(--red-text);font-weight:600}
 .partial{color:var(--amber-text)}
 figure{margin:20px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
+.sequence-diagram{padding:12px;overflow-x:auto;background:#fff}.sequence-diagram svg{display:block;width:100%;min-width:620px;height:auto}
+.sequence-diagram details{font-size:12px;color:#475569;margin-top:8px}
 figure iframe{display:block;width:100%;height:640px;border:0;background:#fff}
 figcaption{padding:8px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--border)}
 .note{background:var(--amber-bg);color:var(--amber-text);padding:10px 12px;border-radius:8px;font-size:14px}
@@ -231,7 +245,7 @@ function narrativeSection(narrative, heading) {
 export function compileWorkDoneReport({
   title, status = {}, runId = null, feature = null, narrative = '',
   specs = '', review = '', testSuite = '', diff = '', history = null,
-  decisions = [], pr = null, diagrams = [], operations = null, generatedAt = new Date(),
+  decisions = [], pr = null, diagrams = [], operations = null, relatedRuns = [], legacyReport = null, generatedAt = new Date(),
 }) {
   const verdict = status.verdict || 'UNKNOWN';
   const files = diffStats(diff);
@@ -261,6 +275,7 @@ export function compileWorkDoneReport({
     `</p>`,
 
     section('Summary', narrativeSection(narrative, 'Summary') || '<p class="note">No narrative was recorded for this run.</p>'),
+    legacyReport ? section('Prior completion report', `<p class="meta">Preserved from the earlier report at <code>${escapeHtml(legacyReport.path)}</code>. ${escapeHtml(legacyReport.reason || 'Its source run report was unavailable.')}</p>${renderMarkdownLite(legacyReport.markdown || '')}`) : '',
     section('Review guidance', narrativeSection(narrative, 'Review Guidance')),
     section('What changed', narrativeSection(narrative, 'What Changed')),
     operations ? section('Operational record', `<pre>${escapeHtml(JSON.stringify(operations,null,2))}</pre>`) : '',
@@ -271,13 +286,19 @@ export function compileWorkDoneReport({
       `</tbody></table><p class="meta">${files.length} file(s), +${totals.added} &minus;${totals.removed}</p>`,
     ].join('\n')) : '',
 
+    relatedRuns.length ? section('Related runs', [
+      '<table><thead><tr><th>Run</th><th>Kind</th><th>Outcome</th><th>Recorded stages</th><th>Evidence</th></tr></thead><tbody>',
+      ...relatedRuns.map((r) => `<tr><td><button type="button" data-run-id="${escapeHtml(r.runId)}">${escapeHtml(r.runId)}</button></td><td>${escapeHtml([r.kind, r.ticketId].filter(Boolean).join(' · '))}</td><td>${escapeHtml(r.overall || 'unknown')}${r.haltReason ? ` · ${escapeHtml(r.haltReason)}` : ''}</td><td>${(r.stages || []).map((s) => `<button type="button" data-run-id="${escapeHtml(r.runId)}" data-stage="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join(' ') || 'No stages recorded'}</td><td><code>${escapeHtml(r.evidencePath || '')}</code>${r.reportError ? ` · ${escapeHtml(r.reportError)}` : ''}${r.captureGap ? ` · ${escapeHtml(r.captureGap)}` : ''}</td></tr>`),
+      '</tbody></table>',
+    ].join('\n')) : '',
     status.stages?.length ? section('Stages', [
       '<table><thead><tr><th>Stage</th><th>Model</th><th>Mode</th><th>Status</th></tr></thead><tbody>',
       ...status.stages.map((s) => {
         const reason = skipReason(s, status);
+        const stageCell = runId && s.status !== 'pending' ? `<button type="button" data-run-id="${escapeHtml(runId)}" data-stage="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>` : `<code>${escapeHtml(s.name)}</code>`;
         return reason
-          ? `<tr><td><code>${escapeHtml(s.name)}</code></td><td colspan="3" class="meta">skipped &mdash; ${escapeHtml(reason)}</td></tr>`
-          : `<tr><td><code>${escapeHtml(s.name)}</code></td><td>${escapeHtml(stageModelLabel(s, status) || '-')}</td><td>${escapeHtml(stageExecutionLabel(s, status) || '-')}</td><td>${escapeHtml(s.status)}</td></tr>`;
+          ? `<tr><td>${stageCell}</td><td colspan="3" class="meta">skipped &mdash; ${escapeHtml(reason)}</td></tr>`
+          : `<tr><td>${stageCell}</td><td>${escapeHtml(stageModelLabel(s, status) || '-')}</td><td>${escapeHtml(stageExecutionLabel(s, status) || '-')}</td><td>${escapeHtml(s.status)}</td></tr>`;
       }),
       '</tbody></table>',
     ].join('\n')) : '',
@@ -311,6 +332,7 @@ export function compileWorkDoneReport({
 
     `<footer>Compiled by the orchestrator on ${escapeHtml(generatedAt.toISOString().replace('T', ' ').slice(0, 16))}. `,
     `Figures are derived from the run's own diff and artifacts, not from the narrative.</footer>`,
+    `<script>document.addEventListener('click',function(event){const target=event.target.closest('button[data-run-id]');if(target)parent.postMessage({type:'orchestrator:open-run-stage',runId:target.dataset.runId,stage:target.dataset.stage||null},'*')})</script>`,
     `</main></body></html>`,
   ].filter(Boolean).join('\n');
 
@@ -325,6 +347,8 @@ export function compileWorkDoneReport({
       const reason = skipReason(s, status);
       return reason ? `- \`${s.name}\` — skipped (${reason})` : `- \`${s.name}\` — Model: ${stageModelLabel(s, status) || '-'}, Mode: ${stageExecutionLabel(s, status) || '-'}, Status: ${s.status}`;
     }).join('\n')}\n` : '',
+    relatedRuns.length ? `## Related runs\n\n${relatedRuns.map((r) => `- \`${r.runId}\` (${r.kind || 'run'}, ${r.overall || 'unknown'}) — ${(r.stages || []).map((s) => s.name).join(', ') || 'no recorded stages'}; evidence: \`${r.evidencePath || ''}\`${r.captureGap ? `; ${r.captureGap}` : ''}`).join('\n')}\n` : '',
+    legacyReport ? `## Prior completion report\n\nPreserved at \`${legacyReport.path}\`.\n\n${legacyReport.markdown || ''}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',
     plain(narrativeSection(narrative, 'Rough Edges & Follow-ups')) ? `## Rough edges and follow-ups\n\n${plain(narrativeSection(narrative, 'Rough Edges & Follow-ups'))}\n` : '',
@@ -357,6 +381,7 @@ export function writeWorkDoneReport(paths, payload) {
         modelSource: payload.status.stages.find(s => s.name === 'planner').modelSource,
       } : null,
       stages: (payload.status?.stages || []).map(s => ({
+        runId: payload.runId ?? null,
         name: s.name,
         status: s.status,
         model: stageModelLabel(s, payload.status),
@@ -364,8 +389,10 @@ export function writeWorkDoneReport(paths, payload) {
         execution: stageExecutionLabel(s, payload.status),
       })),
       files: computed.files.length,
+      relatedRuns: payload.relatedRuns || [],
+      legacyReportPath: payload.legacyReport?.path || null,
       coverage: computed.coverage,
-      diagrams: (payload.diagrams || []).map((d) => ({ id: d.id, type: d.type, ok: !!d.ok, sha256: d.sha256 ?? null, error: d.error ?? null })),
+      diagrams: (payload.diagrams || []).map((d) => ({ id: d.id, type: d.type, ok: !!d.ok, htmlRel: d.htmlRel ?? null, sha256: d.sha256 ?? null, error: d.error ?? null })),
       htmlSha256: hashFile(path.join(paths.reports, 'work-done.html')),
     }, null, 2));
     return { ok: true, htmlRel: path.relative(paths.root, path.join(paths.reports, 'work-done.html')) };
@@ -374,15 +401,31 @@ export function writeWorkDoneReport(paths, payload) {
   }
 }
 
-export function writeTerminalReport(paths, status, history = null, messages = []) {
+export function writeTerminalReport(paths, status, history = null, messages = [], options = {}) {
   const read = file => { try { return fs.readFileSync(file,'utf8'); } catch { return ''; } };
   const events = read(paths.events).split('\n').filter(Boolean).flatMap(line => {try{return [JSON.parse(line)]}catch{return []}});
+  const evidenceFiles = [paths.events, paths.specs, paths.planReview, paths.changes, paths.checkerReport, paths.testSuite,
+    paths.reviewReport, paths.handoffDoc, paths.reporterDoc, paths.diff, paths.stageHandoff];
+  try { evidenceFiles.push(...fs.readdirSync(paths.planReviews).map((name) => path.join(paths.planReviews, name))); } catch {}
+  try { evidenceFiles.push(...fs.readdirSync(paths.logs).map((name) => path.join(paths.logs, name))); } catch {}
+  const evidence = evidenceFiles.filter((file) => fs.existsSync(file)).map((file) => path.relative(paths.root, file));
+  const hostProgress = events.filter((event) => event.host && event.type === 'agent_output').length;
+  const decisions = readDecisions(paths).filter((decision) => decision.runId === status.runId && decision.status === 'resolved');
   const operations = { outcome:status.overall, haltReason:status.haltReason, task:status.task, intent:status.intent || null, startedAt:status.startedAt, endedAt:status.endedAt,
     delivery:{branch:status.branch || null,baseRef:status.baseRef || null}, stages:status.stages,
+    planApproval:{agentVerdict:status.planReviewVerdict || null,agentApproved:status.planAgentApproved ?? null,humanGateRequested:status.flags?.approvePlan === true},
     checks:[...(history?.coder || []),...(history?.postTester || [])],
     activity:events.filter(e => ['agent_retry','agent_timeout','integrity_violation','check_end'].includes(e.type) || e.kind === 'err'), messages,
-    limitations:['Coverage describes reviewer assertions; check results are recorded separately.', ...(!events.some(e => e.host || e.type === 'agent_output') ? ['No agent activity was recorded.'] : [])] };
-  const written = writeWorkDoneReport(paths,{title:`Run report — ${String(status.task || 'Untitled').split('\n')[0]}`,status,runId:status.runId,feature:status.featureId ? {id:status.featureId}:null,narrative:read(paths.reporterDoc),specs:read(paths.specs),review:read(paths.reviewReport),testSuite:read(paths.testSuite),diff:read(paths.diff),history,operations});
-  if (written.ok) atomicWrite(path.join(paths.reports,'operations.json'),JSON.stringify(operations,null,2));
+    decisions, evidence,
+    capture: { visibleHostProgressEvents: hostProgress, privateReasoning: 'unavailable',
+      transcript: status.executionSurface === 'host-handoff' ? 'checkpoint summaries only' : 'raw CLI stage logs' },
+    limitations:['Coverage describes reviewer assertions; check results are recorded separately.',
+      ...(status.executionSurface === 'host-handoff' && !hostProgress ? ['No host progress checkpoints were recorded.'] : []),
+      ...(!events.some(e => e.host || e.type === 'agent_output') ? ['No agent activity was recorded.'] : [])] };
+  const written = writeWorkDoneReport(paths,{title:`Run report — ${String(status.task || 'Untitled').split('\n')[0]}`,status,runId:status.runId,feature:status.featureId ? {id:status.featureId}:null,narrative:read(paths.reporterDoc),specs:read(paths.specs),review:read(paths.reviewReport),testSuite:read(paths.testSuite),diff:read(paths.diff),history,decisions,operations,diagrams:options.diagrams || [],legacyReport:options.legacyReport || null});
+  if (written.ok) {
+    try { atomicWrite(path.join(paths.reports,'operations.json'),JSON.stringify(operations,null,2)); }
+    catch (error) { return { ok: false, error: `operations record could not be written: ${error.message}` }; }
+  }
   return written;
 }

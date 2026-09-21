@@ -1,6 +1,6 @@
 # /orchestrate
 
-Delegate the user's request to the self-healing multi-agent pipeline (Planner → Coder → Tester → Reviewer).
+Delegate the user's request to the self-healing multi-agent pipeline (Planner → Plan Approver → Coder → Tester → Reviewer → Handoff → Reporter). The Plan Approver reviews and approves plans by default; `--approve-plan` adds a human gate.
 
 ## Chat mode vs CLI mode
 
@@ -21,11 +21,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
    bash .agents/skills/orchestrate/scripts/bootstrap.sh
    ```
 3. **Extract the task** from the user's message (everything after `/orchestrate`).
-4. **Model selection (required — do not start the pipeline until answered):** Ask the user:
-   > Use automatic cost-optimized models per stage, or pick models manually for Planner / Coder / Tester / Reviewer?
-   - **Automatic** → proceed with `--model-profile auto`
-   - **Manual** → collect four model IDs in one follow-up, then use `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`
-   This is the **only** pre-run question. Do not ask anything else before starting.
+4. **Model selection:** Use `--model-profile auto` by default. If the user explicitly requests manual models, collect four model IDs in one follow-up, then use `--model-profile manual --models '{"planner":"...","coder":"...","tester":"...","reviewer":"..."}'`.
 5. **Run the pipeline**:
    ```bash
    bash .pipeline/orchestrate.sh "TASK_HERE" --mode chat --host-client cursor --model-profile auto
@@ -55,7 +51,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 
 ## Roadmap (pool) mode — v2
 
-**The coordinator never does stage work and never spawns workers — except a `claim-run` item, which is an invitation to do exactly that.** In single-run chat mode YOU complete each stage from `stage-handoff.json` and run `--continue`. In roadmap (pool) mode the supervisor spawns a real OS process only for a feature/ticket whose resolved runner is an authenticated agent CLI — opt in per feature with roadmap.md's `- runner: claude|cursor|codex|antigravity` bullet, for genuine unattended parallel automation. Everything else defaults to `runner: host`: no subprocess, no CLI auth needed anywhere. When `pool digest`/`pool attention` shows a `claim-run` item, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that stage yourself exactly as in single-run mode, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Otherwise you do intake, answer decisions, and approve merges with `pool` verbs.
+**The attending chat owns host stages.** In single-run chat mode complete each stage from `stage-handoff.json` and run `--continue`. In roadmap mode, CLI workers run only when explicitly opted in. Everything else defaults to `runner: host`. Read `pool status --json` or `pool digest`, take `agentQueue.current`, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that handoff, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Repeat without asking the user after each stage until the queue is empty or a genuine human decision blocks progress. Respect existing bridge ownership and leases. Routine host work belongs in Agent queue, not Needs attention.
 
 **Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
 
@@ -65,7 +61,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 
 ```
 bash .pipeline/orchestrate.sh --roadmap .pipeline/roadmap.md   # compile and start
-bash .pipeline/orchestrate.sh pool digest                      # four-section status
+bash .pipeline/orchestrate.sh pool digest                      # decisions, agent queue and progress
 bash .pipeline/orchestrate.sh pool claim <runId>               # pick up a run parked in chat
 bash .pipeline/orchestrate.sh pool decide <id> "<answer>"      # answer a question
 bash .pipeline/orchestrate.sh pool approve-merge <featureId>   # only after the human says so

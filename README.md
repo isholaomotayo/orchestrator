@@ -1,6 +1,8 @@
 # /orchestrate
 
-A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → (optional Designer) → Coder (fix loop) → Tester → Reviewer → Handoff → Reporter** — with a live local dashboard (URL written to `.pipeline/ui.url`, usually starting at http://localhost:4600).
+A drop-in agent skill that adds a self-healing multi-agent pipeline to **any existing repository** — **Planner → Plan Approver → (optional Designer) → Coder (fix loop) → Tester → Reviewer → Handoff → Reporter** — with a live local dashboard (URL written to `.pipeline/ui.url`, usually starting at http://localhost:4600).
+
+The project has three operating principles: one skill and one command carry a request through delivery; every run leaves an inspectable record during and after the chat; and an attending chat works without a separate CLI runner or model setup, including in unfamiliar hosts. Visible activity, decisions, checks, reviews, approvals, and handoffs are recorded. Private reasoning is not exposed by every host and is never represented as captured when it is unavailable.
 
 Install the skill with `npx skills add orchestrator`, bootstrap the pipeline scaffold into your project once, then invoke `/orchestrate` from Cursor, Claude Code, Codex, Gemini, or Antigravity (or run `bash .pipeline/orchestrate.sh` from any agent). From an IDE chat, the **current chat session is the driver** — stages are completed in that chat, not by spawning an external agent CLI. The orchestrator itself uses only Node.js built-ins — no runtime `npm install` for the pipeline.
 
@@ -16,6 +18,7 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 
 ## Table of contents
 
+- [Quick Commands](#quick-commands)
 - [Why this exists](#why-this-exists)
 - [Architecture](#architecture)
 - [Quickstart](#quickstart)
@@ -46,6 +49,24 @@ bash .pipeline/orchestrate.sh "Add rate limiting to the auth API"
 
 ---
 
+## Quick Commands
+
+```bash
+# Run a task through the pipeline
+bash .pipeline/orchestrate.sh "Your task description"
+
+# Run in chat mode with plan approval gate
+bash .pipeline/orchestrate.sh "Your task" --approve-plan
+
+# Include optional design stage
+bash .pipeline/orchestrate.sh "Your task" --design
+
+# Check pipeline status and continue a paused run
+bash .pipeline/orchestrate.sh --continue
+```
+
+---
+
 ## Why this exists
 
 Point-in-time "AI writes code" tools stop at generation. This pipeline is built around a different idea: **a coding agent should verify its own work against real test/lint/typecheck commands, keep fixing until it's actually green, and then hand off to independent test-writing and read-only review stages** — the same separation of duties a human engineering team uses (implement → test → review), automated end to end, with a human able to watch and intervene at any point rather than finding out after the fact.
@@ -53,15 +74,17 @@ Point-in-time "AI writes code" tools stop at generation. This pipeline is built 
 Two production-grade patterns are fused into one pipeline instead of run as separate tools:
 
 - **Builder–Checker self-healing loop** — the Coder doesn't just write code once; it iterates against deterministic (non-LLM) verification until checks pass, with hard guardrails against infinite loops and silent regressions.
-- **Planner → (optional Designer) → Coder → Tester → Reviewer → Handoff → Reporter waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step. Handoff and Reporter are not optional: every completed run always produces a continuation document for the next agent and a plain-language report for the human who asked for the work — work never stops for lack of either.
+- **Planner → Plan Approver → (optional Designer) → Coder → Tester → Reviewer → Handoff → Reporter waterfall** — each stage has a narrow job and hands a markdown artifact to the next, so a human (or another agent) can inspect exactly what happened at each step. The Plan Approver reviews every new plan by default, records a verdict in `plan_review.md`, and sends requested revisions back to Planner. A blocked plan or exhausted revision budget asks for a human decision. Handoff and Reporter are not optional: every completed run always produces a continuation document for the next agent and a plain-language report for the human who asked for the work — work never stops for lack of either.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
     T[Task] --> P[Planner]
-    P -->|specs.md| C[Coder]
-    P -.->|specs.md, optional| D["Designer<br/>(--design, optional)"]
+    P -->|specs.md| PA[Plan Approver]
+    PA -->|APPROVED| C[Coder]
+    PA -.->|REQUEST_CHANGES| P
+    PA -.->|APPROVED, optional| D["Designer<br/>(--design, optional)"]
     D -.->|design.md, optional| C
     C -->|changes.md| Te[Tester]
     Te -->|test_suite.md| R[Reviewer]
@@ -459,10 +482,10 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
 | ------------------------------ | -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--runner <name>`              | both                       | Force a specific agent CLI instead of auto-detecting. From a chat session, omit this — the host runner is the default driver.                                                                                                                                    |
 | `--mode chat\|cli`             | both                       | Override invocation detection. Chat sessions should always pass `chat`.                                                                                                                                                                                          |
-| `--host-client <name>`         | both                       | Names the IDE hosting the run (`claude`, `cursor`, `codex`, `antigravity`; aliases `agy`, `gemini`, `claude-code`, `cursor-agent`). Implies chat mode; drives dashboard attribution and environment-aware auto models. Also settable via `PIPELINE_HOST_CLIENT`. |
+| `--host-client <name>`         | both                       | Names the IDE hosting the run (known names and unfamiliar lowercase names are accepted; aliases include `agy`, `gemini`, `claude-code`, `cursor-agent`). Implies chat mode; drives dashboard attribution and environment-aware auto models. Unknown hosts use `current-chat`. Also settable via `PIPELINE_HOST_CLIENT`. |
 | `--model-profile auto\|manual` | new run                    | Auto = cost-optimized per-stage defaults (adapted to `--host-client` in chat mode); manual requires `--models`.                                                                                                                                                  |
 | `--models <json>`              | new run                    | Manual model map: `{"planner":"...","coder":"...","tester":"...","reviewer":"..."}`.                                                                                                                                                                             |
-| `--approve-plan`               | new run                    | Halt after the Planner with status `awaiting_plan_approval` until a human approves `specs.md` (or queues a revision note) and resumes with `--continue`.                                                                                                         |
+| `--approve-plan`               | new run                    | Add a human gate after the Plan Approver has reviewed `specs.md`. Without this flag, an agent-approved plan proceeds automatically; `BLOCK` or exhausted revisions still ask for a human decision.                                                                 |
 | `--design`                     | new run                    | Run an optional Designer stage between Planner and Coder, producing `.pipeline/design.md`.                                                                                                                                                                       |
 | `--sandbox`                    | new run                    | Run agents inside an isolated git worktree (`.pipeline_sandbox/`) on a throwaway branch, so your working tree is untouched until you're ready to merge.                                                                                                          |
 | `--allow-self`                 | both                       | Override the [self-repo guard](#self-repo-guard) (maintainers only). Also settable via `ORCH_ALLOW_SELF=1`.                                                                                                                                                      |
@@ -560,7 +583,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
     "handoff": "low",
     "reporter": "low",
   },
-  "approvePlan": false, // halt after Planner for human approval of specs.md (see --approve-plan)
+  "approvePlan": false, // add human approval after the default Plan Approver review (see --approve-plan)
   "designStage": false, // run the optional Designer stage (see --design)
   // Handoff and Reporter have no config toggle — they are mandatory and
   // always run after an APPROVED review.
@@ -650,7 +673,7 @@ forge at merge time, because a branch can move between approval and merge.
 | | |
 |---|---|
 | **You** | decide, approve, merge |
-| **Coordinator** (your chat session) | intake, answers decisions, approves on your say-so. Never spawns workers — except a `claim-run` item, which is an invitation to complete that one stage directly, exactly like single-run mode |
+| **Attending chat** | drains queued host stages one at a time, answers routine questions, and presents human decisions. It does not spawn CLI workers. |
 | **Supervisor** (`pipeline/supervisor.mjs`) | a zero-LLM daemon: spawns workers whose runner is a real CLI, watches them, escalates only what needs a person |
 | **Workers** | ordinary pipeline runs — headless (a real CLI, one worktree each) or `host` (no process at all: parked for a chat session to claim) |
 
@@ -661,7 +684,7 @@ reproducible enough to test.
 ### Steering a run
 
 ```bash
-bash .pipeline/orchestrate.sh pool digest                       # four-section status
+bash .pipeline/orchestrate.sh pool digest                       # decisions, agent queue and progress
 bash .pipeline/orchestrate.sh pool claim <runId>                # pick up a run parked in chat
 bash .pipeline/orchestrate.sh pool decide <decisionId> "..."    # answer a question
 bash .pipeline/orchestrate.sh pool approve-plan <runId>
@@ -672,18 +695,37 @@ bash .pipeline/orchestrate.sh pool pause | resume
 bash .pipeline/orchestrate.sh roadmap compile | show | hold <id> | release <id> | skip <id>
 ```
 
-Everything is also doable from the dashboard, and both write the same records.
+The dashboard offers the same approval and pool-control actions. An attended
+stage still has to be completed by its chat agent; opening its run in the
+dashboard shows the handoff and evidence but does not do the stage's work.
 
-**Roadmap mode needs no authenticated agent CLI by default.** A feature/ticket's
-`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|antigravity`,
-default `auto`) resolves to an authenticated CLI (`claude`, `codex`, `cursor` or
-`antigravity`) when one exists, else falls back to `host` — no subprocess at all.
+The waiting states call for different actions:
+
+| State or card | What it means | What to do |
+|---|---|---|
+| `awaiting_chat` / Agent queue | A stage is parked for the attending chat agent. | The chat claims the current run, finishes the stage, continues it, and repeats until the queue is empty. |
+| `awaiting_plan_approval` | A plan needs a human decision. | Read the plan in the run, then approve or request a revision. |
+| `awaiting_merge_approval` | The feature run finished review, but its work has not landed. | Read the review and diff, then use **Approve merge** or **Request changes** in Attention or Review. The supervisor verifies the target before merging. |
+| `roadmap-merge` | An end-reviewed roadmap is ready for its final landing. | Review the combined work, then use **Approve roadmap landing** in Attention. |
+| `done` run | That run completed its stages. | Check the feature or roadmap state; `done` alone does not mean its work was merged. |
+| `halted` / `MISSING_ARTIFACT` | A required stage artifact was absent. | Inspect the run's report and stage log, then retry or resolve the failure; do not approve a merge based on this run. |
+
+Attention cards for completed or superseded handoffs are retained in the
+append-only event history but removed from the active queue.
+
+**Roadmap mode prefers unattended execution when possible.** A feature/ticket's
+`runner` (set per feature in `roadmap.md` with `- runner: auto|host|claude|cursor|codex|antigravity`)
+defaults to `auto`. When unset or `auto`, the supervisor prefers an authenticated
+CLI runner (`claude`, `cursor`, `codex`, or `antigravity`, in probe order) for
+unattended parallel execution; it falls back to `host` — the attending chat —
+only when no authenticated CLI is available. Set `host` explicitly to keep a
+feature with the attending chat regardless of CLI availability.
 The supervisor spawns a real worker process only for a CLI-resolved run; a
-`host` run is instead left `awaiting_chat` with a `claim-run` item in the
-digest, and any attending chat session picks it up with `pool claim <runId>`
-and completes that stage directly, exactly as single-run mode already works.
-Opt a feature into a real CLI only when you actually want it to run
-unattended in parallel.
+`host` run is instead left `awaiting_chat` in the Agent queue. An attending
+chat picks it up with `pool claim <runId>`, completes the stage, continues the
+run, and immediately checks the queue again. It needs no new user instruction
+for each stage, and a closed chat leaves the task queued without reminders.
+The supervisor keeps one host run active across the whole pool by default.
 
 ## Third-party skills
 
@@ -804,7 +846,7 @@ All paths route to the same entrypoint and enforce isolation: treat `.pipeline/`
 ## Limitations and known trade-offs
 
 - **One run per repo at a time in single-run mode.** Roadmap mode lifts this: many workers run concurrently in one repo, each in its own worktree. Cross-*repo* parallelism is still out of scope.
-- **A feature/ticket opted into a real CLI runner needs one authenticated.** That's opt-in per feature (`- runner:` in `roadmap.md`); the default (`auto`, falling back to `host`) needs nothing — an unattended, unauthenticated machine just accumulates `claim-run` items for whoever next attends the roadmap in chat, rather than failing.
+- **A CLI-resolved runner must be authenticated.** When `runner` is unset or `auto`, the supervisor prefers an authenticated CLI and falls back to `host` when none is available. Explicitly setting `host` forces the attending chat regardless.
 - **Ticket parallelism is a planner's estimate.** Files declared by a ticket are used to hold back likely conflicts; the fan-in merge is the ground truth, and a real conflict becomes a decision rather than a guess.
 - **Checker count parsing is best-effort.** `checker.mjs` recognizes `node --test`, Jest/Vitest, Mocha, and PyTest output shapes. An unrecognized test runner falls back to a binary pass/fail signal, which weakens (but doesn't disable) the regression guardrail.
 - **`--sandbox` snapshots from HEAD.** Uncommitted changes in your working tree aren't visible to a sandboxed run — commit or stash first.

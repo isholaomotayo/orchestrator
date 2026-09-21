@@ -18,9 +18,7 @@ import { RUNNER_BINS } from './adapters.mjs';
 
 export const ROADMAP_CONTRACT = 'orchestrator-roadmap.v1';
 
-// 'auto' prefers an authenticated CLI for real unattended parallelism, but
-// falls back to 'host' — a feature/ticket never has to name a CLI to be
-// runnable; the roadmap works with zero CLI auth on the machine by default.
+// 'auto' means the attending host. An external CLI must be named explicitly.
 export const POOL_RUNNERS = ['auto', ...Object.keys(RUNNER_BINS)];
 
 export const FEATURE_STATUSES = [

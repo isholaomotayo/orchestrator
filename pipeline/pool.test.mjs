@@ -155,7 +155,7 @@ test('the primary mirror keeps v1 guards truthful while a pool runs', () => {
   // A v1 reader parses this file and sees an active run.
   const onDisk = JSON.parse(fs.readFileSync(paths.status, 'utf8'));
   assert.equal(onDisk.overall, 'running');
-  assert.equal(onDisk.stages.length, 7);
+  assert.equal(onDisk.stages.length, 8);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
@@ -260,7 +260,19 @@ test('a review:end roadmap that has accepted every feature is not done until it 
   const snap = snapshot(paths);
   assert.ok(snap.needsDecision.some((d) => d.kind === 'roadmap-merge'));
   const mirror = writePrimaryMirror(paths, { snap, runs: [], config: {} });
-  assert.equal(mirror.overall, 'awaiting_plan_approval');
+  assert.equal(mirror.overall, 'running', 'a final merge gate is not a plan-approval state');
+  assert.equal(mirror.pool.gate, 'roadmap-merge');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('a failed feature is not misreported as waiting for plan approval', () => {
+  const paths = tmpPool();
+  compile(paths);
+  writeRoadmap(paths, setFeatureStatus(readRoadmap(paths), 'F1', 'failed', {}));
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  const mirror = writePrimaryMirror(paths, { snap: snapshot(paths), runs: [], config: {} });
+  assert.equal(mirror.overall, 'running');
+  assert.equal(mirror.pool.gate, null);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
@@ -294,6 +306,16 @@ test('merge approval records consent but does not itself merge', () => {
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
+test('answering a merge decision with approve uses the merge state transition', () => {
+  const paths = tmpPool();
+  compile(paths);
+  writeRoadmap(paths, setFeatureStatus(readRoadmap(paths), 'F1', 'awaiting_merge_approval', {}));
+  const decision = openDecision(paths, { kind: 'merge-approval', featureId: 'F1', question: 'Merge F1?' });
+  decide(paths, decision.id, 'approve', { via: 'dashboard' });
+  assert.equal(readRoadmap(paths).features.find((f) => f.id === 'F1').status, 'merge_approved');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
 test('requesting changes sends the note to the coder and reopens review', () => {
   const paths = tmpPool();
   compile(paths);
@@ -302,6 +324,18 @@ test('requesting changes sends the note to the coder and reopens review', () => 
   requestChanges(paths, 'F1', 'rename the column');
   assert.match(fs.readFileSync(path.join(rp.dir, 'followups', 'coder.txt'), 'utf8'), /rename the column/);
   assert.equal(readRoadmap(paths).features.find((f) => f.id === 'F1').status, 'reviewing');
+  fs.rmSync(paths.root, { recursive: true, force: true });
+});
+
+test('requesting changes resolves the pending merge decision', () => {
+  const paths = tmpPool();
+  compile(paths);
+  fakeRun(paths, 'r1');
+  writeRoadmap(paths, setFeatureStatus(readRoadmap(paths), 'F1', 'awaiting_merge_approval', { integrationRunId: 'r1' }));
+  const decision = openDecision(paths, { kind: 'merge-approval', featureId: 'F1', runId: 'r1', question: 'Merge F1?' });
+  decide(paths, decision.id, 'request-changes: rename the column');
+  assert.equal(readRoadmap(paths).features.find((f) => f.id === 'F1').status, 'reviewing');
+  assert.equal(snapshot(paths).needsDecision.some((item) => item.decisionId === decision.id), false);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
 
@@ -361,13 +395,18 @@ test('claim returns everything needed to pick up a host-runner run', () => {
 
 // ---- pool config ------------------------------------------------------------
 
-test('poolConfig defaults defaultRunner to auto', () => {
-  assert.equal(poolConfig({}).defaultRunner, 'auto');
+test('poolConfig defaults to the attending host', () => {
+  assert.equal(poolConfig({}).defaultRunner, 'host');
+});
+
+test('pool plans use agent approval unless a human gate is explicitly configured', () => {
+  assert.equal(poolConfig({}).featurePlanApproval, false);
+  assert.equal(poolConfig({ pool: { featurePlanApproval: true } }).featurePlanApproval, true);
 });
 
 test('poolConfig inherits an existing single-runner preference as the pool default', () => {
   assert.equal(poolConfig({ runner: 'claude' }).defaultRunner, 'claude');
-  assert.equal(poolConfig({ runner: 'auto' }).defaultRunner, 'auto');
+  assert.equal(poolConfig({ runner: 'auto' }).defaultRunner, 'host');
 });
 
 test('an explicit pool.defaultRunner wins over the top-level runner setting', () => {
@@ -381,14 +420,6 @@ test('poolConfig defaults hostConcurrency to 1 (sequential host-mode spawning)',
 
 test('poolConfig respects an explicit pool.hostConcurrency override', () => {
   assert.equal(poolConfig({ pool: { hostConcurrency: 3 } }).hostConcurrency, 3);
-});
-
-test('poolConfig defaults claimResurfaceMs to 24 hours', () => {
-  assert.equal(poolConfig({}).claimResurfaceMs, 86_400_000);
-});
-
-test('poolConfig respects an explicit pool.claimResurfaceMs override', () => {
-  assert.equal(poolConfig({ pool: { claimResurfaceMs: 3_600_000 } }).claimResurfaceMs, 3_600_000);
 });
 
 test('notes are written as committable markdown with provenance', () => {
@@ -468,4 +499,3 @@ test('listRunStates recovers historical runs from roadmap.json and runsLedger wh
   assert.equal(snap.recentlyLanded[0].reportRel, '.pipeline/control/reports/F1/work-done.html');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
-

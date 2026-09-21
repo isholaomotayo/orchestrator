@@ -109,7 +109,7 @@ export function buildTree(snapshot, singleRunList = []) {
   const sections = [
     {
       key: 'needsDecision',
-      title: 'Needs your decision',
+      title: 'Needs attention',
       count: (snapshot.needsDecision || []).length,
       emptyText: 'Nothing right now.',
       items: (snapshot.needsDecision || []).map((d) => ({
@@ -123,6 +123,18 @@ export function buildTree(snapshot, singleRunList = []) {
         runId: d.runId ?? null,
         level: attentionLevel(d),
       })),
+    },
+    {
+      key: 'agentQueue', title: 'Agent queue',
+      count: (snapshot.agentQueue?.current ? 1 : 0) + (snapshot.agentQueue?.backlogCount || 0),
+      emptyText: 'No host work queued.',
+      items: snapshot.agentQueue?.current ? [{
+        id: snapshot.agentQueue.current.runId,
+        kind: 'run', runId: snapshot.agentQueue.current.runId,
+        label: snapshot.agentQueue.current.stage || 'Host stage',
+        sub: [snapshot.agentQueue.current.featureId, snapshot.agentQueue.current.ticketId].filter(Boolean).join(' · '),
+        dot: 'pending',
+      }] : [],
     },
     {
       key: 'inProgress',

@@ -48,6 +48,13 @@ if (/technical specification|Alignment Log|tracer-bullet/i.test(task)) {
     '- **Files:** beta.mjs',
     '- **Dependencies:** None', '',
   ].join('\\n'));
+} else if (/Review and approve the proposed plan/i.test(task)) {
+  w('plan_review.md', [
+    '# PLAN APPROVAL REVIEW', '', '## Verdict: APPROVED', '',
+    '## Spec Coverage', 'The alpha and beta slices cover the requested modules and the baseline acceptance rule.', '',
+    '## Risks and Evidence', 'The repository fixture has a passing baseline test and independent module paths.', '',
+    '## Required Revisions', 'None. The plan is ready for implementation without a human decision.', '',
+  ].join('\\n'));
 } else if (/Audit|Reviewer|read-only audit/i.test(task)) {
   w('review_report.md', [
     '## Verdict: APPROVED', '',
@@ -314,14 +321,14 @@ test('a roadmap runs features in order, tickets in parallel, and lands each one'
   assert.ok(snap.recentlyLanded.some((f) => f.featureId === 'F1'));
   const mirror = JSON.parse(fs.readFileSync(paths.status, 'utf8'));
   assert.ok(mirror.pool, 'the v1 status file reflects the pool');
-  assert.equal(mirror.stages.length, 7, 'and still parses as a v1 status');
+  assert.equal(mirror.stages.length, 8, 'and still parses as a v1 status');
 });
 
 test('a failing review is escalated instead of being merged', async (t) => {
   const root = makeProject();
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   // Make the reviewer refuse.
-  const runner = fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8').replace("'## Verdict: APPROVED'", "'## Verdict: REQUEST_CHANGES'");
+  const runner = fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8').replace("w('review_report.md', [\n    '## Verdict: APPROVED'", "w('review_report.md', [\n    '## Verdict: REQUEST_CHANGES'");
   fs.writeFileSync(path.join(root, 'fake-runner.mjs'), runner);
   // One review fix pass, so the run ends rather than looping.
   const cfg = JSON.parse(fs.readFileSync(path.join(root, '.pipeline', 'config.json'), 'utf8'));
@@ -561,4 +568,3 @@ test('a resolved merge-conflict rerun-ticket leaves integrating', async (t) => {
   assert.equal(after.features[0].status, 'executing');
   assert.ok(['queued', 'running'].includes(after.features[0].tickets.find((tk) => tk.id === 'T1').status));
 });
-

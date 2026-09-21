@@ -205,6 +205,16 @@ export function blockToLogLine(b) {
   return b.text;
 }
 
+/** Keep an attending host's visible progress in both the feed and stage log. */
+export function appendHostOutput(paths, event) {
+  appendEvent(paths, event);
+  const stage = event.stage;
+  if (!AGENT_STAGES.includes(stage)) return;
+  fs.mkdirSync(paths.logs, { recursive: true });
+  const line = blockToLogLine(event).replace(/\r/g, '').trim();
+  if (line) fs.appendFileSync(path.join(paths.logs, `${stage}.log`), `${new Date().toISOString()} ${line}\n`);
+}
+
 export function remapCheckerEvent(ev) {
   if (ev?.stage !== 'checker') return ev;
   return { ...ev, stage: 'coder' };
@@ -282,7 +292,7 @@ export function recordHostProgress(paths, { stage, kind = 'text', text = '', too
     cmd: cmd || undefined,
     status: kind === 'tool' ? 'started' : undefined,
   };
-  appendEvent(paths, event);
+  appendHostOutput(paths, event);
   return { ok: true, stage, kind };
 }
 

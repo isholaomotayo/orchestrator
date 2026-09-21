@@ -10,6 +10,7 @@ function svg(inner) {
 
 export const ICONS = {
   planner: svg('<circle cx="12" cy="12" r="9"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5" fill="currentColor" stroke="none"/>'),
+  plan_reviewer: svg('<path d="M5 12l4 4L19 6"/><circle cx="12" cy="12" r="9"/>'),
   designer: svg('<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="12" y1="3" x2="12" y2="12"/>'),
   coder: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
   tester: svg('<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/><polyline points="9 12 11 14 15 10"/>'),
@@ -20,6 +21,7 @@ export const ICONS = {
 
 export const AGENTS = {
   planner: { sub: 'Spec writer', desc: 'Turns vague requests into precise specs' },
+  plan_reviewer: { label: 'Plan Approver', sub: 'Plan approval', desc: 'Reviews the plan before implementation' },
   designer: { sub: 'Architecture', desc: 'Design-It-Twice: explores alternatives, locks contracts' },
   coder: { sub: 'Implementation', desc: 'Implements the spec, self-heals until checks pass' },
   tester: { sub: 'QA & coverage', desc: 'Writes rigorous tests for the implementation' },
@@ -28,7 +30,7 @@ export const AGENTS = {
   reporter: { sub: 'Work-done report', desc: 'Compiles a measured summary of what changed' },
 };
 
-export const STAGE_ORDER = ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
+export const STAGE_ORDER = ['planner', 'plan_reviewer', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter'];
 
 export function stageIcon(name) {
   return ICONS[name] || ICONS.coder;

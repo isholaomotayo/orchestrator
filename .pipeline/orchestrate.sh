@@ -31,7 +31,7 @@ fi
 # literal. The rest of this file already follows that convention.
 BASE_PORT="$("$JS_RUNNER" -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1]+'/config.json','utf8')).uiPort||4600)}catch{console.log(4600)}" "$PIPELINE_DIR")"
 
-USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client claude|cursor|codex|antigravity] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
+USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|cursor|codex|antigravity|host] [--mode chat|cli] [--host-client <host-name>] [--model-profile auto|manual] [--models JSON] [--approve-plan] [--design] [--review-panel] [--sandbox] [--allow-self] [--max-cycles n] [--max-post-tester-cycles n] [--max-review-cycles n] [--no-ui]
    or: bash .pipeline/orchestrate.sh --task-file <path> [same flags as above]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]
@@ -59,6 +59,9 @@ case "${1:-}" in
           exit 1
         fi
         "$JS_RUNNER" pipeline/pool-cli.mjs roadmap compile || exit 1
+        PIPELINE_UI_PORT="${UI_PORT:-4600}" nohup "$JS_RUNNER" pipeline/supervisor-bin.mjs > "$PIPELINE_DIR/control/supervisor.out" 2>&1 &
+        echo "[orchestrate] Supervisor started (pid $!). Watch it with: bash .pipeline/orchestrate.sh pool digest"
+        exit 0
         ;;
       stop)
         PID_FILE="$PIPELINE_DIR/control/supervisor.pid"

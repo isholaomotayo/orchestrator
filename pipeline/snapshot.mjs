@@ -6,8 +6,7 @@
 // of the operator — one says a feature landed, the other still shows it
 // running. Everything derived is computed here, once, from state on disk.
 //
-// The four sections mirror how an operator actually reads a status board:
-// what needs me, what finished, what is happening, what is next.
+// The sections separate human decisions from work for the attending chat.
 
 export const POOL_SNAPSHOT_CONTRACT = 'orchestrator-pool-snapshot.v1';
 
@@ -20,10 +19,24 @@ export function buildSnapshot({
   const features = roadmap?.features || [];
   const byFeature = new Map(features.map((f) => [f.id, f]));
   const liveRunIds = new Set(runs.map((r) => r.runId));
+  const byRun = new Map(runs.map((r) => [r.runId, r]));
+  const agentRuns = runs.filter((r) => !r.dismissed && r.overall === 'awaiting_chat' && r.runId)
+    .sort((a, b) => String(a.spawnedAt || a.runId).localeCompare(String(b.spawnedAt || b.runId)));
+  const agentQueue = {
+    current: agentRuns[0] ? {
+      runId: agentRuns[0].runId, featureId: agentRuns[0].featureId ?? null,
+      ticketId: agentRuns[0].ticketId ?? null, stage: agentRuns[0].stage ?? null,
+      handoffId: agentRuns[0].handoffId ?? null, owner: agentRuns[0].owner ?? null,
+    } : null,
+    backlogCount: Math.max(0, agentRuns.length - 1),
+  };
 
   const needsDecision = decisions
     .filter((d) => d.status === 'open')
     .filter((d) => (!d.runId || liveRunIds.has(d.runId)) && (!d.featureId || byFeature.has(d.featureId)))
+    .filter((d) => d.kind !== 'merge-approval' || byFeature.get(d.featureId)?.status === 'awaiting_merge_approval')
+    .filter((d) => d.kind !== 'roadmap-merge' || roadmap?.roadmapStatus === 'awaiting_final_review')
+    .filter((d) => d.kind !== 'plan-approval' || !byRun.get(d.runId)?.overall || byRun.get(d.runId)?.overall === 'awaiting_plan_approval')
     .sort((a, b) => String(a.ts).localeCompare(String(b.ts)))
     .map((d) => ({
       decisionId: d.decisionId,
@@ -55,6 +68,16 @@ export function buildSnapshot({
     });
   }
   for (const feature of features) {
+    if (feature.status === 'awaiting_merge_approval' && !covered.has(feature.id)) {
+      needsDecision.push({
+        decisionId: null, kind: 'merge-approval', runId: feature.integrationRunId ?? null,
+        featureId: feature.id, featureTitle: feature.title,
+        question: `Review ${feature.id} (${feature.title}) and approve merging its completed work?`,
+        options: ['approve', 'request-changes'], recommended: null,
+        artifacts: [feature.branch, feature.committedSha].filter(Boolean), since: null,
+      });
+      covered.add(feature.id);
+    }
     if (!['failed', 'held'].includes(feature.status) || covered.has(feature.id)) continue;
     needsDecision.push({
       decisionId: null,
@@ -76,12 +99,23 @@ export function buildSnapshot({
   // Escalations the supervisor raised that are not attached to a decision.
   for (const item of attention) {
     if (!item.escalate || item.decisionId || covered.has(item.featureId)) continue;
+    if (['claim-run', 'awaiting-chat'].includes(item.kind) ||
+      (item.kind === 'needs-decision' && /awaiting-chat:/i.test(item.summary || ''))) continue;
     if ((item.runId && !liveRunIds.has(item.runId)) || (item.featureId && !byFeature.has(item.featureId))) continue;
+    const run = item.runId ? byRun.get(item.runId) : null;
+    if (run && ['done', 'halted'].includes(run.overall) && item.kind !== 'halted') continue;
+    if (run && item.kind === 'halted' && run.overall !== 'halted') continue;
+    if (item.kind === 'halted' && item.featureId && !['failed', 'held'].includes(byFeature.get(item.featureId)?.status)) continue;
+    if (run?.overall === 'awaiting_chat' && ['needs-decision', 'plan-approval', 'blocked'].includes(item.kind)) continue;
+    if (run && ['needs-decision', 'plan-approval', 'blocked'].includes(item.kind) && run.state !== 'awaiting') continue;
+    if (run && ['dead', 'stale', 'unknown'].includes(item.kind) && run.state !== item.kind) continue;
+    if (item.featureId && ['landed', 'accepted', 'skipped'].includes(byFeature.get(item.featureId)?.status)) continue;
     needsDecision.push({
       decisionId: null,
       attentionId: item.id ?? null,
       kind: item.kind || 'attention',
       runId: item.runId ?? null,
+      handoffId: item.handoffId ?? null,
       featureId: item.featureId ?? null,
       featureTitle: byFeature.get(item.featureId)?.title ?? null,
       question: item.summary || 'Something needs your attention.',
@@ -94,10 +128,10 @@ export function buildSnapshot({
 
   for (const run of runs) {
     if (run.dismissed) continue;
-    const kind = run.overall === 'halted' ? 'halted' : ['dead','unknown','stale'].includes(run.state) ? run.state : run.state === 'awaiting' ? 'claim-run' : null;
+    const kind = run.overall === 'halted' ? 'halted' : ['dead','unknown','stale'].includes(run.state) ? run.state : null;
     if (!kind || needsDecision.some(d => d.runId === run.runId)) continue;
-    if (kind === 'halted' && features.some(f => f.id === run.featureId && ['landed','accepted'].includes(f.status))) continue;
-    needsDecision.push({decisionId:null,kind,runId:run.runId,featureId:run.featureId,handoffId:run.handoffId,question:kind === 'claim-run' ? `Connect an agent to ${run.stage || 'the pending stage'}` : `Inspect ${run.haltReason || kind}`,options:[],artifacts:[]});
+    if (kind === 'halted' && byFeature.has(run.featureId) && !['failed','held'].includes(byFeature.get(run.featureId).status)) continue;
+    needsDecision.push({decisionId:null,kind,runId:run.runId,featureId:run.featureId,handoffId:run.handoffId,question:`Inspect ${run.haltReason || kind}`,options:[],artifacts:[]});
   }
 
   const recentlyLanded = features
@@ -107,7 +141,7 @@ export function buildSnapshot({
     .map((f) => ({
       featureId: f.id, title: f.title, status:f.status, deliveryBranch:f.deliveryBranch, pr: f.pr ?? null,
       landedSha: f.landedSha ?? null, landedAt: f.landedAt ?? null,
-      reportRel: f.reportRel ?? null,
+      reportRel: f.reportRel ?? null, reportError: f.reportError ?? null,
     }));
 
   const inProgress = runs.filter(r => !r.dismissed && !['done','halted'].includes(r.overall)).map((r) => {
@@ -132,7 +166,7 @@ export function buildSnapshot({
       owner: r.owner ?? null, handoffId: r.handoffId ?? null,
       runner: r.runner ?? null,
       hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
-      spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null,
+      spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null, reportError: r.reportError ?? null,
       goal: feature
         ? {
           featureId: feature.id,
@@ -184,7 +218,7 @@ export function buildSnapshot({
         features: features.map((f) => ({
           id: f.id, title: f.title, status: f.status, dependsOn: f.dependsOn || [],
           mode: f.mode || 'build', branch: f.branch ?? null, pr: f.pr ?? null,
-          landedSha: f.landedSha ?? null, reportRel: f.reportRel ?? null,
+          landedSha: f.landedSha ?? null, reportRel: f.reportRel ?? null, reportError: f.reportError ?? null,
           acceptance: f.acceptance || null,
           specRunId: f.specRunId ?? null,
           integrationRunId: f.integrationRunId ?? null,
@@ -194,19 +228,20 @@ export function buildSnapshot({
       }
       : null,
     needsDecision,
+    agentQueue,
     recentlyLanded,
     inProgress,
     upNext,
     skills: skills.map((s) => ({ name: s.name, status: s.status })),
-    attentionPending: attention.length,
+    attentionPending: needsDecision.length,
     history: runs.filter(r => ['done','halted'].includes(r.overall) || r.dismissed),
     totals: { costUsd: runs.some(r => r.costUsd != null) ? costUsd : null, costPartial: runs.some(r => r.costUsd == null || r.costPartial), runsActive: inProgress.filter((r) => r.state === 'busy' || r.state === 'stale').length },
     counts: {
       executing: inProgress.filter(r => r.state === 'busy').length,
-      awaitingAgent: inProgress.filter(r => r.state === 'awaiting' && !r.owner).length,
+      awaitingAgent: agentRuns.length,
       disconnected: inProgress.filter(r => r.owner?.capability === 'disconnected').length,
-      blocked: runs.filter(r => !r.dismissed && (r.overall === 'halted' || ['dead','unknown','stale'].includes(r.state))).length,
-      awaitingUser: needsDecision.filter(d => d.kind !== 'claim-run').length,
+      blocked: runs.filter(r => !r.dismissed && ((r.overall === 'halted' && (!byFeature.has(r.featureId) || ['failed','held'].includes(byFeature.get(r.featureId).status))) || ['dead','unknown','stale'].includes(r.state))).length,
+      awaitingUser: needsDecision.length,
       inProgress: inProgress.length,
       decisions: needsDecision.length,
       landed: features.filter((f) => ['landed','accepted'].includes(f.status)).length,
@@ -234,7 +269,7 @@ export function renderDigest(snapshot) {
     parts.push('> The pool is paused. Resume it with `bash .pipeline/orchestrate.sh pool resume`.', '');
   }
 
-  parts.push(section('Needs your decision', snapshot.needsDecision.map((d) => {
+  parts.push(section('Needs attention', snapshot.needsDecision.map((d) => {
     const where = [d.featureId, d.runId].filter(Boolean).join(' · ');
     const options = d.options.length ? ` Options: ${d.options.join(', ')}.` : '';
     const recommended = d.recommended ? ` Recommended: ${d.recommended}.` : '';
@@ -244,13 +279,17 @@ export function renderDigest(snapshot) {
         ? ` — retry with \`pool retry ${d.featureId}\`, or skip with \`roadmap skip ${d.featureId}\``
         : d.kind === 'held'
           ? ` — release with \`roadmap release ${d.featureId}\``
-          : d.kind === 'claim-run'
-            ? ` — pick it up with \`pool claim ${d.runId}\``
-            : d.kind === 'roadmap-merge'
+          : d.kind === 'roadmap-merge'
               ? ' — land with `pool approve-merge` or `pool land-roadmap`'
               : '';
     return `- **${d.question}** (${where})${how}.${options}${recommended}`;
   }), 'Nothing needs your decision right now.'));
+
+  const current = snapshot.agentQueue?.current;
+  parts.push(section('Agent queue', current ? [
+    `- **${current.stage || 'Host stage'}** (${[current.featureId, current.ticketId, current.runId].filter(Boolean).join(' · ')}) — attending chat: \`pool claim ${current.runId}\`, complete the handoff, then \`--continue --run-id ${current.runId}\`.`,
+    snapshot.agentQueue.backlogCount ? `- ${snapshot.agentQueue.backlogCount} more host task(s) queued.` : '',
+  ].filter(Boolean) : [], 'No host work queued.'));
 
   parts.push(section('Recently landed', snapshot.recentlyLanded.map((f) => {
     const pr = f.pr?.url ? ` — ${f.pr.url}` : '';
@@ -263,7 +302,9 @@ export function renderDigest(snapshot) {
     const stage = r.stage ? ` — ${r.stage}${r.cycle > 1 ? ` (cycle ${r.cycle})` : ''}` : '';
     const flag = r.state === 'stale' ? ' — **quiet for a long time**'
       : r.state === 'dead' ? ' — **the worker process is gone**'
-        : r.state === 'awaiting' ? ' — waiting on a decision' : '';
+        : r.overall === 'awaiting_chat' ? ' — awaiting an agent stage in chat'
+          : r.overall === 'awaiting_plan_approval' ? ' — awaiting plan approval'
+            : r.state === 'awaiting' ? ' — awaiting a recorded decision' : '';
     return `- ${what || r.runId}${stage}${flag}`;
   }), 'No runs are in progress.'));
 

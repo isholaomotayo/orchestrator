@@ -57,9 +57,10 @@ test('pidAlive reports true for the current process and false for pid 0', () => 
 
 test('newStatus builds every stage; only Designer is skipped by default', () => {
   const s = newStatus('t');
-  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']);
+  assert.deepEqual(s.stages.map((x) => x.name), ['planner', 'plan_reviewer', 'designer', 'coder', 'tester', 'reviewer', 'handoff', 'reporter']);
   assert.equal(s.stages.find((x) => x.name === 'designer').status, 'skipped');
   assert.equal(s.stages.find((x) => x.name === 'planner').status, 'pending');
+  assert.equal(s.stages.find((x) => x.name === 'plan_reviewer').status, 'pending');
 });
 
 test('newStatus enables Designer via its flag', () => {
@@ -97,8 +98,10 @@ test('ensureStageEntries is a no-op on a current six-stage status', () => {
 test('pipelinePaths exposes design and handoffDoc artifacts', () => {
   const p = pipelinePaths('/repo');
   assert.equal(p.design, '/repo/.pipeline/design.md');
+  assert.equal(p.planReview, '/repo/.pipeline/plan_review.md');
   assert.equal(p.handoffDoc, '/repo/.pipeline/handoff.md');
   assert.equal(STAGE_ARTIFACT_FILES.designer, 'design.md');
+  assert.equal(STAGE_ARTIFACT_FILES.plan_reviewer, 'plan_review.md');
   assert.equal(STAGE_ARTIFACT_FILES.handoff, 'handoff.md');
 });
 

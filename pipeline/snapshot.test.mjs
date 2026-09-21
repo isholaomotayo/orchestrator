@@ -106,7 +106,7 @@ test('an empty pool produces a valid, empty snapshot rather than throwing', () =
 
 test('the digest renders the four sections in operator language', () => {
   const text = renderDigest(snap());
-  assert.match(text, /## Needs your decision/);
+  assert.match(text, /## Needs attention/);
   assert.match(text, /## Recently landed/);
   assert.match(text, /## In progress/);
   assert.match(text, /## Up next/);
@@ -164,19 +164,56 @@ test('a held feature says how to release it', () => {
   assert.match(text, /roadmap release F2/);
 });
 
-test('a claim-run item tells the operator exactly which command picks it up', () => {
+test('a host handoff appears in the agent queue and leaves human attention empty', () => {
   const s = buildSnapshot({
-    roadmap: null, runs: [{ runId: 'r9' }], decisions: [], supervisor,
-    attention: [{ id: 'a1', escalate: true, kind: 'claim-run', runId: 'r9', summary: 'Ready for a human to complete the "coder" stage in chat.', ts: '2026-09-06T11:00:00Z' }],
+    roadmap: null, runs: [{ runId: 'r9', overall: 'awaiting_chat', handoffId: 'h2', state: 'awaiting' }], decisions: [], supervisor,
+    attention: [{ id: 'a1', escalate: true, kind: 'claim-run', runId: 'r9', handoffId: 'h2', summary: 'Ready for a human to complete the "coder" stage in chat.', ts: '2026-09-06T11:00:00Z' }],
     now: new Date(),
   });
-  assert.equal(s.needsDecision.length, 1);
+  assert.equal(s.needsDecision.length, 0);
+  assert.equal(s.agentQueue.current.runId, 'r9');
   assert.match(renderDigest(s), /pool claim r9/);
+});
+
+test('completed and superseded handoffs do not remain in the attention queue', () => {
+  const s = buildSnapshot({
+    roadmap: null, supervisor, decisions: [], now: new Date(),
+    runs: [
+      { runId: 'done', overall: 'done', state: 'idle' },
+      { runId: 'live', overall: 'awaiting_chat', state: 'awaiting', handoffId: 'h2', stage: 'reporter' },
+    ],
+    attention: [
+      { id: 'old-done', escalate: true, kind: 'awaiting-chat', runId: 'done', summary: 'Waiting on a decision: awaiting-chat' },
+      { id: 'old-stage', escalate: true, kind: 'claim-run', runId: 'live', handoffId: 'h1', summary: 'Old stage' },
+      { id: 'current', escalate: true, kind: 'claim-run', runId: 'live', handoffId: 'h2', summary: 'Current stage' },
+    ],
+  });
+  assert.deepEqual(s.needsDecision, []);
+  assert.equal(s.agentQueue.current.handoffId, 'h2');
+});
+
+test('a halted attempt remains historical after retry without a live decision card', () => {
+  const retrying = { ...roadmap, features: [{ id: 'F2', title: 'PDF export', status: 'planning' }] };
+  const s = buildSnapshot({
+    roadmap: retrying, runs: [{ runId: 'old-attempt', featureId: 'F2', overall: 'halted', state: 'idle' }],
+    supervisor, decisions: [], now: new Date(),
+    attention: [{ id: 'old-alert', kind: 'halted', runId: 'old-attempt', featureId: 'F2', escalate: true, summary: 'Old failure' }],
+  });
+  assert.deepEqual(s.needsDecision, []);
+  assert.ok(s.history.some((r) => r.runId === 'old-attempt'));
+});
+
+test('a feature awaiting merge approval has a specific actionable card even without a decision record', () => {
+  const waiting = { ...roadmap, features: [{ id: 'F2', title: 'PDF export', status: 'awaiting_merge_approval', integrationRunId: 'r2' }] };
+  const s = buildSnapshot({ roadmap: waiting, runs: [{ runId: 'r2', overall: 'done', state: 'idle' }], decisions: [], attention: [], supervisor, now: new Date() });
+  assert.equal(s.needsDecision.length, 1);
+  assert.equal(s.needsDecision[0].kind, 'merge-approval');
+  assert.deepEqual(s.needsDecision[0].options, ['approve', 'request-changes']);
 });
 
 test('an escalation with no decision attached still reaches the operator', () => {
   const s = buildSnapshot({
-    roadmap: null, runs: [{ runId: 'r9' }], decisions: [], supervisor,
+    roadmap: null, runs: [{ runId: 'r9', overall: 'running', state: 'dead' }], decisions: [], supervisor,
     attention: [{ id: 'a1', escalate: true, kind: 'dead', runId: 'r9', summary: 'The worker process is gone', ts: '2026-09-06T11:00:00Z' }],
     now: new Date(),
   });
@@ -214,7 +251,7 @@ test('feature runIds include the plan, ticket, and integration lineage', () => {
 
 test('counts split runs into the six overview buckets: executing, awaiting-agent, disconnected, blocked, awaiting-user, queued', () => {
   const runsWithAllStates = [
-    ...runs, // r1: busy (executing), r2: awaiting with no owner (awaiting-agent)
+    ...runs.map((r) => r.runId === 'r2' ? { ...r, overall: 'awaiting_chat' } : r),
     { runId: 'r3', featureId: 'F2', ticketId: 'T3', kind: 'ticket', state: 'awaiting', owner: { capability: 'disconnected' } },
     { runId: 'r4', featureId: 'F2', ticketId: 'T4', kind: 'ticket', state: 'dead' },
     { runId: 'r5', featureId: 'F2', ticketId: 'T5', kind: 'ticket', overall: 'halted', state: 'idle' },
@@ -223,11 +260,10 @@ test('counts split runs into the six overview buckets: executing, awaiting-agent
   assert.equal(s.counts.executing, 1, 'r1 (busy) is executing');
   assert.equal(s.counts.awaitingAgent, 1, 'r2 (awaiting, no owner) is awaiting-agent');
   assert.equal(s.counts.disconnected, 1, 'r3 (awaiting, disconnected owner) is disconnected');
-  assert.equal(s.counts.blocked, 2, 'r4 (dead) and r5 (halted) are both blocked');
+  assert.equal(s.counts.blocked, 1, 'r4 is dead; r5 is a historical halted attempt for an executing feature');
   // awaitingUser counts every needsDecision entry, not just formal decisions:
-  // d1 (the open plan-approval) plus r4 (dead) and r5 (halted) each synthesize
-  // their own escalation.
-  assert.equal(s.counts.awaitingUser, 3, 'd1, r4 (dead), and r5 (halted) each need a person');
+  // The old plan approval for r2 is stale once it becomes a host handoff.
+  assert.equal(s.counts.awaitingUser, 1, 'only r4 (dead) needs a person');
   assert.equal(s.counts.queued, 1, 'F3 is the one queued feature');
 });
 

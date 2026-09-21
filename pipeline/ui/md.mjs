@@ -4,15 +4,25 @@
 // browser. The escaping discipline is the point: every input here is text an
 // agent wrote after reading a repository that may contain anything, so content
 // is escaped first and decorated afterwards — never the other way round.
+import { renderSequenceDiagramSvg } from '../sequence-diagram.mjs';
 
 export const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 export function hl(code) {
-  return esc(code)
-    .replace(/(\/\/[^\n]*)/g, '<span class="cmt">$1</span>')
-    .replace(/('[^']*'|"[^"]*"|`[^`]*`)/g, '<span class="str">$1</span>')
-    .replace(/\b(export|import|from|function|const|let|var|return|async|await|if|else|throw|new|class|interface|type|extends)\b/g, '<span class="kw">$1</span>')
-    .replace(/\b(string|number|boolean|void|Promise|Record|Array)\b/g, '<span class="typ">$1</span>');
+  // Match source tokens before writing markup. Re-running regexes over emitted
+  // spans used to corrupt Mermaid labels containing words such as "class".
+  const tokens = /\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\b(?:export|import|from|function|const|let|var|return|async|await|if|else|throw|new|class|interface|type|extends|string|number|boolean|void|Promise|Record|Array)\b/g;
+  let html = '';
+  let offset = 0;
+  for (const match of String(code).matchAll(tokens)) {
+    html += esc(code.slice(offset, match.index));
+    const token = match[0];
+    const kind = token.startsWith('//') ? 'cmt' : /^['"`]/.test(token) ? 'str'
+      : /^(string|number|boolean|void|Promise|Record|Array)$/.test(token) ? 'typ' : 'kw';
+    html += `<span class="${kind}">${esc(token)}</span>`;
+    offset = match.index + token.length;
+  }
+  return html + esc(code.slice(offset));
 }
 
 export function renderMd(md) {
@@ -21,7 +31,13 @@ export function renderMd(md) {
   blocks.forEach((block, i) => {
     if (i % 2 === 1) {
       const nl = block.indexOf('\n');
-      html += '<pre><code>' + hl(nl >= 0 ? block.slice(nl + 1) : block) + '</code></pre>';
+      const source = nl >= 0 ? block.slice(nl + 1) : block;
+      const language = nl >= 0 ? block.slice(0, nl).trim().toLowerCase() : '';
+      const isSequence = language === 'mermaid' || /^sequenceDiagram\b/.test(source.trim());
+      const diagram = isSequence ? renderSequenceDiagramSvg(source) : null;
+      html += diagram
+        ? `<figure class="sequence-diagram">${diagram}<details><summary>Sequence source</summary><pre><code>${esc(source)}</code></pre></details></figure>`
+        : `${isSequence ? '<p class="diagram-error">Sequence diagram could not be rendered; source follows.</p>' : ''}<pre><code>${hl(source)}</code></pre>`;
       return;
     }
     const lines = block.split('\n');

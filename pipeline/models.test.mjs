@@ -9,6 +9,7 @@ test('resolveModelProfile auto picks per-runner defaults', () => {
   assert.equal(res.selection, 'auto');
   assert.equal(res.runner, 'claude');
   assert.equal(res.stages.planner, 'opus-5');
+  assert.equal(res.stages.plan_reviewer, res.stages.reviewer);
   assert.equal(res.stages.coder, 'sonnet-5');
 });
 
@@ -42,6 +43,7 @@ test('resolveModelProfile normalizes auto/undefined runner to host', () => {
   assert.equal(res.runner, 'host');
   // Unknown host environment: never assume a vendor's models exist there.
   assert.equal(res.stages.planner, CURRENT_CHAT_MODEL);
+  assert.equal(res.stages.plan_reviewer, CURRENT_CHAT_MODEL);
 });
 
 test('host runner with a known hostClient uses that ecosystem profile', () => {
@@ -103,7 +105,7 @@ test('resolveModelProfile manual requires all four stages', () => {
     manualStages: { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd' },
   });
   assert.equal(ok.selection, 'manual');
-  assert.deepEqual(ok.stages, { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' });
+  assert.deepEqual(ok.stages, { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' });
 });
 
 test('parseModelsJson validates shape', () => {
@@ -112,7 +114,7 @@ test('parseModelsJson validates shape', () => {
   assert.throws(() => parseModelsJson('{"planner":"a"}'));
   assert.deepEqual(
     parseModelsJson('{"planner":"a","coder":"b","tester":"c","reviewer":"d"}'),
-    { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' },
+    { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' },
   );
 });
 

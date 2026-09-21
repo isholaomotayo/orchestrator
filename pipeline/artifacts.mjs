@@ -29,7 +29,7 @@ export function parseVerdict(report) {
 // run. The marker checks below carry the weight for the structured ones.
 const MIN_BYTES_STRUCTURED = 200;
 const MIN_BYTES_FREEFORM = 80;
-const STRUCTURED = new Set(['specs', 'design', 'review_report']);
+const STRUCTURED = new Set(['specs', 'plan_review', 'design', 'review_report']);
 
 // Substrings each artifact must contain, drawn from the skeleton its prompt
 // mandates.
@@ -44,6 +44,7 @@ const REQUIRED_MARKERS = {
   // Without it the Coder has nothing concrete to implement against and the
   // Tester has nothing concrete to cover.
   specs: ['tracer-bullet', 'objective', 'failure modes'],
+  plan_review: ['verdict', 'spec coverage', 'required revisions'],
   design: ['final contracts'],
   // "self-review": the Coder's own pass over the spec's failure-mode rows.
   changes: ['self-review'],
@@ -68,6 +69,7 @@ function normalizeForMarkers(text) {
 
 const ARTIFACT_KEYS = {
   planner: 'specs',
+  plan_reviewer: 'plan_review',
   designer: 'design',
   coder: 'changes',
   tester: 'test_suite',
@@ -92,7 +94,7 @@ export function validateArtifact(stage, content) {
   if (missing.length) {
     return { ok: false, reason: `artifact is missing required section(s): ${missing.join(', ')}` };
   }
-  if (stage === 'reviewer' && !parseVerdict(text).ok) {
+  if ((stage === 'reviewer' || stage === 'plan_reviewer') && !parseVerdict(text).ok) {
     return { ok: false, reason: `no parseable verdict — expected one of ${VERDICTS.join(' | ')} on a "## Verdict:" line` };
   }
   return { ok: true, reason: null };

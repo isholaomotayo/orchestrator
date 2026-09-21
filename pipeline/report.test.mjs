@@ -7,7 +7,7 @@ import { pipelinePaths } from './state.mjs';
 import {
   escapeHtml, renderMarkdownLite, diffStats, parseSpecItems,
   parseReviewCoverage, coverageTable, testTrend,
-  compileWorkDoneReport, writeWorkDoneReport,
+  compileWorkDoneReport, writeWorkDoneReport, writeTerminalReport,
 } from './report.mjs';
 
 const SPECS = `## 2. Technical Specification (PRD)
@@ -227,6 +227,16 @@ test('a failed diagram becomes an honest note rather than a broken frame', () =>
   assert.ok(!html.includes('<iframe'));
 });
 
+test('a sequence diagram in reporter prose renders as SVG without a network dependency', () => {
+  const { html } = compileWorkDoneReport({
+    ...payload(),
+    narrative: '## Summary\n\nCompleted.\n\n## Review Guidance\n\n```mermaid\nsequenceDiagram\nAdmin->>DB: Save & report\n```',
+  });
+  assert.match(html, /<svg[^>]+role="img"/);
+  assert.match(html, /Save &amp; report/);
+  assert.match(html, /<summary>Sequence source<\/summary>/);
+});
+
 test('a run with no narrative still produces a usable report', () => {
   const { html } = compileWorkDoneReport({ ...payload(), narrative: '' });
   assert.match(html, /No narrative was recorded/);
@@ -245,8 +255,38 @@ test('the report is theme-aware and self-contained', () => {
   const { html } = compileWorkDoneReport(payload());
   assert.match(html, /prefers-color-scheme:dark/);
   assert.match(html, /\[data-theme="dark"\]/);
-  assert.ok(!/<script(?![^>]*type="application)/.test(html), 'no scripts of our own');
+  assert.match(html, /orchestrator:open-run-stage/, 'only local report-to-dashboard navigation is scripted');
   assert.ok(!/https?:\/\/(?!example\.test)/.test(html.replace(/<a href="[^"]*"/g, '')), 'nothing is fetched from the network');
+});
+
+test('run and feature reports retain exact stage navigation and evidence paths', () => {
+  const input = payload();
+  input.runId = 'run-final';
+  input.status.stages = [{ name: 'planner', status: 'passed' }, { name: 'reporter', status: 'passed' }];
+  input.relatedRuns = [
+    { runId: 'run-plan', kind: 'plan', overall: 'done', stages: [{ name: 'planner', status: 'passed' }], evidencePath: '.pipeline/runs/run-plan' },
+    { runId: 'run-retry', kind: 'ticket', overall: 'halted', stages: [{ name: 'coder', status: 'failed' }], evidencePath: '.pipeline/runs/run-retry', captureGap: 'Private reasoning unavailable' },
+    { runId: 'run-early-failure', kind: 'ticket', overall: 'halted', stages: [], evidencePath: '.pipeline/runs/run-early-failure', reportError: 'Run report unavailable' },
+  ];
+  const { html, md } = compileWorkDoneReport(input);
+  assert.match(html, /data-run-id="run-final" data-stage="reporter"/);
+  assert.match(html, /data-run-id="run-plan" data-stage="planner"/);
+  assert.match(html, /data-run-id="run-retry" data-stage="coder"/);
+  assert.match(html, /data-run-id="run-early-failure">run-early-failure<\/button>/);
+  assert.match(html, /\.pipeline\/runs\/run-retry/);
+  assert.match(md, /run-retry.*\.pipeline\/runs\/run-retry/);
+  assert.match(html, /Private reasoning unavailable/);
+});
+
+test('a rebuilt report displays preserved legacy evidence with a clear source gap', () => {
+  const { html, md } = compileWorkDoneReport({
+    title: 'Historical feature', status: { verdict: 'UNKNOWN' },
+    legacyReport: { path: '.pipeline/control/reports/F1/work-done.legacy.html', markdown: '# Old report\n\nDelivered work.' },
+  });
+  assert.match(html, /Prior completion report/);
+  assert.match(html, /work-done\.legacy\.html/);
+  assert.match(html, /Delivered work/);
+  assert.match(md, /Delivered work/);
 });
 
 test('writing a report leaves html, markdown and a machine index', () => {
@@ -260,5 +300,24 @@ test('writing a report leaves html, markdown and a machine index', () => {
   const index = JSON.parse(fs.readFileSync(path.join(paths.reports, 'report.json'), 'utf8'));
   assert.equal(index.verdict, 'APPROVED');
   assert.ok(index.htmlSha256);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a halted host run reports its evidence and capture limits without a reporter narrative', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'terminal-report-'));
+  const paths = pipelinePaths(root, { runId: 'r1' });
+  fs.mkdirSync(paths.logs, { recursive: true });
+  fs.writeFileSync(path.join(paths.logs, 'planner.log'), '2026-09-12 Drafted scope\n');
+  fs.writeFileSync(paths.events, JSON.stringify({ type: 'agent_output', host: true, stage: 'planner', text: 'Drafted scope' }) + '\n');
+  const written = writeTerminalReport(paths, {
+    runId: 'r1', task: 'Build invoices', overall: 'halted', haltReason: 'AGENT_ERROR',
+    executionSurface: 'host-handoff', stages: [],
+  });
+  assert.equal(written.ok, true);
+  const operations = JSON.parse(fs.readFileSync(path.join(paths.reports, 'operations.json'), 'utf8'));
+  assert.equal(operations.capture.visibleHostProgressEvents, 1);
+  assert.equal(operations.capture.privateReasoning, 'unavailable');
+  assert.ok(operations.evidence.some((file) => file.endsWith('planner.log')));
+  assert.match(fs.readFileSync(path.join(paths.reports, 'work-done.html'), 'utf8'), /Drafted scope|Operational record/);
   fs.rmSync(root, { recursive: true, force: true });
 });

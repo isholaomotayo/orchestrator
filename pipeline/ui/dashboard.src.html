@@ -26,6 +26,7 @@
     --overlay: rgba(28, 25, 23, .35); --shadow: rgba(0, 0, 0, .2);
     --shadow-sm: rgba(0, 0, 0, .06);
     --agent-planner-bg: #ede9fe; --agent-planner-fg: #6d28d9;
+    --agent-plan-reviewer-bg: #dcfce7; --agent-plan-reviewer-fg: #166534;
     --agent-designer-bg: #dbeafe; --agent-designer-fg: #1d4ed8;
     --agent-coder-bg: #dbeafe; --agent-coder-fg: #1d4ed8;
     --agent-tester-bg: #dcfce7; --agent-tester-fg: #166534;
@@ -65,6 +66,7 @@
     --overlay: rgba(0, 0, 0, .55); --shadow: rgba(0, 0, 0, .45);
     --shadow-sm: rgba(0, 0, 0, .2);
     --agent-planner-bg: #2e1065; --agent-planner-fg: #c4b5fd;
+    --agent-plan-reviewer-bg: #14532d; --agent-plan-reviewer-fg: #bbf7d0;
     --agent-designer-bg: #172554; --agent-designer-fg: #93c5fd;
     --agent-coder-bg: #1e3a5f; --agent-coder-fg: #93c5fd;
     --agent-tester-bg: #14532d; --agent-tester-fg: #86efac;
@@ -88,6 +90,10 @@
     font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   button, input, select, textarea { font:inherit; color:inherit; }
   :focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+  .sequence-diagram { margin:14px 0; padding:12px; border:1px solid var(--border); border-radius:8px; background:#fff; overflow-x:auto; }
+  .sequence-diagram svg { display:block; width:100%; min-width:620px; height:auto; }
+  .sequence-diagram details { color:#475569; font-size:12px; margin-top:8px; }
+  .diagram-error { color:var(--red-text); }
   .app { display:grid; height:100vh; grid-template-columns:var(--sidebar-w) 1fr;
     grid-template-rows:var(--topbar-h) 1fr; grid-template-areas:"brand top" "side main"; }
 
@@ -292,6 +298,7 @@
      appears — the stage bar, the header, the sidebar. */
   .agent-ico { display:grid; place-items:center; flex-shrink:0; border-radius:7px; }
   .agent-ico.planner  { background:var(--agent-planner-bg);  color:var(--agent-planner-fg); }
+  .agent-ico.plan_reviewer { background:var(--agent-plan-reviewer-bg); color:var(--agent-plan-reviewer-fg); }
   .agent-ico.designer { background:var(--agent-designer-bg); color:var(--agent-designer-fg); }
   .agent-ico.coder    { background:var(--agent-coder-bg);    color:var(--agent-coder-fg); }
   .agent-ico.tester   { background:var(--agent-tester-bg);   color:var(--agent-tester-fg); }
