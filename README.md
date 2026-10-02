@@ -62,8 +62,32 @@ bash .pipeline/orchestrate.sh "Your task" --approve-plan
 bash .pipeline/orchestrate.sh "Your task" --design
 
 # Check pipeline status and continue a paused run
+# (use the exact command the handoff prints: it carries --handoff-id)
 bash .pipeline/orchestrate.sh --continue
+
+# Guided (default) or autonomous: autonomous retries recoverable failures once
+bash .pipeline/orchestrate.sh "Your task" --autonomy autonomous
+
+# A halt with a fixable artifact: fix the file, then resume the same step
+bash .pipeline/orchestrate.sh --resume
+
+# Roadmap mode: repair one ticket instead of replanning the whole feature
+bash .pipeline/orchestrate.sh pool resume-run <runId>
+bash .pipeline/orchestrate.sh pool retry-ticket <featureId> <ticketId>
+bash .pipeline/orchestrate.sh pool set-autonomy <runId> guided|autonomous
+
+# Find or start this project's dashboard (prints JSON for tools)
+bash .pipeline/orchestrate.sh ui --ensure --json
 ```
+
+Two independent "mode" settings describe every run:
+
+| Setting | Values | Changes? |
+|---|---|---|
+| **surface** — who executes stages | `host` (a chat session completes each stage) · `cli` (the engine runs an agent CLI) | Fixed when the run starts; only an explicit `--mode` changes it, and that is recorded |
+| **autonomy** — who decides at gates | `guided` (recoverable failures wait for you) · `autonomous` (retried once automatically) | Any time, from the dashboard or `pool set-autonomy`; applies at the next gate. Merges always need a human |
+
+The versioned API that the dashboard and the desktop app use is documented in [docs/api-v1.md](docs/api-v1.md).
 
 ---
 

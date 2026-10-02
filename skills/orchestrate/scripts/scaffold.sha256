@@ -45,6 +45,7 @@
     "pipeline/doc-commands.test.mjs": "92316aa4dbe88a0ac4b98fbc1d406677fba0e817e665f9edf4e9c07e383d575a",
     "pipeline/events.mjs": "9cd2cc0a63256ff797b298185b3a511f53cf7a002edab9fef20487537a8d2ad8",
     "pipeline/events.test.mjs": "ea2c4478fd195deb841e8ce6b2c647b6781137777ea21d7ae5a9e6507589ee74",
+    "pipeline/field-failures.test.mjs": "815f06a50a649cdc9935fb189bd9f5d64e93be2329bde9e41ccdd682764c1c4d",
     "pipeline/handoff.mjs": "62bde5d0c03f70b1eea07317506a354205821407ddd6c55cd8b641356a6efb27",
     "pipeline/handoff.test.mjs": "09326f27ca6556a02238cdb25cc8ccafa52557f4a65aa3f18b5bf2d5060912bb",
     "pipeline/hook-install.mjs": "470bf400edf03892e854a4d7e95bac72ccf3c05fb192aa0dca06abf949e709e1",
