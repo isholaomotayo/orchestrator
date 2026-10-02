@@ -1,0 +1,24 @@
+{
+  "ok": true,
+  "service": "pipeline-ui",
+  "repoRoot": "<repo>",
+  "instanceId": "<instance>",
+  "pid": 0,
+  "port": 0,
+  "startedAt": "<time>",
+  "serverVersion": "3.0.6",
+  "apiVersions": [
+    "v1"
+  ],
+  "contract": "orchestrator-api.v1",
+  "capabilities": [
+    "runs",
+    "events.sse",
+    "events.replay",
+    "commands",
+    "autonomy",
+    "ticket-retry",
+    "resume-run",
+    "attention"
+  ]
+}

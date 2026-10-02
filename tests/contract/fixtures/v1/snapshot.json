@@ -1,0 +1,422 @@
+{
+  "cursor": "<instance>.0",
+  "generatedAt": "<time>",
+  "project": {
+    "projectId": "<project>",
+    "repoRoot": "<repo>",
+    "name": "<repo-name>",
+    "install": {
+      "engine": {
+        "source": "host",
+        "projectCommit": null,
+        "hostCommit": "fb6bd244657e8fbf208051565586ebe68afd96a5",
+        "mismatch": false
+      },
+      "install": null
+    },
+    "capabilities": [
+      "runs",
+      "events.sse",
+      "events.replay",
+      "commands",
+      "autonomy",
+      "ticket-retry",
+      "resume-run",
+      "attention"
+    ],
+    "attention": {
+      "needsYou": 0,
+      "total": 0
+    },
+    "defaults": {
+      "autonomy": "guided"
+    }
+  },
+  "runs": [
+    {
+      "runId": "r-awaiting",
+      "kind": null,
+      "featureId": null,
+      "ticketId": null,
+      "title": "Add a health check",
+      "surface": "host",
+      "runner": null,
+      "hostClient": "antigravity",
+      "autonomy": "guided",
+      "policy": {
+        "autonomy": "guided",
+        "source": "default",
+        "effective": {
+          "planApproval": "agent",
+          "mergeApproval": "human",
+          "recoverableFailures": "ask"
+        }
+      },
+      "overall": "awaiting_chat",
+      "bucket": "awaiting_agent",
+      "stage": {
+        "name": "coder",
+        "status": "awaiting_host",
+        "cycle": 1,
+        "maxCycles": 5,
+        "startedAt": "<time>"
+      },
+      "driver": {
+        "kind": "none",
+        "host": "antigravity",
+        "presence": "absent",
+        "lastActivityAt": null,
+        "pid": null,
+        "leaseExpiresAt": null
+      },
+      "waitingSince": "<time>",
+      "handoffId": "h-1",
+      "haltReason": null,
+      "haltClass": null,
+      "dismissed": false,
+      "startedAt": null,
+      "endedAt": null,
+      "actions": [
+        {
+          "id": "run.continue",
+          "label": "Continue after coder",
+          "enabled": false,
+          "disabledReason": "changes.md is not ready: artifact was not created",
+          "danger": "none",
+          "primary": true,
+          "params": {
+            "handoffId": "h-1"
+          }
+        },
+        {
+          "id": "run.dismiss",
+          "label": "Dismiss",
+          "enabled": true,
+          "danger": "confirm"
+        },
+        {
+          "id": "run.set_autonomy",
+          "label": "Change autonomy",
+          "enabled": true,
+          "danger": "none",
+          "params": {
+            "autonomy": [
+              "guided",
+              "autonomous"
+            ]
+          }
+        },
+        {
+          "id": "message.queue",
+          "label": "Send note to the active stage",
+          "enabled": true,
+          "danger": "none"
+        }
+      ]
+    },
+    {
+      "runId": "r-done",
+      "kind": null,
+      "featureId": null,
+      "ticketId": null,
+      "title": "Broadcast guide",
+      "surface": "cli",
+      "runner": "codex",
+      "hostClient": null,
+      "autonomy": "guided",
+      "policy": {
+        "autonomy": "guided",
+        "source": "default",
+        "effective": {
+          "planApproval": "agent",
+          "mergeApproval": "human",
+          "recoverableFailures": "ask"
+        }
+      },
+      "overall": "done",
+      "bucket": "done",
+      "stage": null,
+      "driver": {
+        "kind": "none",
+        "host": null,
+        "presence": "absent",
+        "lastActivityAt": null,
+        "pid": null,
+        "leaseExpiresAt": null
+      },
+      "waitingSince": null,
+      "handoffId": null,
+      "haltReason": null,
+      "haltClass": null,
+      "dismissed": false,
+      "startedAt": null,
+      "endedAt": null,
+      "actions": [
+        {
+          "id": "run.dismiss",
+          "label": "Dismiss",
+          "enabled": true,
+          "danger": "confirm"
+        },
+        {
+          "id": "run.set_autonomy",
+          "label": "Change autonomy",
+          "enabled": false,
+          "disabledReason": "the run is done",
+          "danger": "none",
+          "params": {
+            "autonomy": [
+              "guided",
+              "autonomous"
+            ]
+          }
+        },
+        {
+          "id": "message.queue",
+          "label": "Send note to the active stage",
+          "enabled": false,
+          "disabledReason": "no stage is active",
+          "danger": "none"
+        }
+      ]
+    },
+    {
+      "runId": "r-halted",
+      "kind": null,
+      "featureId": null,
+      "ticketId": null,
+      "title": "Library sync",
+      "surface": "cli",
+      "runner": "claude",
+      "hostClient": null,
+      "autonomy": "guided",
+      "policy": {
+        "autonomy": "guided",
+        "source": "default",
+        "effective": {
+          "planApproval": "agent",
+          "mergeApproval": "human",
+          "recoverableFailures": "ask"
+        }
+      },
+      "overall": "halted",
+      "bucket": "blocked",
+      "stage": null,
+      "driver": {
+        "kind": "none",
+        "host": null,
+        "presence": "absent",
+        "lastActivityAt": null,
+        "pid": null,
+        "leaseExpiresAt": null
+      },
+      "waitingSince": null,
+      "handoffId": null,
+      "haltReason": "MISSING_ARTIFACT",
+      "haltClass": "recoverable",
+      "dismissed": false,
+      "startedAt": null,
+      "endedAt": null,
+      "actions": [
+        {
+          "id": "run.resume",
+          "label": "Resume",
+          "enabled": true,
+          "danger": "none",
+          "primary": true
+        },
+        {
+          "id": "run.dismiss",
+          "label": "Dismiss",
+          "enabled": true,
+          "danger": "confirm"
+        },
+        {
+          "id": "run.set_autonomy",
+          "label": "Change autonomy",
+          "enabled": false,
+          "disabledReason": "the run is halted",
+          "danger": "none",
+          "params": {
+            "autonomy": [
+              "guided",
+              "autonomous"
+            ]
+          }
+        },
+        {
+          "id": "message.queue",
+          "label": "Send note to the active stage",
+          "enabled": false,
+          "disabledReason": "no stage is active",
+          "danger": "none"
+        }
+      ]
+    },
+    {
+      "runId": "r-plan",
+      "kind": null,
+      "featureId": null,
+      "ticketId": null,
+      "title": "Account security",
+      "surface": "host",
+      "runner": null,
+      "hostClient": null,
+      "autonomy": "guided",
+      "policy": {
+        "autonomy": "guided",
+        "source": "default",
+        "effective": {
+          "planApproval": "agent",
+          "mergeApproval": "human",
+          "recoverableFailures": "ask"
+        }
+      },
+      "overall": "awaiting_plan_approval",
+      "bucket": "needs_you",
+      "stage": null,
+      "driver": {
+        "kind": "none",
+        "host": null,
+        "presence": "absent",
+        "lastActivityAt": null,
+        "pid": null,
+        "leaseExpiresAt": null
+      },
+      "waitingSince": null,
+      "handoffId": null,
+      "haltReason": null,
+      "haltClass": null,
+      "dismissed": false,
+      "startedAt": null,
+      "endedAt": null,
+      "actions": [
+        {
+          "id": "plan.approve",
+          "label": "Approve plan",
+          "enabled": true,
+          "danger": "none",
+          "primary": true
+        },
+        {
+          "id": "plan.reject",
+          "label": "Request plan changes",
+          "enabled": true,
+          "danger": "none",
+          "params": {
+            "note": "required"
+          }
+        },
+        {
+          "id": "run.dismiss",
+          "label": "Dismiss",
+          "enabled": true,
+          "danger": "confirm"
+        },
+        {
+          "id": "run.set_autonomy",
+          "label": "Change autonomy",
+          "enabled": true,
+          "danger": "none",
+          "params": {
+            "autonomy": [
+              "guided",
+              "autonomous"
+            ]
+          }
+        },
+        {
+          "id": "message.queue",
+          "label": "Send note to the active stage",
+          "enabled": false,
+          "disabledReason": "no stage is active",
+          "danger": "none"
+        }
+      ]
+    },
+    {
+      "runId": "r-unattended",
+      "kind": null,
+      "featureId": null,
+      "ticketId": null,
+      "title": "Notifications center",
+      "surface": "host",
+      "runner": null,
+      "hostClient": null,
+      "autonomy": "guided",
+      "policy": {
+        "autonomy": "guided",
+        "source": "default",
+        "effective": {
+          "planApproval": "agent",
+          "mergeApproval": "human",
+          "recoverableFailures": "ask"
+        }
+      },
+      "overall": "awaiting_chat",
+      "bucket": "unattended",
+      "stage": {
+        "name": "tester",
+        "status": "awaiting_host",
+        "cycle": 0,
+        "maxCycles": null,
+        "startedAt": "<time>"
+      },
+      "driver": {
+        "kind": "none",
+        "host": null,
+        "presence": "absent",
+        "lastActivityAt": null,
+        "pid": null,
+        "leaseExpiresAt": null
+      },
+      "waitingSince": "<time>",
+      "handoffId": "h-2",
+      "haltReason": null,
+      "haltClass": null,
+      "dismissed": false,
+      "startedAt": null,
+      "endedAt": null,
+      "actions": [
+        {
+          "id": "run.continue",
+          "label": "Continue after tester",
+          "enabled": false,
+          "disabledReason": "test_suite.md is not ready: artifact was not created",
+          "danger": "none",
+          "primary": true,
+          "params": {
+            "handoffId": "h-2"
+          }
+        },
+        {
+          "id": "run.dismiss",
+          "label": "Dismiss",
+          "enabled": true,
+          "danger": "confirm"
+        },
+        {
+          "id": "run.set_autonomy",
+          "label": "Change autonomy",
+          "enabled": true,
+          "danger": "none",
+          "params": {
+            "autonomy": [
+              "guided",
+              "autonomous"
+            ]
+          }
+        },
+        {
+          "id": "message.queue",
+          "label": "Send note to the active stage",
+          "enabled": true,
+          "danger": "none"
+        }
+      ]
+    }
+  ],
+  "attention": [],
+  "decisions": [],
+  "pool": null
+}

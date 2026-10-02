@@ -1,0 +1,35 @@
+{
+  "projects": [
+    {
+      "projectId": "<project>",
+      "repoRoot": "<repo>",
+      "name": "<repo-name>",
+      "install": {
+        "engine": {
+          "source": "host",
+          "projectCommit": null,
+          "hostCommit": "fb6bd244657e8fbf208051565586ebe68afd96a5",
+          "mismatch": false
+        },
+        "install": null
+      },
+      "capabilities": [
+        "runs",
+        "events.sse",
+        "events.replay",
+        "commands",
+        "autonomy",
+        "ticket-retry",
+        "resume-run",
+        "attention"
+      ],
+      "attention": {
+        "needsYou": 0,
+        "total": 0
+      },
+      "defaults": {
+        "autonomy": "guided"
+      }
+    }
+  ]
+}

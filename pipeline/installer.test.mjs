@@ -477,3 +477,16 @@ test('stale untracked engine copies in .pipeline/ are found and moved aside, nev
   assert.deepEqual(staleEngineCopies(root), []);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('the desktop app, its fixtures and its tooling are never copied into consumer repos', async () => {
+  const { listManaged } = await import('./installer.mjs');
+  const { coveredPaths } = await import('../skills/orchestrate/scripts/scaffold-manifest.mjs');
+  const src = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+  const managed = listManaged(src).map((m) => (typeof m === 'string' ? m : m.rel || m.path || JSON.stringify(m)));
+  const covered = coveredPaths(src);
+  for (const list of [managed, covered]) {
+    assert.ok(list.length > 10, 'sanity: the lists are populated');
+    assert.deepEqual(list.filter((p) => /(^|\/)(desktop|tests\/contract)\//.test(p)), []);
+  }
+  assert.ok(!JSON.parse(fs.readFileSync(path.join(src, 'package.json'), 'utf8')).workspaces, 'no workspaces: desktop deps never join the root install');
+});

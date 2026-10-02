@@ -1,0 +1,11 @@
+[package]
+name = "orch-core"
+description = "Pure app state for Orchestrator Desktop: reducer, notification policy, selectors"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+orch-contract = { path = "../orch-contract" }
+serde_json.workspace = true

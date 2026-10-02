@@ -56,7 +56,7 @@
     "pipeline/http-guard.mjs": "4baa53b3c58f8e0e3977c2f30d1c79b53b2ca6de5e5732be4dff9db510653a67",
     "pipeline/http-guard.test.mjs": "524a2e9a365ba99f7044ee0b20681ab41039dc3203f03f8a942f9c6d8b738035",
     "pipeline/installer.mjs": "a270ed1e477301e9b92a2108be965e0300aa850a4f000cd856d68bc3aadc3af3",
-    "pipeline/installer.test.mjs": "492dfd4ba779608f2e3c425d215048429eeb7b90b2900568884b64e72af5cb5f",
+    "pipeline/installer.test.mjs": "5a80d40563ffd797017b018b7afd9a11d19de36650003fd259d7a3cff301c341",
     "pipeline/integrity.mjs": "6e0fb62f79619b05a9c1c7aa5be4f2f5d7d4dfdfe16f2aa9c062f3f3d03c94de",
     "pipeline/integrity.test.mjs": "b5c16ee0b3b05334e5d229f007fc33c3568e2ff3fbe84b01e8060f569e4306ad",
     "pipeline/interventions.mjs": "d4d41f307f65fc11e438ee7c3bf8e9565952ab30dbd09d1cbac91f0233537ca5",

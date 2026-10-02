@@ -38,3 +38,35 @@ jobs:
           GIT_COMMITTER_EMAIL: 'ci@orchestrator.test'
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run test:browser
+
+  # The optional desktop companion (Rust). Path-filtered so engine-only
+  # changes never wait on a Rust build.
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            desktop:
+              - 'desktop/**'
+              - 'tests/contract/**'
+              - 'pipeline/contract/**'
+              - 'pipeline/api-v1.mjs'
+              - 'pipeline/ui-server.mjs'
+      - if: steps.changes.outputs.desktop == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - if: steps.changes.outputs.desktop == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - if: steps.changes.outputs.desktop == 'true'
+        name: Fixtures match what the server sends
+        run: node scripts/record-contract-fixtures.mjs && git diff --exit-code -- tests/contract/fixtures
+      - if: steps.changes.outputs.desktop == 'true'
+        working-directory: desktop
+        run: cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
+

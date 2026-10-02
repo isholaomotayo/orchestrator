@@ -1,0 +1,91 @@
+{
+  "run": {
+    "runId": "r-halted",
+    "kind": null,
+    "featureId": null,
+    "ticketId": null,
+    "title": "Library sync",
+    "surface": "cli",
+    "runner": "claude",
+    "hostClient": null,
+    "autonomy": "guided",
+    "policy": {
+      "autonomy": "guided",
+      "source": "default",
+      "effective": {
+        "planApproval": "agent",
+        "mergeApproval": "human",
+        "recoverableFailures": "ask"
+      }
+    },
+    "overall": "halted",
+    "bucket": "blocked",
+    "stage": null,
+    "driver": {
+      "kind": "none",
+      "host": null,
+      "presence": "absent",
+      "lastActivityAt": null,
+      "pid": null,
+      "leaseExpiresAt": null
+    },
+    "waitingSince": null,
+    "handoffId": null,
+    "haltReason": "MISSING_ARTIFACT",
+    "haltClass": "recoverable",
+    "dismissed": false,
+    "startedAt": null,
+    "endedAt": null,
+    "actions": [
+      {
+        "id": "run.resume",
+        "label": "Resume",
+        "enabled": true,
+        "danger": "none",
+        "primary": true
+      },
+      {
+        "id": "run.dismiss",
+        "label": "Dismiss",
+        "enabled": true,
+        "danger": "confirm"
+      },
+      {
+        "id": "run.set_autonomy",
+        "label": "Change autonomy",
+        "enabled": false,
+        "disabledReason": "the run is halted",
+        "danger": "none",
+        "params": {
+          "autonomy": [
+            "guided",
+            "autonomous"
+          ]
+        }
+      },
+      {
+        "id": "message.queue",
+        "label": "Send note to the active stage",
+        "enabled": false,
+        "disabledReason": "no stage is active",
+        "danger": "none"
+      }
+    ]
+  },
+  "status": {
+    "overall": "halted",
+    "haltReason": "MISSING_ARTIFACT",
+    "haltedStage": "coder",
+    "executionSurface": "cli-subprocess",
+    "runner": "claude",
+    "task": "Library sync",
+    "stages": [
+      {
+        "name": "coder",
+        "status": "failed",
+        "detail": "missing self-review"
+      }
+    ]
+  },
+  "artifacts": []
+}

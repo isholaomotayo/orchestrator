@@ -1,0 +1,41 @@
+[
+  {
+    "commandId": "fixture-1",
+    "status": "applied",
+    "result": {
+      "ok": true,
+      "runId": "r-done",
+      "dismissed": true,
+      "alreadyDismissed": false,
+      "reason": "fixture",
+      "revision": 0,
+      "commandId": "<uuid>"
+    },
+    "cursor": "<instance>.5"
+  },
+  {
+    "commandId": "fixture-1",
+    "status": "duplicate",
+    "result": {
+      "ok": true,
+      "runId": "r-done",
+      "dismissed": true,
+      "alreadyDismissed": false,
+      "reason": "fixture",
+      "revision": 0,
+      "commandId": "<uuid>"
+    },
+    "original": "applied",
+    "cursor": "<instance>.5"
+  },
+  {
+    "commandId": "fixture-2",
+    "status": "rejected",
+    "error": {
+      "code": "conflict",
+      "message": "cannot resume: the run is done",
+      "retryable": true
+    },
+    "cursor": "<instance>.5"
+  }
+]

@@ -1,0 +1,22 @@
+# Orchestrator Desktop — an optional native companion for the /orchestrate
+# skill. Lives outside pipeline/, .pipeline/ and skills/, so the installer
+# never copies it into consumer repositories (see installer.test.mjs).
+[workspace]
+resolver = "2"
+members = ["crates/orch-contract", "crates/orch-client", "crates/orch-core"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+async-channel = "2"
+uuid = { version = "1", features = ["v4"] }
