@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-api.v1/command-result",
+  "title": "CommandResult",
+  "type": "object",
+  "required": ["commandId", "status"],
+  "properties": {
+    "commandId": { "type": "string" },
+    "status": { "enum": ["applied", "rejected", "duplicate"] },
+    "original": { "enum": ["applied", "rejected"] },
+    "result": {},
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": { "enum": ["bad_request", "conflict", "not_found", "invalid", "failed", "unknown_command"] },
+        "message": { "type": "string" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "outputTail": { "type": "string" },
+    "cursor": { "type": "string" }
+  }
+}

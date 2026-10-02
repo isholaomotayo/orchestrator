@@ -35,6 +35,7 @@ USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|
    or: bash .pipeline/orchestrate.sh --task-file <path> [same flags as above]
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]
+   or: bash .pipeline/orchestrate.sh ui --ensure [--json]   (find or start the dashboard for this project)
 
 --task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line.
 Exit code 3 = self-target guard: this repo is the orchestrator source; override with --allow-self or ORCH_ALLOW_SELF=1.'
@@ -43,6 +44,14 @@ Exit code 3 = self-target guard: this repo is the orchestrator source; override 
 # These read and steer a whole roadmap rather than starting one run, so they
 # bypass the single-run plumbing entirely.
 case "${1:-}" in
+  ui)
+    # `ui [--ensure] [--json]`: find or start this project's dashboard and print
+    # where it is (the desktop app and scripts use this single launch path).
+    shift
+    ARGS=()
+    for a in "$@"; do [ "$a" = "--ensure" ] || ARGS+=("$a"); done
+    exec "$JS_RUNNER" "$REPO_ROOT/pipeline/ui-ensure.mjs" --repo "$REPO_ROOT" "${ARGS[@]+"${ARGS[@]}"}"
+    ;;
   pool|roadmap)
     SUB="$1"; shift
     cd "$REPO_ROOT"

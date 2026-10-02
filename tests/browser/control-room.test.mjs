@@ -727,3 +727,89 @@ test('a run tab allows scrolling to view full stage output and artifacts', async
   assert.ok(scrollInfo.scrollTop > 0, `panel must successfully scroll: scrollTop=${scrollInfo.scrollTop}`);
   assert.deepEqual(errors, []);
 });
+
+function fixtureServer(routes, posts = []) {
+  const streams = new Set();
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.pathname === '/events') {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(': connected\n\n');
+      streams.add(res); req.on('close', () => streams.delete(res));
+      return;
+    }
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => { posts.push({ path: url.pathname, body: JSON.parse(body || '{}') }); res.setHeader('Content-Type', 'application/json'); res.end('{"ok":true}'); });
+      return;
+    }
+    if (url.pathname.startsWith('/api/')) {
+      res.setHeader('Content-Type', 'application/json');
+      return res.end(JSON.stringify(routes[url.pathname] || {}));
+    }
+    res.setHeader('Content-Type', 'text/html'); res.end(dashboard);
+  });
+  return { server, streams };
+}
+
+test('a plan waiting for approval can be approved, or sent back with notes, from the run tab', async t => {
+  const posts = [];
+  const { server, streams } = fixtureServer({
+    '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+    '/api/pool': { enabled: false },
+    '/api/runs': { runs: [] },
+    '/api/state': {
+      status: { overall: 'awaiting_plan_approval', stages: [{ name: 'planner', status: 'passed' }], executionSurface: 'host-handoff' },
+      canApprovePlan: true, policy: { autonomy: 'guided' }, artifacts: [],
+    },
+  }, posts);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await launchChromium();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.getByRole('button', { name: 'Request changes' }).click();
+  assert.equal(posts.length, 0, 'no empty revision request is sent');
+  await page.getByPlaceholder(/What should the Planner change/).fill('Split ticket 2');
+  await page.getByRole('button', { name: 'Request changes' }).click();
+  await page.waitForFunction(() => true);
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(posts.map((p) => p.path), ['/api/followup', '/api/continue']);
+  assert.equal(posts[0].body.text, 'Split ticket 2');
+  assert.equal(posts[1].body.approve, true);
+  await page.getByRole('button', { name: 'Approve plan' }).click();
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(posts.at(-1).path, '/api/continue');
+});
+
+test('the autonomy selector changes the run policy, and New Run sends an explicit surface', async t => {
+  const posts = [];
+  const { server, streams } = fixtureServer({
+    '/api/projects': { projects: [{ repoRoot: '/fixture/project', name: 'Browser fixture' }] },
+    '/api/pool': { enabled: false },
+    '/api/runs': { runs: [] },
+    '/api/state': {
+      status: { overall: 'awaiting_chat', awaitingStage: 'coder', stages: [{ name: 'coder', status: 'awaiting_host' }], executionSurface: 'host-handoff' },
+      policy: { autonomy: 'guided' }, artifacts: [],
+    },
+  }, posts);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { for (const stream of streams) stream.end(); server.closeAllConnections(); server.close(); });
+  const browser = await launchChromium();
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(`http://127.0.0.1:${server.address().port}/#tabs=${encodeURIComponent('run:r1')}&active=0`);
+  await page.locator('[data-role="controls"] select').selectOption('autonomous');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.deepEqual(posts.at(-1), { path: '/api/run/autonomy', body: { autonomy: 'autonomous', run: 'r1' } });
+
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.getByPlaceholder('What should be built or fixed?').fill('Add a health check');
+  await page.getByRole('button', { name: 'Start run' }).click();
+  await new Promise((r) => setTimeout(r, 300));
+  const start = posts.find((p) => p.path === '/api/run');
+  assert.equal(start.body.runner, 'host');
+  assert.equal(start.body.task, 'Add a health check');
+});

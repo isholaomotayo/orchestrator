@@ -56,7 +56,7 @@ function makeProject() {
 async function startServer(root, port) {
   const child = spawn(process.execPath, [path.join(HERE, 'ui-server.mjs')], {
     cwd: root,
-    env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0' },
+    env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0', ORCHESTRATOR_HOME: path.join(root, '.orch-home') },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   for (let i = 0; i < 100; i++) {
@@ -343,7 +343,8 @@ test('/api/run with an explicit external runner always sends an explicit --mode 
   // this long-lived server process's own (possibly stale IDE) environment —
   // the operator's own runner choice is the only signal that matters.
   const res = await post('/api/run', { task: 'do the thing', runner: 'cursor' });
-  assert.equal(res.status, 200, await res.text());
+  // No prompts in this fixture: the engine fails at once and the endpoint says so.
+  assert.equal(res.status, 409, await res.text());
   const out = fs.readFileSync(path.join(paths.dir, 'orchestrator.out'), 'utf8');
   assert.match(out, /--runner cursor/);
   assert.match(out, /--mode cli/);
@@ -362,7 +363,11 @@ test('/api/extend always sends an explicit --mode matching the chosen runner', w
   fs.mkdirSync(r2.dir, { recursive: true });
   fs.writeFileSync(r2.status, JSON.stringify({ overall: 'halted', haltReason: 'MAX_CYCLES', haltedPhase: 'coder', stages: [] }));
   const res = await post('/api/extend', { extend: 3, runner: 'claude', run: 'r2' });
-  assert.equal(res.status, 200, await res.text());
+  // This fixture has no prompts, so the engine exits at once: the endpoint now
+  // reports that failure instead of a success the operator cannot see through.
+  const body = await res.json();
+  assert.equal(res.status, 409, JSON.stringify(body));
+  assert.match(body.outputTail, /prompt/);
   const out = fs.readFileSync(path.join(r2.dir, 'orchestrator.out'), 'utf8');
   assert.match(out, /--runner claude/);
   assert.match(out, /--mode cli/);
@@ -411,7 +416,11 @@ test('continue for a selected pool run writes --run-id into that run directory',
 ### Ticket 1: do it
 `.padEnd(400, '\n- filler line'));
   const res = await post('/api/continue', { run: 'r2' });
-  assert.equal(res.status, 200, await res.text());
+  // The fixture records no chatResume, so the engine refuses; that refusal is
+  // what the operator now sees, rather than a 200.
+  const body = await res.json();
+  assert.equal(res.status, 409, JSON.stringify(body));
+  assert.match(body.error, /Nothing to continue/);
   const out = fs.readFileSync(path.join(r2.dir, 'orchestrator.out'), 'utf8');
   assert.match(out, /--run-id r2/);
   assert.match(out, /--continue/);
@@ -448,4 +457,97 @@ test('a note on an unclaimed bridge-required host run uses followups and never e
   assert.match(fs.readFileSync(path.join(r3.dir, 'followups', 'coder.txt'), 'utf8'), /existing helper/);
   const { inspectBridge } = await import('./bridge.mjs');
   assert.equal(inspectBridge(root, 'r3').ownershipRequired, false, 'a plain --continue must still work');
+}));
+
+// ---- /api/v1 -----------------------------------------------------------------
+
+function serverRecord(root) {
+  const dir = path.join(root, '.orch-home', 'servers');
+  const [file] = fs.readdirSync(dir);
+  const stat = fs.statSync(path.join(dir, file));
+  return { record: JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8')), mode: stat.mode & 0o777 };
+}
+
+test('v1: discovery, auth, and an owner-only server registry', withServer(async ({ base, root }) => {
+  const health = await (await fetch(`${base}/healthz`)).json();
+  assert.deepEqual(health.apiVersions, ['v1']);
+  assert.ok(health.instanceId && health.capabilities.includes('events.replay'));
+  const { record, mode } = serverRecord(root);
+  assert.equal(record.instanceId, health.instanceId);
+  assert.equal(mode, 0o600);
+  assert.equal((await fetch(`${base}/api/v1/projects`)).status, 401, 'no token, no data');
+  const auth = { Authorization: `Bearer ${record.token}` };
+  const { projects } = await (await fetch(`${base}/api/v1/projects`, { headers: auth })).json();
+  assert.equal(projects[0].repoRoot, root);
+  // fetch() drops a custom Host header; a raw request sends what a rebinding page would.
+  const http = await import('node:http');
+  const rebound = await new Promise((resolve) => {
+    http.get({ host: '127.0.0.1', port: new URL(base).port, path: '/api/state', headers: { host: 'evil.example' } }, (res) => { res.resume(); resolve(res.statusCode); });
+  });
+  assert.equal(rebound, 421);
+}));
+
+test('v1: snapshot and run detail carry server-computed bucket and actions', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const auth = { Authorization: `Bearer ${record.token}` };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers: auth })).json()).projects;
+  const snap = await (await fetch(`${base}/api/v1/projects/${project.projectId}/snapshot`, { headers: auth })).json();
+  const r1 = snap.runs.find((r) => r.runId === 'r1');
+  assert.equal(r1.bucket, 'done');
+  assert.ok(Array.isArray(r1.actions));
+  assert.ok(snap.cursor);
+  const detail = await (await fetch(`${base}/api/v1/projects/${project.projectId}/runs/r1`, { headers: auth })).json();
+  assert.equal(detail.run.runId, 'r1');
+  assert.ok(detail.artifacts.some((a) => a.name === 'specs.md'));
+}));
+
+test('v1: the event stream pushes typed run updates and backfill uses the same seq', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const auth = { Authorization: `Bearer ${record.token}` };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers: auth })).json()).projects;
+  const ctrl = new AbortController();
+  const stream = await fetch(`${base}/api/v1/events?projects=${project.projectId}`, { headers: auth, signal: ctrl.signal });
+  const reader = stream.body.getReader();
+  let text = '';
+  const until = async (re) => {
+    const deadline = Date.now() + 5000;
+    while (!re.test(text) && Date.now() < deadline) {
+      const { value, done } = await Promise.race([reader.read(), new Promise((r) => setTimeout(() => r({ value: null }), 500))]);
+      if (done) break;
+      if (value) text += new TextDecoder().decode(value);
+    }
+    return re.test(text);
+  };
+  assert.ok(await until(/event: hello/));
+  const run = pipelinePaths(root, { runId: 'r1' });
+  fs.appendFileSync(run.events, JSON.stringify({ ts: new Date().toISOString(), stage: 'coder', type: 'agent_output', kind: 'text', text: 'hi' }) + '\n');
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', featureId: 'F1', stages: [] }));
+  assert.ok(await until(/event: run\.upserted[\s\S]*"bucket":"blocked"/), text);
+  assert.ok(await until(/event: run\.event[\s\S]*"seq":1/), text);
+  ctrl.abort();
+  const back = await (await fetch(`${base}/api/v1/projects/${project.projectId}/runs/r1/events?afterSeq=0`, { headers: auth })).json();
+  assert.equal(back.events[0].seq, 1);
+  assert.equal(back.events[0].text, 'hi');
+}));
+
+test('v1: commands are idempotent and a refused one says why', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json', Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const send = (body) => fetch(`${base}/api/v1/projects/${project.projectId}/commands`, { method: 'POST', headers, body: JSON.stringify(body) }).then((r) => r.json());
+  const refused = await send({ commandId: 'c-resume', type: 'run.resume', runId: 'r1' });
+  assert.equal(refused.status, 'rejected');
+  assert.match(refused.error.message, /done/);
+  const first = await send({ commandId: 'c-dismiss', type: 'run.dismiss', runId: 'r1', args: { reason: 'cleanup' } });
+  assert.equal(first.status, 'applied');
+  const again = await send({ commandId: 'c-dismiss', type: 'run.dismiss', runId: 'r1', args: { reason: 'cleanup' } });
+  assert.equal(again.status, 'duplicate');
+}));
+
+test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base }) => {
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-registered-'));
+  const res = await fetch(`${base}/api/state?project=${encodeURIComponent(elsewhere)}`);
+  assert.equal(res.status, 400);
+  assert.equal(fs.existsSync(path.join(elsewhere, '.pipeline')), false);
+  fs.rmSync(elsewhere, { recursive: true, force: true });
 }));

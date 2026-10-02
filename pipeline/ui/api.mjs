@@ -51,5 +51,7 @@ export function createApi(projectRef) {
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
     extendRun: (cycles, run) => post('/api/extend', { extend: cycles, ...(run ? { run } : {}) }),
     dismissRun: (run, reason) => post('/api/run/dismiss', { run, reason }),
+    setAutonomy: (autonomy, run) => post('/api/run/autonomy', { autonomy, ...(run ? { run } : {}) }),
+    startRun: (body) => post('/api/run', body),
   };
 }

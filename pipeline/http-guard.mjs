@@ -43,7 +43,10 @@ export function isTrustedRequest(headers = {}, port) {
   // When present it must be a loopback origin on our port. When absent (e.g.
   // curl, same-origin navigations that omit it), the Host check above stands.
   const origin = headers.origin;
-  if (origin && origin !== 'null') {
+  // "null" is what sandboxed iframes, file:// pages and some redirects send:
+  // none of them is this dashboard, so it is not a trusted origin.
+  if (origin === 'null') return false;
+  if (origin) {
     let url;
     try { url = new URL(origin); } catch { return false; }
     if (!LOOPBACK_HOSTS.has(url.hostname)) return false;
@@ -51,4 +54,17 @@ export function isTrustedRequest(headers = {}, port) {
     if (originPort !== String(port)) return false;
   }
   return true;
+}
+
+/**
+ * Any request (GET included) must name this server by a loopback Host: a
+ * DNS-rebinding page reaches 127.0.0.1 under its own hostname and could
+ * otherwise read artifacts, diffs and logs.
+ */
+export function isLoopbackHost(headers = {}, port) {
+  const host = headers.host;
+  if (!host) return false;
+  if (!LOOPBACK_HOSTS.has(hostnameOf(host))) return false;
+  const hostPort = portOf(host);
+  return hostPort === null || hostPort === String(port);
 }

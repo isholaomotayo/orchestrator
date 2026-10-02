@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-api.v1/run-summary",
+  "title": "RunSummary",
+  "type": "object",
+  "required": ["runId", "surface", "autonomy", "policy", "overall", "bucket", "driver", "actions", "dismissed"],
+  "properties": {
+    "runId": { "type": "string" },
+    "kind": { "type": ["string", "null"] },
+    "featureId": { "type": ["string", "null"] },
+    "ticketId": { "type": ["string", "null"] },
+    "title": { "type": "string" },
+    "surface": { "enum": ["host", "cli", null] },
+    "runner": { "type": ["string", "null"] },
+    "hostClient": { "type": ["string", "null"] },
+    "autonomy": { "enum": ["guided", "autonomous"] },
+    "policy": {
+      "type": "object",
+      "required": ["autonomy", "source", "effective"],
+      "properties": {
+        "autonomy": { "enum": ["guided", "autonomous"] },
+        "source": { "enum": ["override", "run", "project", "default"] },
+        "effective": { "type": "object" }
+      }
+    },
+    "overall": { "enum": ["running", "awaiting_chat", "awaiting_plan_approval", "done", "halted", null] },
+    "bucket": { "enum": ["working", "agent_working", "awaiting_agent", "unattended", "needs_you", "blocked", "done", "unknown"] },
+    "stage": {
+      "type": ["object", "null"],
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "type": "string" },
+        "cycle": { "type": "number" },
+        "maxCycles": { "type": ["number", "null"] },
+        "startedAt": { "type": ["string", "null"] }
+      }
+    },
+    "driver": {
+      "type": "object",
+      "required": ["kind", "presence"],
+      "properties": {
+        "kind": { "enum": ["host-session", "cli-process", "none"] },
+        "host": { "type": ["string", "null"] },
+        "presence": { "enum": ["active", "quiet", "stalled", "absent"] },
+        "lastActivityAt": { "type": ["string", "null"] },
+        "pid": { "type": ["number", "null"] },
+        "leaseExpiresAt": { "type": ["string", "null"] }
+      }
+    },
+    "waitingSince": { "type": ["string", "null"] },
+    "handoffId": { "type": ["string", "null"] },
+    "haltReason": { "type": ["string", "null"] },
+    "haltClass": { "enum": ["recoverable", "terminal", null] },
+    "dismissed": { "type": "boolean" },
+    "startedAt": { "type": ["string", "null"] },
+    "endedAt": { "type": ["string", "null"] },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "label", "enabled", "danger"],
+        "properties": {
+          "id": { "type": "string" },
+          "label": { "type": "string" },
+          "enabled": { "type": "boolean" },
+          "disabledReason": { "type": ["string", "null"] },
+          "primary": { "type": "boolean" },
+          "danger": { "enum": ["none", "confirm", "destructive"] },
+          "params": { "type": "object" }
+        }
+      }
+    }
+  }
+}

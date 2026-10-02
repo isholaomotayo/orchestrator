@@ -16,8 +16,15 @@ test('[P0-3] IPv6 loopback Host is trusted', () => {
   assert.equal(isTrustedRequest({ host: '[::1]:4600' }, 4600), true);
 });
 
-test('[P0-3] Origin "null" (opaque, e.g. file://) falls back to Host check', () => {
-  assert.equal(isTrustedRequest({ host: '127.0.0.1:4600', origin: 'null' }, 4600), true);
+test('[P0-3] Origin "null" (opaque: sandboxed iframe, file://) is not trusted for a state change', () => {
+  assert.equal(isTrustedRequest({ host: '127.0.0.1:4600', origin: 'null' }, 4600), false);
+});
+
+test('[P0-3] a GET under a rebinding Host is refused, a loopback one allowed', async () => {
+  const { isLoopbackHost } = await import('./http-guard.mjs');
+  assert.equal(isLoopbackHost({ host: 'attacker.example:4600' }, 4600), false);
+  assert.equal(isLoopbackHost({ host: '127.0.0.1:4601' }, 4600), false);
+  assert.equal(isLoopbackHost({ host: 'localhost:4600' }, 4600), true);
 });
 
 test('[P0-3] malformed Origin is rejected', () => {
