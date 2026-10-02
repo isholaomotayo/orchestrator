@@ -462,3 +462,69 @@ test('a moved roadmap target starts combined validation and requires a fresh app
   assert.equal(rm.workingSha, git('rev-parse', 'pipeline/combined'));
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a respawn keeps the run.json identity it was spawned with', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaac';
+  seedHalted(root, runId, { haltTransient: true });
+  const runPaths = pipelinePaths(root, { runId });
+  writeRunMeta(runPaths, { branch: 'pipeline/feature/F1', baseRef: 'abc123', brief: '.pipeline/control/briefs/x.md' });
+  const rm = readRoadmap(paths);
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(paths, rm);
+  const spawned = [];
+  createSupervisor({
+    repoRoot: root,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  assert.ok(spawned.some((args) => args.includes('--resume')));
+  const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
+  assert.equal(meta.kind, 'plan');
+  assert.equal(meta.featureId, 'F1');
+  assert.equal(meta.branch, 'pipeline/feature/F1');
+  assert.equal(meta.baseRef, 'abc123');
+  assert.equal(meta.brief, '.pipeline/control/briefs/x.md');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a run with no recorded feature is never respawned blind', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-integration-aaaaad';
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('x'), overall: 'halted', haltReason: 'AGENT_ERROR', haltTransient: true });
+  writeRunMeta(runPaths, { runId, phase: 'failed', pid: null, requests: { resume: { at: new Date().toISOString(), why: 'dormant' } } });
+  const spawned = [];
+  createSupervisor({
+    repoRoot: root,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  assert.equal(spawned.length, 0, 'an unidentified run must not be respawned as a default ticket');
+  assert.ok(readAttention(paths).some((a) => a.runId === runId && a.kind === 'respawn-refused'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('stopping the supervisor queues a resume for each live worker', async () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaae';
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  const { spawn } = await import('node:child_process');
+  const worker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  try {
+    writeStatus(runPaths, { ...newStatus('plan'), overall: 'running', featureId: 'F1' });
+    writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'plan', runner: 'cursor', phase: 'spawned', pid: worker.pid });
+    createSupervisor({ repoRoot: root, spawn: () => { throw new Error('no spawn'); }, spawnSync: () => ({ status: 0 }) }).stop();
+    const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
+    assert.ok(meta.requests?.resume, 'a worker interrupted by supervisor stop must be resumed on restart');
+  } finally {
+    worker.kill('SIGKILL');
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

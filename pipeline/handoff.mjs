@@ -9,10 +9,11 @@ import { spawnSync } from 'node:child_process';
 const RESUME_HINTS = {
   MAX_CYCLES: 'Extend the same fix loop: `node pipeline/orchestrator.mjs --resume --extend <n>` (or the dashboard "Extend" button).',
   REGRESSION_BLOCKED: 'A change broke previously passing tests. Inspect the diff and `.pipeline/checker_report.md` BEFORE any resume — regression halts are intentionally not extendable.',
-  MISSING_ARTIFACT: 'A stage exited without producing its artifact. Inspect that stage\'s log under `.pipeline/logs/`, then start a fresh run (or `node pipeline/orchestrator.mjs --resume` if the run is stale/interrupted).',
+  MISSING_ARTIFACT: 'A stage\'s artifact is missing or lacks a required section (named in the halt detail above). Fix that file in place, then `node pipeline/orchestrator.mjs --resume` — it re-validates the artifact and continues from the same step; no fresh run needed.',
   AGENT_ERROR: 'The agent CLI failed. Check authentication and the stage log under `.pipeline/logs/`, then `node pipeline/orchestrator.mjs --resume`.',
   INTEGRITY_VIOLATION: 'A stage wrote pipeline control-plane files it does not own, or a read-only stage mutated the working tree. Its output is untrusted: review the listed files and `git status` BEFORE resuming, and prefer a runner that hard-enforces read-only (claude, codex) for audit stages.',
   INVALID_VERDICT: 'The reviewer produced a report with no parseable verdict line. Read `.pipeline/review_report.md`; if the audit is sound, add "## Verdict: APPROVED|REQUEST_CHANGES|BLOCK" and `node pipeline/orchestrator.mjs --resume`.',
+  ENGINE_ERROR: 'The orchestrator itself hit an unexpected error (see the stage detail above). Report it, then `node pipeline/orchestrator.mjs --resume` to re-enter the failed step.',
   INTERRUPTED: 'The run was interrupted. Resume it: `node pipeline/orchestrator.mjs --resume`.',
 };
 

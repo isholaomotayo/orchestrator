@@ -34,6 +34,7 @@ import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs
 import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } from './roadmap.mjs';
 import { classifyEvent, appendAttention, ackAttention, readAttention, openDecision, openDecisions, readDecisions, resolveDecision } from './attention.mjs';
 import * as pool from './pool.mjs';
+import { recoveryFor } from './recoverability.mjs';
 import {
   createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles, branchExists,
 } from './worktrees.mjs';
@@ -161,7 +162,7 @@ export function createSupervisor({
   // in chat, exactly like single-run mode already works). Only the former
   // needs an authenticated CLI on the machine; the latter is the zero-setup
   // default a roadmap runs under with nothing authenticated anywhere.
-  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, runner, extra = [] }) {
+  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, runner, extra = [], resume = false }) {
     const runPaths = pipelinePaths(repoRoot, { runId });
     fs.mkdirSync(runPaths.dir, { recursive: true });
 
@@ -190,9 +191,11 @@ export function createSupervisor({
       '--runner', runner,
       '--feature-id', featureId,
       ...(ticketId ? ['--ticket-id', ticketId] : []),
-      ...(brief ? ['--brief-file', brief] : []),
-      ...(branch ? ['--branch', branch] : []),
-      ...(baseRef ? ['--base-ref', baseRef] : []),
+      // A respawn re-enters an existing run from its own status.json; these
+      // identify the run for run.json only, never as fresh-run flags.
+      ...(!resume && brief ? ['--brief-file', brief] : []),
+      ...(!resume && branch ? ['--branch', branch] : []),
+      ...(!resume && baseRef ? ['--base-ref', baseRef] : []),
       ...extra,
     ];
     const outFile = path.join(runPaths.dir, 'orchestrator.out');
@@ -1038,7 +1041,19 @@ export function createSupervisor({
           // `pool claim`), never by the supervisor respawning it — and
           // orchestrator.mjs's own --resume guard does not accept that state
           // anyway.
-          respawn(run, run.status.overall === 'awaiting_plan_approval' ? ['--continue'] : ['--resume']);
+          const approval = run.status.overall === 'awaiting_plan_approval';
+          // A dormant request must not resurrect a run the engine would refuse
+          // (a dismissal, a regression halt): drop it instead of respawning.
+          if (approval || recoveryFor(run.status, { engineAlive: run.pidAlive }).resume) {
+            respawn(run, approval ? ['--continue'] : ['--resume']);
+            resumingThisTick.add(run.runId);
+          } else {
+            log(`dropped resume request for ${run.runId}: ${recoveryFor(run.status).reason}`);
+          }
+          clearRequests(run);
+        } else if (requests.resume && run.status?.overall === 'running' && !run.pidAlive) {
+          // The worker died without recording a halt (SIGKILL, crash): stale.
+          respawn(run, ['--resume']);
           resumingThisTick.add(run.runId);
           clearRequests(run);
         }
@@ -1211,25 +1226,33 @@ export function createSupervisor({
 
   function respawn(run, extra) {
     const meta = run.meta || {};
+    // Without a recorded feature the run cannot be re-entered safely: the old
+    // fallback respawned it as a default 'ticket' and rewrote its run.json.
+    if (!meta.featureId || !meta.kind) {
+      raiseAttention({
+        runId: run.runId, kind: 'respawn-refused', escalate: true,
+        summary: `Run ${run.runId} was not resumed: its run.json does not record which feature it belongs to. Inspect it, then retry the feature or dismiss the run.`,
+      });
+      log(`respawn refused for ${run.runId}: no recorded featureId/kind`);
+      return null;
+    }
     // Reuse whatever runner this run was actually spawned with — never
     // re-derive from the feature, which may have been edited since.
-    spawnWorker({
+    return spawnWorker({
       runId: run.runId, featureId: meta.featureId, ticketId: meta.ticketId,
-      kind: meta.kind || 'ticket', brief: null, branch: null, baseRef: null,
+      kind: meta.kind, branch: meta.branch, baseRef: meta.baseRef,
+      brief: meta.brief ? path.resolve(repoRoot, meta.brief) : null,
       runner: resolvePoolRunner(meta.runner),
-      extra,
+      extra, resume: true,
     });
   }
 
   function resumableHalt(run) {
     if (run.status?.overall !== 'halted') return false;
-    const reason = run.status.haltReason;
     if (Number(run.meta?.autoResumes || 0) >= poolCfg.autoResumeMax) return false;
-    if (reason === 'MAX_CYCLES') {
-      if (Number(run.meta?.autoCycleExtends || 0) >= 1) return false;
-      return true;
-    }
-    return reason === 'AGENT_ERROR' && run.status.haltTransient === true;
+    const recovery = recoveryFor(run.status);
+    if (recovery.extend) return Number(run.meta?.autoCycleExtends || 0) < 1;
+    return recovery.autoResume;
   }
 
   function isRetrying(run) {
@@ -1287,6 +1310,9 @@ export function createSupervisor({
     // handler marks them INTERRUPTED so they can be resumed rather than lost.
     for (const run of pool.listRunStates(paths, poolCfg, now())) {
       if (run.pidAlive && run.pid) {
+        // Queue the resume first: the worker halts as INTERRUPTED, and the next
+        // supervisor picks it back up instead of failing its ticket.
+        pool.markResumeRequested(paths, run.runId, 'supervisor stopped');
         try { process.kill(run.pid, 'SIGTERM'); } catch { /* already gone */ }
         appendRunVerb(pipelinePaths(repoRoot, { runId: run.runId }), 'paused', 'supervisor stopping');
       }

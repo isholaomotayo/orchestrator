@@ -49,7 +49,7 @@ export function createApi(projectRef) {
     continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
     cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
-    extendRun: (cycles, run) => post('/api/extend', { cycles, ...(run ? { run } : {}) }),
+    extendRun: (cycles, run) => post('/api/extend', { extend: cycles, ...(run ? { run } : {}) }),
     dismissRun: (run, reason) => post('/api/run/dismiss', { run, reason }),
   };
 }

@@ -213,3 +213,58 @@ test('--resume --runner <external> with --mode chat converges onto host even tho
   assert.equal(status.invocationMode, 'chat');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// ---- Recovery: every halt the recoverability table says is resumable must be
+// accepted by the engine itself (the supervisor relies on it).
+
+function hostRunAwaitingPlanner(root, paths) {
+  const started = run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--no-ui']);
+  assert.equal(started.status, 0, started.stdout + started.stderr);
+  return readStatus(paths);
+}
+
+test('--resume picks up a stale run whose engine died while running', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    const status = hostRunAwaitingPlanner(root, paths);
+    // Simulate an engine killed mid-stage: marked running, no live lock owner.
+    fs.writeFileSync(paths.status, JSON.stringify({ ...status, overall: 'running' }));
+    const res = run(root, ['--resume', '--no-ui']);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.equal(readStatus(paths).overall, 'awaiting_chat');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('--resume accepts a transient AGENT_ERROR halt (what supervisor auto-resume sends)', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    const status = hostRunAwaitingPlanner(root, paths);
+    fs.writeFileSync(paths.status, JSON.stringify({ ...status, overall: 'halted', haltReason: 'AGENT_ERROR', haltTransient: true }));
+    const res = run(root, ['--resume', '--no-ui']);
+    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.equal(readStatus(paths).overall, 'awaiting_chat');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('--resume after MISSING_ARTIFACT refuses until the artifact validates, then continues', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    hostRunAwaitingPlanner(root, paths);
+    fs.writeFileSync(paths.specs, '# Specification\n\nToo thin.\n');
+    const haltedRun = run(root, ['--continue', '--no-ui']);
+    assert.notEqual(haltedRun.status, 0);
+    assert.equal(readStatus(paths).haltReason, 'MISSING_ARTIFACT');
+
+    const refused = run(root, ['--resume', '--no-ui']);
+    assert.notEqual(refused.status, 0);
+    assert.match(refused.stderr, /specs\.md/);
+    assert.equal(readStatus(paths).haltReason, 'MISSING_ARTIFACT');
+
+    fs.writeFileSync(paths.specs, validSpec());
+    const resumed = run(root, ['--resume', '--no-ui']);
+    assert.equal(resumed.status, 0, resumed.stdout + resumed.stderr);
+    const after = readStatus(paths);
+    assert.equal(after.overall, 'awaiting_chat');
+    assert.equal(after.awaitingStage, 'plan_reviewer');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

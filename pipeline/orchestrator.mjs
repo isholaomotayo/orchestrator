@@ -18,6 +18,8 @@ import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconci
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
+import { recoveryFor } from './recoverability.mjs';
+import { STAGE_ARTIFACT_FILES } from './stages.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES, ORCHESTRATOR_OWNED_FILES } from './integrity.mjs';
 import { parseVerdict, validateArtifactFile, detectTestWeakening, detectPassDrop, compactChangelog } from './artifacts.mjs';
@@ -356,20 +358,24 @@ if (args.continue) {
     loadHistory();
     console.log(`[Orchestrator] Resuming pipeline (phase=${status.haltedPhase}, +${args.extend} cycles)${dashboardMsg}`);
   } else {
-    const lock = readLock(paths);
-    const stale = onDisk.overall === 'running' && !(lock && pidAlive(lock.pid));
-    const isInterrupted = onDisk.overall === 'halted' && onDisk.haltReason === 'INTERRUPTED';
-    if (onDisk.overall === 'done') {
-      console.error('[Orchestrator] Cannot resume: the last run completed successfully.');
+    // We hold the lock (acquireLock exits if a live engine owns it), so any
+    // previous engine for this run is gone — a 'running' status is stale. The
+    // old check re-read the lock *after* taking it, saw its own live pid, and
+    // so refused every stale resume.
+    const recovery = recoveryFor(onDisk, { engineAlive: false });
+    if (!recovery.resume) {
+      const hint = recovery.extend ? ` Use --resume --extend <n> to add cycles.` : '';
+      console.error(`[Orchestrator] Cannot resume: ${recovery.reason}.${hint}`);
       haltAndExit(1);
     }
-    if (onDisk.overall === 'halted' && onDisk.haltReason !== 'INTERRUPTED') {
-      console.error(`[Orchestrator] Cannot resume: last run's halt reason was "${onDisk.haltReason}". Resuming is only supported for interrupted or stale runs.`);
-      haltAndExit(1);
-    }
-    if (!isInterrupted && !stale) {
-      console.error(`[Orchestrator] Cannot resume: last run is in state "${onDisk.overall}" (haltReason=${onDisk.haltReason}) and is not stale.`);
-      haltAndExit(1);
+    if (recovery.needsValidArtifact) {
+      const haltedStage = onDisk.haltedStage || (onDisk.stages || []).find((s) => s.status === 'failed')?.name;
+      const file = haltedStage && STAGE_ARTIFACT_FILES[haltedStage] ? path.join(paths.dir, STAGE_ARTIFACT_FILES[haltedStage]) : null;
+      const check = file ? validateArtifactFile(haltedStage, file) : { ok: false, reason: 'the halted stage is unknown' };
+      if (!check.ok) {
+        console.error(`[Orchestrator] Cannot resume yet: ${file ? path.relative(repoRoot, file) : 'the artifact'} is still unusable (${check.reason}). Fix it, then run --resume again.`);
+        haltAndExit(1);
+      }
     }
     status = onDisk;
     ensureStageEntries(status);
@@ -623,6 +629,7 @@ function halt(stageName, reason, detail, extra = {}) {
   setStage(stageName, { status: reason === 'REGRESSION_BLOCKED' ? 'blocked' : 'failed', endedAt: new Date().toISOString(), detail });
   status.overall = 'halted';
   status.haltReason = reason;
+  status.haltedStage = stageName;
   status.haltTransient = extra.haltTransient === true || reason === 'MAX_CYCLES';
   if (writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot })) {
     console.error(`[HALT] Handoff document written: ${path.relative(repoRoot, paths.handoffDoc)}`);
@@ -1472,6 +1479,10 @@ async function planApprovalContinueRun() {
 async function chatContinueRun() {
   const resume = status.chatResume;
   status.chatResume = null;
+  // If this continuation halts (e.g. the host's artifact is missing a
+  // section), --resume must re-enter right here — not re-hand the stage that
+  // was already done, which is what the pre-handoff resumePoint would do.
+  status.resumePoint = resume;
 
   let actualModel = null;
   let parsedHandoff = null;
@@ -1775,10 +1786,13 @@ async function dispatchResumeStep(step, context = {}) {
 
 async function resumeInterruptedRun() {
   // ensureRunDefaults already ran in the --resume branch above that dispatches here.
+  const resumedFrom = status.haltReason || 'stale';
   status.overall = 'running';
   status.haltReason = null;
+  status.haltedStage = null;
+  status.haltTransient = false;
   writeStatus(paths, status);
-  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted' });
+  appendEvent(paths, { stage: 'orchestrator', type: 'pipeline_resume_interrupted', from: resumedFrom });
 
   const { step, context = {} } = getResumePoint();
   console.log(`[Orchestrator] Resuming interrupted run at step: ${step}${context.cycle ? ` (cycle ${context.cycle}, loop ${context.loop})` : ''}`);
@@ -1826,6 +1840,22 @@ async function resumeRun() {
 
 (args.continue ? (planApprovalPending ? planApprovalContinueRun() : chatContinueRun()) : args.resume ? (args.extend !== null ? resumeRun() : resumeInterruptedRun()) : freshRun()).catch((err) => {
   console.error('[Orchestrator] Uncaught error:', err);
-  if (status) { status.overall = 'halted'; status.haltReason = 'AGENT_ERROR'; finalize(); }
+  if (status) {
+    // An engine bug, not an agent failure: keep the run resumable and say so,
+    // instead of leaving stages 'running' with no handoff document.
+    status.overall = 'halted';
+    status.haltReason = 'ENGINE_ERROR';
+    status.haltTransient = false;
+    for (const s of status.stages || []) {
+      if (s.status === 'running') {
+        s.status = 'failed';
+        s.endedAt = new Date().toISOString();
+        s.detail = `Engine error: ${err?.message || err}`;
+        status.haltedStage = s.name;
+      }
+    }
+    writeHaltHandoff({ paths, status, history: history || null, cwd: workCwd || repoRoot });
+    finalize();
+  }
   haltAndExit(1);
 });

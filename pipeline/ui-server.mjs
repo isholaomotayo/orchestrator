@@ -14,6 +14,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths, loadConfig, pidAlive, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
+import { recoveryFor } from './recoverability.mjs';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, EFFORT_LEVELS, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest } from './http-guard.mjs';
@@ -271,10 +272,11 @@ function readState(project, runId) {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
   const { byStage, totalCost, costPartial } = readEventsByStage(dir);
-  const canExtend = !alive && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
-  const canResume = !alive &&
-    ((status?.overall === 'halted' && status?.haltReason === 'INTERRUPTED') ||
-      (status?.overall === 'running' && stale));
+  // Same table the engine's --resume guard and the supervisor read, so a
+  // button is only offered when the engine will actually accept it.
+  const recovery = status ? recoveryFor(status, { engineAlive: alive }) : null;
+  const canExtend = !alive && !!recovery?.extend;
+  const canResume = !alive && !!recovery?.resume;
   const canApprovePlan = !alive && status?.overall === 'awaiting_plan_approval';
   const canContinue = !alive && status?.overall === 'awaiting_chat';
   const canCancel = alive;
@@ -552,11 +554,8 @@ function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
   const target = targetRun(project, run);
   if (target.error) return target;
   if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
-  const stale = target.status.overall === 'running' && !runProcessAlive(target.runPaths);
-  const isInterrupted = target.status.overall === 'halted' && target.status.haltReason === 'INTERRUPTED';
-  if (!isInterrupted && !stale) {
-    return { error: `cannot resume: run is not interrupted or stale (overall=${target.status.overall}, haltReason=${target.status.haltReason})`, code: 409 };
-  }
+  const recovery = recoveryFor(target.status, { engineAlive: false });
+  if (!recovery.resume) return { error: `cannot resume: ${recovery.reason}`, code: 409 };
   const nodeArgs = [orchestratorEntry(project), '--resume'];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
