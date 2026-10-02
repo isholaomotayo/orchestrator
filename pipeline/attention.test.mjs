@@ -185,14 +185,27 @@ test('an unchanged claim-run does not re-escalate on every tick', () => {
   assert.equal(ev, null);
 });
 
-test('an unclaimed host run stays quiet even after the old resurface window', () => {
-  const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder' } };
-  // Still within the claim window — must not re-surface.
-  const tooSoon = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(T.pauseResurfaceMs + 1000), now }, T);
-  assert.equal(tooSoon, null, 'claim-run must not re-surface at the 1h pauseResurfaceMs cadence');
-  // Beyond the old claim window it still belongs to the agent queue.
-  const later = classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(86_400_000 + 1000), now }, T);
-  assert.equal(later, null);
+test('a host run parked for a chat agent escalates with age, one level at a time', () => {
+  const awaitingChat = { state: 'awaiting', verb: 'needs-decision', status: { overall: 'awaiting_chat', awaitingStage: 'coder', handoffId: 'h1' } };
+  const at = (ms) => classifyEvent({ ...base, previous: { state: 'awaiting', verb: 'needs-decision' }, current: awaitingChat, verbSince: ago(ms), now }, T);
+  assert.equal(at(5 * 60_000), null, 'a normal pickup (minutes) stays quiet');
+  const first = at(11 * 60_000);
+  assert.equal(first.kind, 'awaiting-agent');
+  assert.equal(first.level, 1);
+  assert.equal(first.escalate, true);
+  assert.equal(first.handoffId, 'h1');
+  assert.match(first.summary, /coder/);
+  assert.equal(at(61 * 60_000).level, 2);
+  assert.equal(at(5 * 3_600_000).level, 3, 'a 13h stall is impossible to miss');
+});
+
+test('the parked clock starts when the awaited stage started, not when the run did', () => {
+  const status = {
+    overall: 'awaiting_chat', awaitingStage: 'tester', handoffId: 'h2',
+    stages: [{ name: 'tester', startedAt: ago(2 * 60_000) }],
+  };
+  const ev = classifyEvent({ ...base, previous: { state: 'awaiting' }, current: { state: 'awaiting', status }, verbSince: ago(9 * 3_600_000), now }, T);
+  assert.equal(ev, null);
 });
 
 test('a declared pause resurfaces only after the recheck window', () => {

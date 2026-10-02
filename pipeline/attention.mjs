@@ -22,7 +22,17 @@ export const DEFAULT_THRESHOLDS = {
   staleEscalateMs: 240_000,
   // How often a declared wait or hold is put back in front of a human.
   pauseResurfaceMs: 3_600_000,
+  // A host run parked for a chat agent: notify at each of these ages. Median
+  // field pickup is under a minute, so the first level only fires on a real
+  // stall (petra had a 13h one with no signal at all).
+  parkedEscalateMs: [600_000, 3_600_000, 14_400_000],
 };
+
+// When the awaited stage was handed to the chat agent.
+function parkedSince(status, fallback) {
+  const row = (status?.stages || []).find((s) => s.name === status?.awaitingStage);
+  return row?.startedAt || fallback || null;
+}
 
 // Verbs that mean the run is waiting on a person rather than on itself.
 const WAITING_VERBS = ['needs-decision', 'blocked', 'paused', 'held'];
@@ -96,7 +106,23 @@ export function classifyEvent({
     // answer, it is an invitation to do the stage's work directly in chat —
     // give it its own kind so the coordinator/dashboard can tell the two apart
     // and print the exact command to pick it up.
-    if (current.status?.overall === 'awaiting_chat') return null;
+    if (current.status?.overall === 'awaiting_chat') {
+      // Quiet while a chat agent would normally pick it up, then one item per
+      // escalation level. The supervisor replaces a lower level with a higher
+      // one, and acks it when the run moves on.
+      const since = parkedSince(current.status, verbSince);
+      const age = since ? now - Date.parse(since) : NaN;
+      const levels = thresholds.parkedEscalateMs || DEFAULT_THRESHOLDS.parkedEscalateMs;
+      const level = Number.isNaN(age) ? 0 : levels.filter((ms) => age >= ms).length;
+      if (!level) return null;
+      const stage = current.status.awaitingStage || 'next';
+      const mins = Math.round(age / 60_000);
+      const wait = mins >= 120 ? `${Math.round(mins / 60)}h` : `${mins} min`;
+      return {
+        ...make('awaiting-agent', true, `The ${stage} stage has waited ${wait} for a chat agent. Pick it up with \`bash .pipeline/orchestrate.sh pool claim ${runId}\`.`),
+        level, waitingSince: since,
+      };
+    }
     const verb = current.verb;
     if (changed) {
       if (verb === 'needs-decision') {

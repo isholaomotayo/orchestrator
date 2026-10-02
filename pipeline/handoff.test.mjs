@@ -116,3 +116,24 @@ test('writeHaltHandoff writes the doc and never throws', () => {
   assert.equal(writeHaltHandoff({ paths: { root: dir, handoffDoc: path.join(dir, 'nope', 'x.md') }, status: haltedStatus('AGENT_ERROR') }), false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a pool run handoff points at its own run directory and pool verbs', () => {
+  const status = {
+    ...newStatus('- **Goal:** Ship notifications'), runId: 'r-123', featureId: 'F1',
+    overall: 'halted', haltReason: 'MISSING_ARTIFACT',
+  };
+  const md = compileHaltHandoff({ status, dir: '.pipeline/runs/r-123' });
+  assert.match(md, /- \*\*Goal:\*\* Ship notifications/);
+  assert.doesNotMatch(md, /\*\*Goal:\*\* - \*\*Goal:\*\*/);
+  assert.match(md, /`\.pipeline\/runs\/r-123\/changes\.md`/);
+  assert.doesNotMatch(md, /`\.pipeline\/changes\.md`/);
+  assert.match(md, /pool resume-run r-123/);
+  assert.match(md, /--continue --run-id r-123/);
+  assert.doesNotMatch(md, /start a fresh run/);
+});
+
+test('a single-run handoff keeps the classic paths and commands', () => {
+  const md = compileHaltHandoff({ status: { ...newStatus('x'), overall: 'halted', haltReason: 'INTERRUPTED' } });
+  assert.match(md, /`\.pipeline\/changes\.md`/);
+  assert.match(md, /node pipeline\/orchestrator\.mjs --resume/);
+});

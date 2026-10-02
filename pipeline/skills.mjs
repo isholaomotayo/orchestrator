@@ -120,7 +120,7 @@ export function verifySkill(skill, { repoRoot, paths, home = os.homedir() } = {}
   if (!dir) return { ok: false, reason: 'missing_dir', detail: 'the skill directory does not exist' };
   const pin = readPin(paths, skill.name);
   if (!pin) {
-    return { ok: false, reason: 'unpinned', detail: `no pin recorded — run \`node pipeline/skills.mjs pin ${skill.name}\` after reviewing it` };
+    return { ok: false, reason: 'unpinned', detail: `no pin recorded — run \`node pipeline/skills-cli.mjs pin ${skill.name}\` after reviewing it` };
   }
   if (skill.source.type === 'git' && skill.source.sha256) {
     const pinHash = crypto.createHash('sha256').update(fs.readFileSync(pinPath(paths, skill.name))).digest('hex');

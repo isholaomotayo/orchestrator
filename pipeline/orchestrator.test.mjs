@@ -249,11 +249,13 @@ test('--resume accepts a transient AGENT_ERROR halt (what supervisor auto-resume
 test('--resume after MISSING_ARTIFACT refuses until the artifact validates, then continues', () => {
   const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
   try {
-    hostRunAwaitingPlanner(root, paths);
+    const status = hostRunAwaitingPlanner(root, paths);
+    // The shape an older engine (or a CLI stage) leaves behind.
+    fs.writeFileSync(paths.status, JSON.stringify({
+      ...status, overall: 'halted', haltReason: 'MISSING_ARTIFACT', haltedStage: 'planner',
+      chatResume: null, resumePoint: { step: 'after_planner', context: {} },
+    }));
     fs.writeFileSync(paths.specs, '# Specification\n\nToo thin.\n');
-    const haltedRun = run(root, ['--continue', '--no-ui']);
-    assert.notEqual(haltedRun.status, 0);
-    assert.equal(readStatus(paths).haltReason, 'MISSING_ARTIFACT');
 
     const refused = run(root, ['--resume', '--no-ui']);
     assert.notEqual(refused.status, 0);
@@ -266,5 +268,39 @@ test('--resume after MISSING_ARTIFACT refuses until the artifact validates, then
     const after = readStatus(paths);
     assert.equal(after.overall, 'awaiting_chat');
     assert.equal(after.awaitingStage, 'plan_reviewer');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('--continue with an incomplete artifact keeps the run awaiting chat with an exact fix, instead of halting', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    hostRunAwaitingPlanner(root, paths);
+    fs.writeFileSync(paths.specs, '# Specification\n\nToo thin.\n');
+    const rejected = run(root, ['--continue', '--no-ui']);
+    assert.notEqual(rejected.status, 0);
+    assert.match(rejected.stderr, /specs\.md/);
+    const held = readStatus(paths);
+    assert.equal(held.overall, 'awaiting_chat');
+    assert.equal(held.awaitingStage, 'planner');
+    assert.equal(held.haltReason, null);
+
+    fs.writeFileSync(paths.specs, validSpec());
+    const accepted = run(root, ['--continue', '--no-ui']);
+    assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a host that reports its client name as the model is not recorded as that model', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    hostRunAwaitingPlanner(root, paths);
+    const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+    fs.writeFileSync(paths.stageHandoff, JSON.stringify({ ...handoff, actualModel: 'antigravity' }));
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    const planner = readStatus(paths).stages.find((s) => s.name === 'planner');
+    assert.notEqual(planner.actualModel, 'antigravity');
+    assert.notEqual(planner.modelSource, 'host-reported');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

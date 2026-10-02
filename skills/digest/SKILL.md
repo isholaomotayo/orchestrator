@@ -2,7 +2,7 @@
 name: digest
 description: Show the current state of a roadmap run in four sections — what needs your decision, what is in progress, what recently landed, and what is up next. Use when the user asks for status, "where are we", "what is running", or invokes /digest.
 when_to_use: The user asks about the state of an orchestrator pool or roadmap run, or types /digest.
-allowed-tools: Bash(node pipeline/pool.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read
+allowed-tools: Bash(node pipeline/pool-cli.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read
 ---
 
 # Digest

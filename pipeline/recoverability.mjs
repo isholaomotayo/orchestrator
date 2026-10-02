@@ -10,6 +10,10 @@
 //   needsValidArtifact — resume is allowed only once the halted stage's
 //                 artifact validates (a human or host agent fixed it).
 
+import path from 'node:path';
+import { validateArtifactFile } from './artifacts.mjs';
+import { STAGE_ARTIFACT_FILES } from './stages.mjs';
+
 const NONE = { resume: false, autoResume: false, extend: false, needsValidArtifact: false };
 
 export function recoveryFor(status, { engineAlive = false } = {}) {
@@ -38,4 +42,17 @@ export function recoveryFor(status, { engineAlive = false } = {}) {
     default:
       return { ...NONE, reason: `halt reason "${status.haltReason}" needs a human decision, not a resume` };
   }
+}
+
+/**
+ * For a halt that needs a fixed artifact: does the halted stage's artifact in
+ * `dir` validate now? Returns { ok, file, reason }.
+ */
+export function haltedArtifactCheck(status, dir) {
+  const stage = status?.haltedStage || (status?.stages || []).find((s) => s.status === 'failed')?.name;
+  const name = stage && STAGE_ARTIFACT_FILES[stage];
+  if (!name) return { ok: false, file: null, reason: 'the halted stage is unknown' };
+  const file = path.join(dir, name);
+  const check = validateArtifactFile(stage, file);
+  return { ok: check.ok, file, reason: check.reason || null };
 }

@@ -55,7 +55,7 @@ bash .agents/skills/orchestrate/scripts/bootstrap.sh
 
 **The attending chat owns host stages.** In single-run chat mode complete each stage from `stage-handoff.json` and run `--continue`. In roadmap mode, authenticated CLI workers run only when explicitly opted in. Everything else defaults to `runner: host`. Read `pool status --json` or `pool digest`, take `agentQueue.current`, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that handoff, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Repeat without asking the user after each stage, until the queue is empty or a genuine human decision blocks progress. Respect an existing bridge owner or lease; do not compete for its handoff. Routine host work belongs in Agent queue, not Needs attention. If chat closes, queued work remains quiet until an attending chat resumes it.
 
-**Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
+**Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool-cli.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
 
 **Workspace isolation.** Treat `.pipeline/`, `.pipeline_sandbox/` (legacy), `.pipeline/runs/`, `.pipeline/worktrees/` and `.pipeline/control/` as READ-ONLY unless you are completing an assigned stage. Never `cd` into or edit anything under `.pipeline/worktrees/<runId>` — a worker owns that tree. Change pool state only through `pool` verbs.
 
@@ -74,4 +74,4 @@ explicitly agreed to, even when a review is APPROVED.
 
 **Third-party skills** are declared in `.pipeline/config.json` and pinned by
 hash. A skill whose bytes changed is refused for that run and reported — pin it
-again with `node pipeline/skills.mjs pin <name>` only after reviewing the change.
+again with `node pipeline/skills-cli.mjs pin <name>` only after reviewing the change.

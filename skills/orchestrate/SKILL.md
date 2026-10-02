@@ -9,7 +9,7 @@ arguments:
   - mode
   - runner
 disable-model-invocation: true
-allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool.mjs *) Bash(node pipeline/skills.mjs *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt) Write(.pipeline/roadmap.md)
+allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool-cli.mjs *) Bash(node pipeline/skills-cli.mjs *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt) Write(.pipeline/roadmap.md)
 ---
 
 # Orchestrate
@@ -22,7 +22,7 @@ The operating contract is one skill and one command for the whole request; an in
 
 !`[ -f .pipeline/.lock ] && cat .pipeline/.lock || echo "No active pipeline run"`
 
-!`[ -d .pipeline/control ] && node pipeline/pool.mjs status --json 2>/dev/null | head -40 || echo "No roadmap pool in this project"`
+!`[ -d .pipeline/control ] && node pipeline/pool-cli.mjs status --json 2>/dev/null | head -40 || echo "No roadmap pool in this project"`
 
 !`[ -f .pipeline/status.json ] && cat .pipeline/status.json || echo "No status.json"`
 
@@ -107,12 +107,15 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
      ```
    - **Check Followups**: Periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file.
    - **Stage Completion Summary**: Emit your final summary event right before invoking `--continue`.
-4. Set `"actualModel": "your model name"` in `stage-handoff.json`.
+4. Set `"actualModel"` in `stage-handoff.json` to the **model** that did the work (e.g. `gemini-3.1-pro`), never your client's name (`antigravity`, `cursor`) — a client name is recorded as unknown.
 5. Resume:
    ```bash
    bash .pipeline/orchestrate.sh --continue
    ```
+   If the artifact is missing a required section, `--continue` exits non-zero, names the file and section, and the run **stays** awaiting this stage. Fix the artifact and run `--continue` again — never edit `status.json` by hand.
 6. Repeat until the pipeline finishes or halts.
+
+**Bridge (managed) runs.** When `stage-handoff.json` has a `bridge` block and you claimed the run (`pool claim <runId>` / `run.claim`), you hold a lease: follow `bridge.instructions`, checkpoint as it says, and complete through `bridge.command` instead of a plain `--continue` — a claimed run refuses completion without its credentials. An unclaimed run uses the plain `--continue` above, and operator notes arrive in `.pipeline/followups/<stage>.txt`.
 
 When status is `awaiting_plan_approval` (an explicit `--approve-plan` gate, a blocked agent verdict, or exhausted revisions): present `.pipeline/specs.md` and `.pipeline/plan_review.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
 
@@ -152,12 +155,14 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 
 | Halt Code | Action |
 |-----------|--------|
-| `MAX_CYCLES` | Surface `.pipeline/checker_report.md`, suggest `bash .pipeline/orchestrate.sh --resume --extend 5` |
+| `MAX_CYCLES` | Surface `.pipeline/checker_report.md`, suggest `bash .pipeline/orchestrate.sh --resume --extend 5` (pool: `pool extend <runId> 5`) |
 | `REGRESSION_BLOCKED` | Surface `.pipeline/checker_report.md`, human review required |
-| `MISSING_ARTIFACT` | Inspect `.pipeline/logs/planner.log` — often a CLI auth failure in CLI mode |
+| `MISSING_ARTIFACT` | The halt detail names the file and missing section. Fix that file in place, then `bash .pipeline/orchestrate.sh --resume` (pool: `pool resume-run <runId>`) — it re-validates and continues the same step. No fresh run, no hand-edited state |
 | `AGENT_ERROR` | CLI auth/spawn failure — suggest `--mode chat` from IDE or log in to the CLI tool |
 | `INTEGRITY_VIOLATION` | A stage wrote control-plane files it does not own, or a "read-only" stage edited the tree. Surface the listed files; the stage's output is untrusted — human review required |
-| `INVALID_VERDICT` | `.pipeline/review_report.md` has no parseable verdict. Show the report and ask whether to add the verdict line and `--resume` |
+| `INVALID_VERDICT` | `.pipeline/review_report.md` has no parseable verdict. Show the report and ask whether to add the verdict line and `--resume` (pool: `pool resume-run <runId>`) |
+| `ENGINE_ERROR` | The orchestrator itself failed. Surface the stage detail, then `--resume` re-enters the failed step |
+| `INTERRUPTED` / transient `AGENT_ERROR` | `--resume`; in pool mode the supervisor resumes these on its own |
 
 ### 9. Workspace Isolation
 

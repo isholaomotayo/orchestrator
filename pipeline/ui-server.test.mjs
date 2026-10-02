@@ -435,3 +435,17 @@ test('/api/run/dismiss marks run dismissed and updates status', withServer(async
   assert.equal(updatedStatus.overall, 'halted');
   assert.equal(updatedStatus.dismissed, true);
 }));
+
+test('a note on an unclaimed bridge-required host run uses followups and never enrolls it in ownership', withServer(async ({ post, root }) => {
+  const r3 = pipelinePaths(root, { runId: 'r3' });
+  fs.mkdirSync(r3.dir, { recursive: true });
+  fs.writeFileSync(r3.status, JSON.stringify({
+    overall: 'awaiting_chat', awaitingStage: 'coder', bridgeRequired: true, handoffId: 'h1',
+    stages: [{ name: 'coder', status: 'awaiting_host' }],
+  }));
+  const res = await post('/api/followup', { stage: 'coder', text: 'use the existing helper', run: 'r3' });
+  assert.equal(res.status, 200, await res.text());
+  assert.match(fs.readFileSync(path.join(r3.dir, 'followups', 'coder.txt'), 'utf8'), /existing helper/);
+  const { inspectBridge } = await import('./bridge.mjs');
+  assert.equal(inspectBridge(root, 'r3').ownershipRequired, false, 'a plain --continue must still work');
+}));

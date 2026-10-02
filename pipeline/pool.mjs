@@ -26,6 +26,7 @@ import { classifyRun, DEFAULT_THRESHOLDS,
 } from './attention.mjs';
 import { buildSnapshot, renderDigest } from './snapshot.mjs';
 import { queueStageNote } from './events.mjs';
+import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -37,6 +38,7 @@ export function poolConfig(config) {
     staleAfterMs: raw.staleAfterMs ?? DEFAULT_THRESHOLDS.staleAfterMs,
     staleEscalateMs: raw.staleEscalateMs ?? DEFAULT_THRESHOLDS.staleEscalateMs,
     pauseResurfaceMs: raw.pauseResurfaceMs ?? DEFAULT_THRESHOLDS.pauseResurfaceMs,
+    parkedEscalateMs: raw.parkedEscalateMs ?? DEFAULT_THRESHOLDS.parkedEscalateMs,
     autoResumeMax: raw.autoResumeMax ?? 2,
     serializeOnFileOverlap: raw.serializeOnFileOverlap !== false,
     featurePlanApproval: raw.featurePlanApproval === true,
@@ -476,6 +478,26 @@ export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli'
  * Ask the supervisor to move a run forward. The supervisor owns spawning, so a
  * verb never starts a process itself: it records intent and returns.
  */
+/**
+ * Operator verb: ask the supervisor to resume one halted run in place. Checks
+ * the same recoverability table the engine will apply, so the operator gets
+ * the refusal now instead of a silent failed respawn later.
+ */
+export function requestRunResume(paths, runId) {
+  if (!isValidRunId(runId)) return { ok: false, reason: `invalid run id: ${runId}` };
+  const runPaths = pipelinePaths(paths.root, { runId });
+  let status = null;
+  try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* reported below */ }
+  if (!status) return { ok: false, reason: `run ${runId} has no status.json` };
+  const recovery = recoveryFor(status, { engineAlive: false });
+  if (!recovery.resume) return { ok: false, reason: recovery.reason };
+  if (recovery.needsValidArtifact) {
+    const check = haltedArtifactCheck(status, runPaths.dir);
+    if (!check.ok) return { ok: false, reason: `${check.file ? path.relative(paths.root, check.file) : 'the artifact'} is still unusable (${check.reason})` };
+  }
+  return { ok: true, request: markResumeRequested(paths, runId, 'operator resume-run') };
+}
+
 export function markResumeRequested(paths, runId, why) {
   const runPaths = pipelinePaths(paths.root, { runId });
   const meta = readRunMeta(runPaths) || {};

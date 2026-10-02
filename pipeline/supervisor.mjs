@@ -978,6 +978,13 @@ export function createSupervisor({
     for (const run of runs) {
       for (const item of pendingAtTickStart) {
         if (item.runId !== run.runId) continue;
+        // A parked-run alert stays up while that same handoff is still waiting.
+        if (item.kind === 'awaiting-agent' && run.status?.overall === 'awaiting_chat'
+          && item.handoffId === (run.status?.handoffId ?? null)) continue;
+        if (item.kind === 'awaiting-agent') {
+          ackAttention(paths, item.id, { by: 'supervisor:state-advanced' });
+          continue;
+        }
         if (run.status?.overall === 'awaiting_chat' &&
           (['claim-run', 'awaiting-chat'].includes(item.kind) ||
             (item.kind === 'needs-decision' && /awaiting-chat:/i.test(item.summary || '')))) {
@@ -1008,8 +1015,17 @@ export function createSupervisor({
       }, poolCfg);
       if (event) {
         const episodeKey = [run.runId, event.kind, run.status?.endedAt || run.meta?.spawnedAt || '',
-          event.kind === 'stale' ? run.lastOutputAt : run.verbSince || '', event.handoffId || ''].join('|');
+          event.kind === 'stale' ? run.lastOutputAt : run.verbSince || '', event.handoffId || '',
+          event.level ?? ''].join('|');
         const alreadyRaised = historicalAttention.some((item) => item.type === 'item' && item.episodeKey === episodeKey);
+        if (event.kind === 'awaiting-agent' && !alreadyRaised) {
+          // Escalation replaces the lower-level alert rather than stacking.
+          for (const item of pool.pendingAttention(paths)) {
+            if (item.runId === run.runId && item.kind === 'awaiting-agent' && Number(item.level || 0) < event.level) {
+              ackAttention(paths, item.id, { by: 'supervisor:escalated' });
+            }
+          }
+        }
         if (event.escalate && !alreadyRaised && !alreadyPending(run.runId, event.kind, event.handoffId)) {
           const decisionId = event.kind === 'plan-approval'
             ? openDecision(paths, {

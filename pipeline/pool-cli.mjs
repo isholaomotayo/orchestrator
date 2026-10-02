@@ -12,7 +12,7 @@ import { renderDigest } from './snapshot.mjs';
 import { createSupervisor } from './supervisor.mjs';
 import { writeTerminalReport } from './report.mjs';
 
-const USAGE = `Usage: node pipeline/pool.mjs <verb> [options]
+const USAGE = `Usage: node pipeline/pool-cli.mjs <verb> [options]
 
 Reading:
   status [--json]              the pool snapshot
@@ -35,6 +35,7 @@ Acting:
   request-changes <featureId> "<text>"
   retry <featureId>
   extend <runId> <cycles>
+  resume-run <runId>           resume one halted run in place (after fixing its artifact)
   ack <attentionId>
   notes add "<text>" [--kind learning|decision|gotcha] [--run <id>] [--feature <id>]
   pause [why] | resume
@@ -243,6 +244,13 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
       case 'extend': {
         if (!args[1] || !args[2]) { console.error(USAGE); return 2; }
         out(json, pool.requestExtend(paths, args[1], args[2]), `Asked the supervisor to extend ${args[1]} by ${args[2]} cycle(s).`);
+        return 0;
+      }
+      case 'resume-run': {
+        if (!args[1]) { console.error(USAGE); return 2; }
+        const res = pool.requestRunResume(paths, args[1]);
+        if (!res.ok) { console.error(`Cannot resume ${args[1]}: ${res.reason}`); return 1; }
+        out(json, res, `Asked the supervisor to resume ${args[1]} in place.`);
         return 0;
       }
       case 'ack': {

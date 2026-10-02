@@ -2,7 +2,7 @@
 name: notes
 description: Record a durable note about a project — a learning, a decision and why it was made, or a gotcha worth warning the next person about. Use when the user says "remember this", "note that", or invokes /notes.
 when_to_use: The user wants something recorded durably about how a project works or why a choice was made.
-allowed-tools: Bash(node pipeline/pool.mjs notes *) Bash(bash .pipeline/orchestrate.sh pool notes *) Read
+allowed-tools: Bash(node pipeline/pool-cli.mjs notes *) Bash(bash .pipeline/orchestrate.sh pool notes *) Read
 ---
 
 # Notes

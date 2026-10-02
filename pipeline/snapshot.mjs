@@ -315,7 +315,7 @@ export function renderDigest(snapshot) {
 
   const unverified = snapshot.skills.filter((s) => s.status !== 'verified');
   if (unverified.length) {
-    parts.push(`> Skills not in use: ${unverified.map((s) => `${s.name} (${s.status})`).join(', ')} — run \`node pipeline/skills.mjs pin <name>\` after reviewing the change.`, '');
+    parts.push(`> Skills not in use: ${unverified.map((s) => `${s.name} (${s.status})`).join(', ')} — run \`node pipeline/skills-cli.mjs pin <name>\` after reviewing the change.`, '');
   }
   return parts.join('\n').trimEnd() + '\n';
 }

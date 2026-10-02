@@ -91,7 +91,7 @@ code, not configuration.
 
 - **Declared, not discovered.** Skills are listed in `.pipeline/config.json`.
   Nothing is picked up from the filesystem by proximity.
-- **Pinned by content.** `node pipeline/skills.mjs pin <name>` records a sha256
+- **Pinned by content.** `node pipeline/skills-cli.mjs pin <name>` records a sha256
   of every file in the package into `.pipeline/skills/<name>.sha256`, which is
   committed. Before a stage runs, the package is re-hashed; a changed, missing
   or added file means the skill is **not attached** for that run, a

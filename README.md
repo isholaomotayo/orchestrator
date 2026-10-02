@@ -733,8 +733,8 @@ A stage can be given a capability the pipeline does not implement itself. Skills
 are declared in `.pipeline/config.json` and **pinned by content**:
 
 ```bash
-node pipeline/skills.mjs pin archify     # after reviewing it
-node pipeline/skills.mjs list
+node pipeline/skills-cli.mjs pin archify     # after reviewing it
+node pipeline/skills-cli.mjs list
 ```
 
 A skill whose bytes no longer match its pin is refused for that run and

@@ -528,3 +528,40 @@ test('stopping the supervisor queues a resume for each live worker', async () =>
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('a parked host run raises one alert that escalates, then clears when picked up', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const rm = readRoadmap(paths);
+  const runId = '20260912T000000Z-F1-plan-park';
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(paths, rm);
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  const t0 = Date.parse('2026-09-30T10:00:00Z');
+  let clock = t0;
+  const status = newStatus('plan');
+  status.overall = 'awaiting_chat'; status.awaitingStage = 'planner'; status.handoffId = 'h1';
+  status.runner = 'host'; status.executionSurface = 'host-handoff';
+  status.stages.find((s) => s.name === 'planner').startedAt = new Date(t0).toISOString();
+  writeStatus(runPaths, status);
+  writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'plan', runner: 'host', spawnedAt: new Date(t0).toISOString() });
+  const sup = createSupervisor({ repoRoot: root, now: () => clock, spawnSync: () => ({ status: 0 }) });
+  const parked = () => pendingAttention(paths).filter((a) => a.kind === 'awaiting-agent');
+
+  clock = t0 + 2 * 60_000; sup.tick();
+  assert.equal(parked().length, 0, 'quiet during a normal pickup window');
+  clock = t0 + 11 * 60_000; sup.tick(); sup.tick();
+  assert.equal(parked().length, 1);
+  assert.equal(parked()[0].level, 1);
+  clock = t0 + 61 * 60_000; sup.tick();
+  assert.equal(parked().length, 1, 'escalation replaces, never stacks');
+  assert.equal(parked()[0].level, 2);
+
+  status.overall = 'running';
+  writeStatus(runPaths, status);
+  sup.tick();
+  assert.equal(parked().length, 0, 'cleared once the run moved on');
+  fs.rmSync(root, { recursive: true, force: true });
+});

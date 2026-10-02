@@ -511,7 +511,7 @@ function viewOverview(wrap) {
     for (const skill of nonVerifiedSkills) {
       h.append(el('div', {
         class: 'banner warn',
-        html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
+        html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills-cli.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
       }));
     }
   });

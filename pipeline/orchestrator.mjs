@@ -18,7 +18,7 @@ import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconci
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
-import { recoveryFor } from './recoverability.mjs';
+import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
 import { STAGE_ARTIFACT_FILES } from './stages.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES, ORCHESTRATOR_OWNED_FILES } from './integrity.mjs';
@@ -369,11 +369,9 @@ if (args.continue) {
       haltAndExit(1);
     }
     if (recovery.needsValidArtifact) {
-      const haltedStage = onDisk.haltedStage || (onDisk.stages || []).find((s) => s.status === 'failed')?.name;
-      const file = haltedStage && STAGE_ARTIFACT_FILES[haltedStage] ? path.join(paths.dir, STAGE_ARTIFACT_FILES[haltedStage]) : null;
-      const check = file ? validateArtifactFile(haltedStage, file) : { ok: false, reason: 'the halted stage is unknown' };
+      const check = haltedArtifactCheck(onDisk, paths.dir);
       if (!check.ok) {
-        console.error(`[Orchestrator] Cannot resume yet: ${file ? path.relative(repoRoot, file) : 'the artifact'} is still unusable (${check.reason}). Fix it, then run --resume again.`);
+        console.error(`[Orchestrator] Cannot resume yet: ${check.file ? path.relative(repoRoot, check.file) : 'the artifact'} is still unusable (${check.reason}). Fix it, then run --resume again.`);
         haltAndExit(1);
       }
     }
@@ -658,11 +656,15 @@ function artifactOk(file) {
 // A stage's artifact is the only thing later stages see of its work, so an
 // unusable one must stop the run here rather than silently degrading every
 // downstream stage that reads it.
+// Where a stage's raw log really is, relative to the repo root — a pool run's
+// logs live under .pipeline/runs/<id>/logs, not .pipeline/logs.
+function stageLogRel(name) { return path.relative(repoRoot, path.join(paths.logs, `${name}.log`)); }
+
 function requireArtifact(stageName, file) {
   if (!artifactOk(file)) halt(stageName, 'MISSING_ARTIFACT', `${stageName} did not produce ${path.relative(repoRoot, file)}`);
   const check = validateArtifactFile(stageName, file);
   if (!check.ok) {
-    halt(stageName, 'MISSING_ARTIFACT', `${stageName} produced an unusable ${path.relative(repoRoot, file)}: ${check.reason}. Inspect .pipeline/logs/${stageName}.log.`);
+    halt(stageName, 'MISSING_ARTIFACT', `${stageName} produced an unusable ${path.relative(repoRoot, file)}: ${check.reason}. Inspect ${stageLogRel(stageName)}.`);
   }
 }
 
@@ -887,10 +889,10 @@ function failStage(name, res, logTail, { reason, attempts, transient = false }) 
     halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`, { haltTransient: false });
   }
   if (res.timedOut) {
-    halt(name, 'AGENT_ERROR', `${runner} exceeded the ${Math.round(config.agentTimeoutMs / 60000)}-minute agent timeout${tried} and was killed. Raise "agentTimeoutMs" in .pipeline/config.json, or narrow the task — inspect .pipeline/logs/${name}.log for where it stalled.`, haltOpts);
+    halt(name, 'AGENT_ERROR', `${runner} exceeded the ${Math.round(config.agentTimeoutMs / 60000)}-minute agent timeout${tried} and was killed. Raise "agentTimeoutMs" in .pipeline/config.json, or narrow the task — inspect ${stageLogRel(name)} for where it stalled.`, haltOpts);
   }
   if (res.error) halt(name, 'AGENT_ERROR', `${runner} CLI failed${tried}: ${res.error}`, haltOpts);
-  halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}${tried} (${reason}). Inspect .pipeline/logs/${name}.log`, haltOpts);
+  halt(name, 'AGENT_ERROR', `${runner} CLI exited with code ${res.exitCode ?? '?'}${tried} (${reason}). Inspect ${stageLogRel(name)}`, haltOpts);
 }
 
 // Post-stage audit. A stage that rewrote the control plane, or a "read-only"
@@ -903,12 +905,12 @@ function enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore, exclude =
   if (violations.length) {
     appendEvent(paths, { stage: name, type: 'integrity_violation', scope: 'control_plane', files: violations });
     halt(name, 'INTEGRITY_VIOLATION',
-      `The ${name} stage modified pipeline control-plane files it does not own: ${violations.join(', ')}. Its output cannot be trusted (a stage that can write these can grade its own work). Inspect .pipeline/logs/${name}.log and the listed files.`);
+      `The ${name} stage modified pipeline control-plane files it does not own: ${violations.join(', ')}. Its output cannot be trusted (a stage that can write these can grade its own work). Inspect ${stageLogRel(name)} and the listed files.`);
   }
   if (readOnly && readOnlyViolated(treeBefore, workingTreeFingerprint(workCwd))) {
     appendEvent(paths, { stage: name, type: 'integrity_violation', scope: 'read_only' });
     halt(name, 'INTEGRITY_VIOLATION',
-      `The read-only ${name} stage modified the working tree. Runner "${runner}" cannot hard-enforce read-only, and the agent used that latitude — the audit is void. Inspect \`git status\` and .pipeline/logs/${name}.log.`);
+      `The read-only ${name} stage modified the working tree. Runner "${runner}" cannot hard-enforce read-only, and the agent used that latitude — the audit is void. Inspect \`git status\` and ${stageLogRel(name)}.`);
   }
 }
 
@@ -1252,7 +1254,7 @@ async function runReviewPanel(pass) {
   appendEvent(paths, { stage: 'reviewer', type: 'panel_aggregated', lensVerdicts, unusable, verdict });
   console.log(`[Stage] Panel verdicts: ${LENSES.map((l) => `${l.key}=${lensVerdicts[l.key] ?? '?'}`).join(', ')} -> ${verdict ?? 'UNKNOWN'}`);
   if (unusable.length) {
-    halt('reviewer', 'INVALID_VERDICT', `Review panel incomplete: ${unusable.join(', ')} produced no usable report. An incomplete panel is not an approval. Inspect .pipeline/logs/reviewer.log and the per-lens reports.`);
+    halt('reviewer', 'INVALID_VERDICT', `Review panel incomplete: ${unusable.join(', ')} produced no usable report. An incomplete panel is not an approval. Inspect ${stageLogRel('reviewer')} and the per-lens reports.`);
   }
   status.resumePoint = { step: 'after_reviewer', context: { reviewPass: pass } };
   writeStatus(paths, status);
@@ -1476,8 +1478,36 @@ async function planApprovalContinueRun() {
   await continueAfterPlanner();
 }
 
+// Steps whose artifact must validate before a chat continuation is accepted.
+// Handoff/Reporter are excluded: they have deterministic fallbacks.
+const CONTINUE_REQUIRES = {
+  after_planner: 'planner', after_plan_reviewer: 'plan_reviewer', after_designer: 'designer',
+  after_coder: 'coder', after_tester: 'tester', after_reviewer: 'reviewer',
+};
+
+// A host that hands back an artifact missing a required section used to halt
+// the whole run (MISSING_ARTIFACT, 5 of 7 field halts) while it was still
+// fixing it. Reject the continuation instead: the run stays awaiting_chat and
+// the host gets the exact file and section to fix.
+function rejectIncompleteContinuation(resume) {
+  const stageName = CONTINUE_REQUIRES[resume?.step];
+  if (!stageName || (stageName === 'reviewer' && status.flags?.reviewPanel)) return;
+  const file = path.join(paths.dir, STAGE_ARTIFACT_FILES[stageName]);
+  const check = validateArtifactFile(stageName, file);
+  if (check.ok) return;
+  const rel = path.relative(repoRoot, file);
+  appendEvent(paths, { stage: stageName, type: 'continue_rejected', reason: check.reason, artifact: rel });
+  console.error(`[Orchestrator] Not continuing yet: ${rel} is unusable (${check.reason}).`);
+  console.error(`[Orchestrator] Fix ${rel}, then run --continue again. The run is still awaiting the ${stageName} stage.`);
+  haltAndExit(2);
+}
+
+const HOST_CLIENT_NAMES = new Set(['antigravity', 'agy', 'cursor', 'claude', 'claude-code', 'codex', 'gemini', 'host', 'chat', 'ide']);
+function isClientName(value) { return HOST_CLIENT_NAMES.has(String(value).trim().toLowerCase()); }
+
 async function chatContinueRun() {
   const resume = status.chatResume;
+  rejectIncompleteContinuation(resume);
   status.chatResume = null;
   // If this continuation halts (e.g. the host's artifact is missing a
   // section), --resume must re-enter right here — not re-hand the stage that
@@ -1488,7 +1518,9 @@ async function chatContinueRun() {
   let parsedHandoff = null;
   try {
     parsedHandoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
-    if (parsedHandoff.actualModel) actualModel = parsedHandoff.actualModel;
+    // Hosts sometimes report their own client name ("antigravity") as the
+    // model; that says nothing about which model ran, so record it as unknown.
+    if (parsedHandoff.actualModel && !isClientName(parsedHandoff.actualModel)) actualModel = parsedHandoff.actualModel;
   } catch {}
 
   if (!pendingCompletion) { try { fs.unlinkSync(paths.stageHandoff); } catch {} }

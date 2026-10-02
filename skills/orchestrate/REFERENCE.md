@@ -360,7 +360,7 @@ Contracts: `orchestrator-roadmap.v1`, `orchestrator-run-meta.v1`,
 ```
 
 ```bash
-node pipeline/skills.mjs list | verify [name] | pin <name>
+node pipeline/skills-cli.mjs list | verify [name] | pin <name>
 ```
 
 `pin` records a sha256 of every file in the package. Review a skill before

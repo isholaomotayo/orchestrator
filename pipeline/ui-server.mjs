@@ -806,7 +806,13 @@ const server = http.createServer((req, res) => {
         return json(res, { error: `stage "${body.stage}" is not active on this run (active: ${active})` }, 409);
       }
       try {
-        json(res, status.bridgeRequired ? bridgeCommand('message.queue',{project:project.repoRoot,runId:body.run || null,stage:body.stage,text:body.text.trim(),priority:body.priority || 'priority',handoffId:body.handoffId,commandId:body.commandId}) : queueStageNote(runPaths, body.stage, body.text.trim()));
+        // Use the bridge only when a host session actually holds the run's
+        // lease. An unclaimed run is driven through the documented
+        // followups/<stage>.txt path; queueing a priority bridge message there
+        // enrolled the run in ownership, after which every plain --continue
+        // (and the dashboard's own Continue) failed for lack of credentials.
+        const leased = status.bridgeRequired && !!inspectBridge(project.repoRoot, body.run || null).owner;
+        json(res, leased ? bridgeCommand('message.queue',{project:project.repoRoot,runId:body.run || null,stage:body.stage,text:body.text.trim(),priority:body.priority || 'priority',handoffId:body.handoffId,commandId:body.commandId}) : queueStageNote(runPaths, body.stage, body.text.trim()));
       } catch (err) {
         json(res, { error: err.message }, 400);
       }
