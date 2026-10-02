@@ -517,3 +517,34 @@ test('compile rejects a base branch that does not exist instead of failing later
   assert.equal(compile(paths).ok, true);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('pool reset keeps worktrees with unmerged or uncommitted work, and refuses while the supervisor runs', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { reset } = await import('./pool.mjs');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'reset-')));
+  const git = (args, cwd = root) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
+  git(['init', '-q', '-b', 'main']);
+  git(['commit', '-q', '--allow-empty', '-m', 'init']);
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.worktrees, { recursive: true });
+  fs.mkdirSync(paths.control, { recursive: true });
+  for (const id of ['20260930T000000Z-F1-T1-aaaa0001', '20260930T000000Z-F1-T2-aaaa0002']) {
+    git(['worktree', 'add', '-q', '-b', `w/${id}`, path.join(paths.worktrees, id)]);
+    fs.mkdirSync(path.join(paths.runs, id), { recursive: true });
+    fs.writeFileSync(path.join(paths.runs, id, 'status.json'), JSON.stringify({ overall: 'halted' }));
+  }
+  const withWork = path.join(paths.worktrees, '20260930T000000Z-F1-T1-aaaa0001');
+  fs.writeFileSync(path.join(withWork, 'feature.txt'), 'unmerged');
+  git(['add', '-A'], withWork); git(['commit', '-q', '-m', 'work'], withWork);
+
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  assert.throws(() => reset(paths), /supervisor is running/);
+  fs.rmSync(paths.supervisorPid);
+
+  const res = reset(paths);
+  assert.deepEqual(res.keptWorktrees, ['20260930T000000Z-F1-T1-aaaa0001']);
+  assert.ok(fs.existsSync(path.join(withWork, 'feature.txt')), 'unmerged work survives a reset');
+  assert.ok(!fs.existsSync(path.join(paths.worktrees, '20260930T000000Z-F1-T2-aaaa0002')), 'an empty worktree is cleaned');
+  assert.ok(fs.existsSync(path.join(paths.runs, '20260930T000000Z-F1-T1-aaaa0001')), 'the kept worktree keeps its run record');
+  fs.rmSync(root, { recursive: true, force: true });
+});

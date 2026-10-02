@@ -327,8 +327,62 @@ export function resolveEngineEntry({ repoRoot, hostDir, exists = fs.existsSync }
 
 /** A live lock means a run owns these files right now. */
 export function runInProgress(repoRoot) {
-  const lock = readLock(pipelinePaths(repoRoot));
-  return !!(lock && pidAlive(lock.pid));
+  return !!activeRunReason(repoRoot);
+}
+
+const ACTIVE = ['running', 'awaiting_chat', 'awaiting_plan_approval'];
+
+/**
+ * Why an update must wait, or null. The root lock alone missed every chat run
+ * parked between stages (it holds no lock), so an update could swap the
+ * engine under a run that was mid-flight.
+ */
+export function activeRunReason(repoRoot) {
+  const paths = pipelinePaths(repoRoot);
+  const lock = readLock(paths);
+  if (lock && pidAlive(lock.pid)) return `an engine is running (pid ${lock.pid})`;
+  const read = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } };
+  const root = read(paths.status);
+  if (root && ACTIVE.includes(root.overall) && !root.pool && !root.dismissed) return `the run in .pipeline/ is ${root.overall}`;
+  try {
+    const pid = Number(fs.readFileSync(paths.supervisorPid, 'utf8'));
+    if (pid && pidAlive(pid)) return `the roadmap supervisor is running (pid ${pid})`;
+  } catch { /* no supervisor */ }
+  let ids = [];
+  try { ids = fs.readdirSync(paths.runs); } catch { /* no pool runs */ }
+  for (const id of ids) {
+    const st = read(path.join(paths.runs, id, 'status.json'));
+    if (st && ACTIVE.includes(st.overall) && !st.dismissed) return `run ${id} is ${st.overall}`;
+  }
+  return null;
+}
+
+// Engine files an older installer (or a hand copy) left directly in .pipeline/.
+// They are never executed (orchestrate.sh runs pipeline/), but agents and people
+// reading .pipeline/ find and patch them instead of the real engine.
+export function staleEngineCopies(repoRoot) {
+  const dir = pipelinePaths(repoRoot).dir;
+  const tracked = new Set(Object.keys(readInstall(repoRoot)?.files || {}));
+  const engine = new Set((() => { try { return fs.readdirSync(path.join(repoRoot, 'pipeline')); } catch { return []; } })());
+  const out = [];
+  let entries = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of entries) {
+    const rel = `.pipeline/${e.name}`;
+    if (tracked.has(rel)) continue;
+    if (e.isFile() && (/\.mjs$/.test(e.name) || e.name === 'dashboard.html') && engine.has(e.name)) out.push(rel);
+    if (e.isDirectory() && e.name === 'ui' && engine.has('ui')) out.push(rel);
+  }
+  return out.sort();
+}
+
+export function quarantineStaleCopies(repoRoot, list = staleEngineCopies(repoRoot)) {
+  if (!list.length) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backup = path.join(pipelinePaths(repoRoot).dir, `stale-engine-backup-${stamp}`);
+  fs.mkdirSync(backup, { recursive: true });
+  for (const rel of list) fs.renameSync(path.join(repoRoot, rel), path.join(backup, path.basename(rel)));
+  return path.relative(repoRoot, backup);
 }
 
 export function summarize(done) {
@@ -544,6 +598,8 @@ function main(argv) {
     console.log(JSON.stringify({
       updateAvailable: !!(current && latest && current !== latest),
       current, latest, checked, source,
+      staleEngineCopies: staleEngineCopies(repoRoot),
+      activeRun: activeRunReason(repoRoot),
     }));
     return 0;
   }
@@ -557,8 +613,9 @@ function main(argv) {
   }
 
   if (argv.includes('--apply') || argv.includes('--self-update')) {
-    if (runInProgress(repoRoot)) {
-      console.error('[installer] A pipeline run is active (.pipeline/.lock) — not updating.');
+    const active = activeRunReason(repoRoot);
+    if (active && !argv.includes('--allow-active')) {
+      console.error(`[installer] Not updating: ${active}. Finish or dismiss it first (or pass --allow-active to update anyway).`);
       return 1;
     }
     let srcRoot = flagValue(argv, '--src', null);
@@ -602,6 +659,11 @@ function main(argv) {
     const done = doApply({ repoRoot, srcRoot, force, source });
     console.log('[installer] Scaffold update:');
     console.log(summarize(done));
+    const stale = staleEngineCopies(repoRoot);
+    if (stale.length) {
+      const moved = quarantineStaleCopies(repoRoot, stale);
+      console.log(`[installer] Moved ${stale.length} stale engine copie(s) out of .pipeline/ into ${moved} (never executed; kept for reference): ${stale.join(', ')}`);
+    }
     if (cloned) { try { fs.rmSync(cloned, { recursive: true, force: true }); } catch {} }
     return 0;
   }

@@ -765,37 +765,67 @@ export function dismissRun(paths, runId, reason = 'Dismissed by operator', { via
   return res;
 }
 
-export function reset(paths, { archive = true, hard = false } = {}) {
-  spawnSync('git', ['worktree', 'prune'], { cwd: paths.root, encoding: 'utf8' });
+// Uncommitted changes, or commits not yet on the base: work that exists
+// nowhere else. A git error counts as "has work" — never guess towards deleting.
+function worktreeHasUnsavedWork(worktree, base) {
+  const git = (args) => spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8', timeout: 30_000 });
+  const dirty = git(['status', '--porcelain']);
+  if (dirty.status !== 0) return true;
+  if (dirty.stdout.trim()) return true;
+  const ahead = git(['rev-list', '--count', `${base}..HEAD`]);
+  if (ahead.status !== 0) return true;
+  return Number(ahead.stdout.trim()) > 0;
+}
+
+export function reset(paths, { archive = true, hard = false, discardUnmerged = false } = {}) {
+  // Never reset under live work: the old reset removed the lock and every
+  // worktree of a running pool.
+  const supervisorPid = (() => { try { return Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim()); } catch { return null; } })();
+  if (supervisorPid && pidAlive(supervisorPid)) throw new Error(`The supervisor is running (pid ${supervisorPid}); stop it first with \`pool stop\`.`);
   const runsDir = paths.runs;
+  const runIds = fs.existsSync(runsDir) ? fs.readdirSync(runsDir).filter((d) => isValidRunId(d)) : [];
+  for (const id of [null, ...runIds]) {
+    const lock = readLock(pipelinePaths(paths.root, id ? { runId: id } : {}));
+    if (lock && pidAlive(lock.pid)) throw new Error(`${id ? `Run ${id}` : 'A run'} is active (pid ${lock.pid}); stop it before resetting the pool.`);
+  }
+
+  spawnSync('git', ['worktree', 'prune'], { cwd: paths.root, encoding: 'utf8' });
+  // Resolve the base in the main repository: inside a worktree, "HEAD" is the
+  // worktree's own tip, which would make every commit look already merged.
+  const baseName = readRoadmap(paths)?.base || 'HEAD';
+  const resolvedBase = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${baseName}^{commit}`], { cwd: paths.root, encoding: 'utf8' });
+  const base = resolvedBase.status === 0 ? resolvedBase.stdout.trim() : baseName;
+  const kept = [];
   const worktreesDir = paths.worktrees;
   if (fs.existsSync(worktreesDir)) {
-    fs.rmSync(worktreesDir, { recursive: true, force: true });
+    for (const name of fs.readdirSync(worktreesDir)) {
+      const wt = path.join(worktreesDir, name);
+      if (!discardUnmerged && fs.existsSync(path.join(wt, '.git')) && worktreeHasUnsavedWork(wt, base)) { kept.push(name); continue; }
+      spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: paths.root, encoding: 'utf8', timeout: 60_000 });
+      fs.rmSync(wt, { recursive: true, force: true });
+    }
+    if (!kept.length) fs.rmSync(worktreesDir, { recursive: true, force: true });
   }
-  if (fs.existsSync(runsDir)) {
-    for (const dir of fs.readdirSync(runsDir)) {
-      if (!isValidRunId(dir)) continue;
-      const p = path.join(runsDir, dir);
-      if (hard) {
-        fs.rmSync(p, { recursive: true, force: true });
-      } else if (archive) {
-        fs.mkdirSync(path.join(runsDir, 'archived'), { recursive: true });
-        fs.renameSync(p, path.join(runsDir, 'archived', dir));
-      }
+  for (const dir of runIds) {
+    if (kept.includes(dir)) continue; // its worktree still holds work
+    const p = path.join(runsDir, dir);
+    if (hard) {
+      fs.rmSync(p, { recursive: true, force: true });
+    } else if (archive) {
+      fs.mkdirSync(path.join(runsDir, 'archived'), { recursive: true });
+      fs.renameSync(p, path.join(runsDir, 'archived', dir));
     }
   }
-  fs.rmSync(paths.lock, { force: true });
+  const rootLock = readLock(paths);
+  if (!(rootLock && pidAlive(rootLock.pid))) fs.rmSync(paths.lock, { force: true });
   fs.rmSync(path.join(paths.control, 'snapshot.json'), { force: true });
   fs.rmSync(path.join(paths.control, 'supervisor.log'), { force: true });
   if (hard) {
     fs.rmSync(path.join(paths.control, 'attention.jsonl'), { force: true });
     fs.rmSync(path.join(paths.control, 'decisions.jsonl'), { force: true });
   }
-  if (fs.existsSync(paths.supervisorPid)) {
-    const pid = Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim());
-    if (!pidAlive(pid)) fs.rmSync(paths.supervisorPid, { force: true });
-  }
-  return { reset: true };
+  if (supervisorPid && !pidAlive(supervisorPid)) fs.rmSync(paths.supervisorPid, { force: true });
+  return { reset: true, keptWorktrees: kept };
 }
 
 export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };

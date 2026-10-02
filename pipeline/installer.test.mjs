@@ -444,3 +444,36 @@ test('resolveTargetRef falls back to DEFAULT_REF when no anchor has a ref and re
   assert.equal(ref, DEFAULT_REF);
   fs.rmSync(repo, { recursive: true, force: true });
 });
+
+test('an update waits for a chat run parked between stages, not only for a held lock', async () => {
+  const { activeRunReason } = await import('./installer.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inst-active-'));
+  const dir = path.join(root, '.pipeline');
+  fs.mkdirSync(path.join(dir, 'runs', 'r1'), { recursive: true });
+  assert.equal(activeRunReason(root), null);
+  fs.writeFileSync(path.join(dir, 'runs', 'r1', 'status.json'), JSON.stringify({ overall: 'awaiting_chat' }));
+  assert.match(activeRunReason(root), /r1 is awaiting_chat/);
+  fs.writeFileSync(path.join(dir, 'runs', 'r1', 'status.json'), JSON.stringify({ overall: 'awaiting_chat', dismissed: true }));
+  assert.equal(activeRunReason(root), null, 'a dismissed run does not block');
+  fs.writeFileSync(path.join(dir, 'status.json'), JSON.stringify({ overall: 'awaiting_plan_approval' }));
+  assert.match(activeRunReason(root), /awaiting_plan_approval/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('stale untracked engine copies in .pipeline/ are found and moved aside, never deleted', async () => {
+  const { staleEngineCopies, quarantineStaleCopies } = await import('./installer.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inst-stale-'));
+  fs.mkdirSync(path.join(root, 'pipeline', 'ui'), { recursive: true });
+  for (const f of ['orchestrator.mjs', 'pool.mjs', 'dashboard.html']) fs.writeFileSync(path.join(root, 'pipeline', f), 'new');
+  fs.mkdirSync(path.join(root, '.pipeline', 'ui'), { recursive: true });
+  for (const f of ['orchestrator.mjs', 'pool.mjs', 'dashboard.html', 'config.json', 'my-notes.mjs']) fs.writeFileSync(path.join(root, '.pipeline', f), 'old');
+  fs.writeFileSync(path.join(root, '.pipeline', 'install.json'), JSON.stringify({ files: { '.pipeline/orchestrate.sh': 'x' } }));
+  const stale = staleEngineCopies(root);
+  assert.deepEqual(stale, ['.pipeline/dashboard.html', '.pipeline/orchestrator.mjs', '.pipeline/pool.mjs', '.pipeline/ui']);
+  const moved = quarantineStaleCopies(root, stale);
+  assert.ok(fs.existsSync(path.join(root, moved, 'orchestrator.mjs')));
+  assert.ok(fs.existsSync(path.join(root, '.pipeline', 'config.json')), 'config is untouched');
+  assert.ok(fs.existsSync(path.join(root, '.pipeline', 'my-notes.mjs')), 'a file with no engine counterpart is untouched');
+  assert.deepEqual(staleEngineCopies(root), []);
+  fs.rmSync(root, { recursive: true, force: true });
+});

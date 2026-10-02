@@ -41,7 +41,7 @@ Acting:
   ack <attentionId>
   notes add "<text>" [--kind learning|decision|gotcha] [--run <id>] [--feature <id>]
   pause [why] | resume
-  reset | clean [--hard]`;
+  reset | clean [--hard] [--discard-unmerged]   refuses while work is live; keeps unmerged worktrees`;
 
 function out(json, value, text) {
   if (json) console.log(JSON.stringify(value, null, 2));
@@ -287,8 +287,11 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
       case 'reset':
       case 'clean': {
         const hard = args.includes('--hard');
-        pool.reset(paths, { archive: !hard, hard });
-        out(json, { reset: true }, `Pool reset completed. Runs archived${hard ? ' (hard deleted)' : ''}.`);
+        const res = pool.reset(paths, { archive: !hard, hard, discardUnmerged: args.includes('--discard-unmerged') });
+        const keptNote = res.keptWorktrees.length
+          ? ` Kept ${res.keptWorktrees.length} worktree(s) holding uncommitted or unmerged work (and their runs): ${res.keptWorktrees.join(', ')}. Pass --discard-unmerged to drop them.`
+          : '';
+        out(json, res, `Pool reset completed. Runs ${hard ? 'hard deleted' : 'archived'}.${keptNote}`);
         return 0;
       }
       default:
