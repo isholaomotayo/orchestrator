@@ -34,7 +34,7 @@
     "pipeline/checker.mjs": "fdb245e09e47d4bb7596f479269dc33c2e743f6653785e0c9f25be3ec8bc4a15",
     "pipeline/checker.test.mjs": "afbb4cea4f87ce2c40d8b6721dcfef9751b36975d7d8a16b98b047e6d6e49ef5",
     "pipeline/commands.mjs": "c5dec49aa66aedbd53b35b12e29c47e88ee56646ef79589f767325502de4c779",
-    "pipeline/commands.test.mjs": "a308f1834a42ee0be1169dfd627870f4d4b7cf23ff3a2dc6def8edd942ffef68",
+    "pipeline/commands.test.mjs": "a55f68c58f30bb27f863abe06620f69e7127ad3ef1f06c9322628aa17e40d1cc",
     "pipeline/dashboard.html": "4a242e34ea58129926eaaae622ae4e4441c596e0413b729ac0260c39177fcd5a",
     "pipeline/doc-commands.test.mjs": "92316aa4dbe88a0ac4b98fbc1d406677fba0e817e665f9edf4e9c07e383d575a",
     "pipeline/events.mjs": "9cd2cc0a63256ff797b298185b3a511f53cf7a002edab9fef20487537a8d2ad8",
