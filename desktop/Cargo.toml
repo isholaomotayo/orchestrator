@@ -3,7 +3,7 @@
 # never copies it into consumer repositories (see installer.test.mjs).
 [workspace]
 resolver = "2"
-members = ["crates/orch-contract", "crates/orch-client", "crates/orch-core"]
+members = ["crates/orch-contract", "crates/orch-client", "crates/orch-core", "crates/orch-app"]
 
 [workspace.package]
 edition = "2021"
