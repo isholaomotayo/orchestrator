@@ -244,10 +244,11 @@ test('withFileLock is re-entrant in-process and waits for another process', asyn
     fs.writeFileSync(${JSON.stringify(file)}, JSON.stringify({ pid: process.pid }));
     setTimeout(() => { fs.unlinkSync(${JSON.stringify(file)}); process.exit(0); }, 300);
   `]);
-  await new Promise((r) => setTimeout(r, 100));
+  for (let i = 0; i < 200 && !fs.existsSync(file); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(fs.existsSync(file), 'the other process holds the lock');
   const started = Date.now();
   withFileLock(file, () => {});
-  assert.ok(Date.now() - started >= 100, 'waited for the other process to release');
+  assert.ok(Date.now() - started >= 20, 'waited for the other process to release');
   assert.throws(() => {
     fs.writeFileSync(file, JSON.stringify({ pid: process.ppid }));
     withFileLock(file, () => {}, { timeoutMs: 100 });

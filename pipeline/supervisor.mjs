@@ -35,6 +35,7 @@ import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } 
 import { classifyEvent, appendAttention, ackAttention, readAttention, openDecision, openDecisions, readDecisions, resolveDecision } from './attention.mjs';
 import * as pool from './pool.mjs';
 import { recoveryFor } from './recoverability.mjs';
+import { policyOf, readPolicyOverride } from './mode.mjs';
 import {
   createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles, branchExists,
 } from './worktrees.mjs';
@@ -1177,7 +1178,19 @@ export function createSupervisor({
             if (!committed.ok) escalate(current, run, 'commit-failed', committed.reason);
             changed = true;
           } else if (run.status?.overall === 'halted' && !isRetrying(run)) {
-            if (recoveryFor(run.status).resume) {
+            const autonomous = policyOf(run.status, config, readPolicyOverride(pipelinePaths(repoRoot, { runId: run.runId }).dir)).autonomy === 'autonomous';
+            if (autonomous && recoveryFor(run.status).resume && Number(ticket.autoRetries || 0) < 1) {
+              // Autonomous policy: rerun the ticket once on its own instead of
+              // waiting for a person; a second failure is held as usual.
+              ticket.previousRunIds = [...(ticket.previousRunIds || []), ticket.runId];
+              ticket.autoRetries = Number(ticket.autoRetries || 0) + 1;
+              appendRunVerb(pipelinePaths(repoRoot, { runId: run.runId }), 'note', `superseded by autonomous retry of ${current.id}/${ticket.id}`);
+              raiseAttention({ runId: run.runId, featureId: current.id, kind: 'auto-retried', escalate: false,
+                summary: `${current.id}/${ticket.id} halted (${run.status.haltReason}); autonomous policy retried it once.` });
+              ticket.status = 'queued';
+              ticket.runId = null;
+              changed = true;
+            } else if (recoveryFor(run.status).resume) {
               // Fixable in place (missing section, unparseable verdict, a
               // non-transient CLI error once its cause is fixed): hold this
               // ticket instead of failing the feature and replanning from

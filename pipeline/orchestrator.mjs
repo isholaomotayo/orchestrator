@@ -19,6 +19,7 @@ import { detectInvocationMode, detectHostClient, normalizeHostClient } from './i
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
 import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
+import { surfaceOf, isHost, policyOf, readPolicyOverride, AUTONOMY } from './mode.mjs';
 import { STAGE_ARTIFACT_FILES } from './stages.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES, ORCHESTRATOR_OWNED_FILES } from './integrity.mjs';
@@ -40,7 +41,7 @@ function parseArgs(argv) {
     task: null, taskFile: null, runner: null, sandbox: false, resume: false, continue: false, extend: null,
     maxCycles: null, maxPostTesterCycles: null, maxReviewCycles: null, mode: null,
     modelProfile: 'auto', models: null,
-    approvePlan: false, design: false, reviewPanel: false,
+    approvePlan: false, design: false, reviewPanel: false, autonomy: null, handoffId: null,
     allowSelf: false, hostClient: null,
     // Pool mode: identity and isolation for one worker among many.
     runId: null, worktree: null, branch: null, baseRef: null,
@@ -65,6 +66,8 @@ function parseArgs(argv) {
     else if (a === '--approve-plan') args.approvePlan = true;
     else if (a === '--design') args.design = true;
     else if (a === '--review-panel') args.reviewPanel = true;
+    else if (a === '--autonomy') args.autonomy = argv[++i];
+    else if (a === '--handoff-id') args.handoffId = argv[++i];
     else if (a === '--allow-self') args.allowSelf = true;
     else if (a === '--host-client') args.hostClient = argv[++i];
     else if (a === '--run-id') args.runId = argv[++i];
@@ -236,11 +239,17 @@ function loadWorkCwdFromStatus() {
 // typed from inside a live chat session against a run that used to be plain
 // cli. Reads/writes the enclosing `runner`/`hostClient`/`status` closures.
 function applyChatReconciliation() {
+  // An existing run keeps its recorded surface. Only an explicit --mode may
+  // move it — never environment sniffing, which converted dashboard-started
+  // CLI runs (spawned from a server that inherited CLAUDECODE=1) into host
+  // runs that then sat waiting for a chat agent nobody had open.
+  const wasSurface = surfaceOf(status);
   const reconciled = reconcileChatRunner({
     runner, statusInvocationMode: status.invocationMode,
-    statusExecutionSurface: status.executionSurface, currentInvocationMode: invocationMode,
+    statusExecutionSurface: status.executionSurface,
+    currentInvocationMode: args.mode === 'chat' || args.mode === 'cli' ? args.mode : status.invocationMode,
   });
-  if (!reconciled) return;
+  if (!reconciled) { status.surface = wasSurface; return; }
   runner = reconciled.runner;
   status.runner = runner;
   if (reconciled.runnerRequested) status.runnerRequested = reconciled.runnerRequested;
@@ -248,6 +257,11 @@ function applyChatReconciliation() {
   status.invocationMode = reconciled.invocationMode;
   if (!status.hostClient) status.hostClient = detectedHostClient;
   hostClient = status.hostClient;
+  status.surface = surfaceOf({ executionSurface: status.executionSurface });
+  if (status.surface !== wasSurface) {
+    appendEvent(paths, { stage: 'orchestrator', type: 'surface_changed', from: wasSurface, to: status.surface, reason: `explicit --mode ${args.mode}` });
+    console.log(`[Orchestrator] Surface changed ${wasSurface} -> ${status.surface} (explicit --mode ${args.mode}).`);
+  }
 }
 
 function loadHistory() {
@@ -479,6 +493,11 @@ if (args.continue) {
     console.warn('[Orchestrator] --review-panel is CLI-only (a chat host runs one stage at a time); falling back to a single reviewer.');
   }
   status = newStatus(args.task, { design: runFlags.design });
+  if (args.autonomy && !AUTONOMY.includes(args.autonomy)) {
+    console.error(`[Orchestrator] --autonomy must be one of: ${AUTONOMY.join(', ')}.`);
+    haltAndExit(1);
+  }
+  status.policy = { autonomy: policyOf({ policy: { autonomy: args.autonomy } }, config).autonomy };
   status.bridgeRequired = executionSurface === 'host-handoff' && config.bridge?.required !== false;
   status.flags = { ...runFlags, planOnly: args.planOnly };
   status.intent = { version: 2, kind: args.planOnly ? 'plan' : args.startAt === 'tester' ? 'integration' : 'ticket', planOnly: args.planOnly, startAt: args.startAt, executionSurface, enabledStages: status.stages.filter(s => s.status !== 'skipped').map(s => s.name) };
@@ -487,6 +506,7 @@ if (args.continue) {
   status.planReviewPass = 0;
   status.planReviewAttempt = 0;
   status.executionSurface = executionSurface;
+  status.surface = surfaceOf({ executionSurface });
   status.invocationMode = executionSurface === 'host-handoff' ? 'chat' : invocationMode;
   status.runner = runner;
   status.runnerRequested = runnerRequested || null;
@@ -692,7 +712,7 @@ function requestChatHandoff(stageName, chatResume) {
   writeRunMeta(paths, { phase: 'awaiting_chat' });
   finalize();
   console.log(`\n[Orchestrator] Chat handoff — complete the ${stageName} stage in your IDE, then run:`);
-  console.log('  bash .pipeline/orchestrate.sh --continue');
+  console.log(`  bash .pipeline/orchestrate.sh --continue${args.runId ? ` --run-id ${args.runId}` : ''} --handoff-id ${status.handoffId}`);
   const stageModel = modelForStage(models, stageName);
   if (stageModel) {
     console.log(`[Orchestrator] Suggested model: ${stageModel} (Note: actual model is determined by your active chat model)`);
@@ -775,15 +795,14 @@ function consumeFollowups(name) {
   } catch { return ''; }
 }
 
-async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false } = {}) {
+async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false, artifactRetry = false } = {}) {
   commitPendingCompletion();
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
   if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
   const stageModel = modelForStage(models, name);
   const stageEffort = effortForStage(models, name);
-  const isChat = runner === 'host' || status.invocationMode === 'chat';
-  if (isChat) {
+  if (isHost(status)) {
     setStage(name, {
       model: stageModel,
       requestedModel: stageModel,
@@ -863,6 +882,20 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   setStage(name, { detail: null });
   status.integrity = null;
   enforceStageIntegrity(name, { readOnly, cpBefore, treeBefore, exclude: ORCHESTRATOR_OWNED_FILES });
+  // Autonomous policy: a CLI agent that left its artifact incomplete gets one
+  // rerun told exactly what was rejected, instead of halting the run for a
+  // human. (Host stages are pre-validated on --continue instead.)
+  const artifactName = STAGE_ARTIFACT_FILES[name];
+  if (!soft && !artifactRetry && artifactName && !(name === 'reviewer' && status.flags?.reviewPanel)
+    && policyOf(status, config, readPolicyOverride(paths.dir)).autonomy === 'autonomous') {
+    const check = validateArtifactFile(name, path.join(paths.dir, artifactName));
+    if (!check.ok) {
+      appendEvent(paths, { stage: name, cycle, type: 'artifact_retry', reason: check.reason, policy: 'autonomous' });
+      console.warn(`[Stage] ${name} — artifact rejected (${check.reason}); autonomous policy reruns the stage once.`);
+      const feedback = `\n\nYOUR PREVIOUS ATTEMPT WAS REJECTED: .pipeline/${artifactName} is unusable (${check.reason}). Rewrite it completely and fix exactly this.`;
+      return runStageAgent(name, task + feedback, { cycle, readOnly, chatResume, soft, artifactRetry: true });
+    }
+  }
   return res;
 }
 
@@ -1490,10 +1523,30 @@ const CONTINUE_REQUIRES = {
 // fixing it. Reject the continuation instead: the run stays awaiting_chat and
 // the host gets the exact file and section to fix.
 function rejectIncompleteContinuation(resume) {
+  // A driver that names the handoff it completed can never advance a newer one.
+  if (args.handoffId && status.handoffId && args.handoffId !== status.handoffId) {
+    appendEvent(paths, { stage: String(resume?.step || 'orchestrator').replace(/^after_/, ''), type: 'continue_rejected', reason: 'stale handoff id', handoffId: args.handoffId, current: status.handoffId });
+    console.error(`[Orchestrator] Not continuing: this --continue is for handoff ${args.handoffId}, but the run has moved on to the ${String(resume?.step || 'next').replace(/^after_/, '')} stage (handoff ${status.handoffId}). Nothing was changed.`);
+    haltAndExit(2);
+  }
   const stageName = CONTINUE_REQUIRES[resume?.step];
   if (!stageName || (stageName === 'reviewer' && status.flags?.reviewPanel)) return;
   const file = path.join(paths.dir, STAGE_ARTIFACT_FILES[stageName]);
-  const check = validateArtifactFile(stageName, file);
+  let check = validateArtifactFile(stageName, file);
+  // Waiting for the stage to actually finish: the artifact must have been
+  // written after this stage was handed off. A duplicate --continue (e.g. the
+  // dashboard's Continue racing the host's own, 0.3s apart in the field) or a
+  // file left over from an earlier run would otherwise be accepted or halt.
+  if (check.ok) {
+    let handedOffAt = null;
+    try { handedOffAt = Date.parse(JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')).createdAt); } catch {}
+    if (!Number.isFinite(handedOffAt)) handedOffAt = Date.parse(stage(stageName)?.startedAt || '');
+    const writtenAt = fs.statSync(file).mtimeMs;
+    if (Number.isFinite(handedOffAt) && writtenAt < handedOffAt) {
+      const ago = Math.max(0, Math.round((Date.now() - handedOffAt) / 1000));
+      check = { ok: false, reason: `it has not been written since the ${stageName} stage was handed off ${ago}s ago — the stage is still in progress, or this --continue was meant for an earlier stage` };
+    }
+  }
   if (check.ok) return;
   const rel = path.relative(repoRoot, file);
   appendEvent(paths, { stage: stageName, type: 'continue_rejected', reason: check.reason, artifact: rel });

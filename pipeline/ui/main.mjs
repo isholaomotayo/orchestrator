@@ -1098,7 +1098,7 @@ function fillGoal(wrap, goal) {
 function fillControls(wrap, tab, data) {
   const host = wrap.querySelector('[data-role="controls"]');
   if (!host) return;
-  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue, data.status?.overall, data.status?.haltReason, !!data.live, !!data.stale].join();
+  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue, data.status?.overall, data.status?.haltReason, data.status?.handoffId, !!data.live, !!data.stale].join();
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
@@ -1112,7 +1112,7 @@ function fillControls(wrap, tab, data) {
 
   row(data.canContinue, el('button', {
     class: 'btn', text: 'Continue', disabled: !data.canContinue,
-    onclick: async () => { try { await api.continueRun(false, run); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
+    onclick: async () => { try { await api.continueRun(false, run, data.status?.handoffId); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
   }), unavailableReason('continue', data));
 
   row(data.canResume, el('button', {

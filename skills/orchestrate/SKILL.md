@@ -112,7 +112,8 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
    ```bash
    bash .pipeline/orchestrate.sh --continue
    ```
-   If the artifact is missing a required section, `--continue` exits non-zero, names the file and section, and the run **stays** awaiting this stage. Fix the artifact and run `--continue` again — never edit `status.json` by hand.
+   Prefer the exact command the handoff printed — it carries `--handoff-id <id>` (also in `stage-handoff.json` as `handoffId`), so your continue can only ever complete *this* stage. **Run `--continue` once per stage, and only after the artifact is fully written.** If the dashboard's Continue (or another session) already advanced the run, your `--continue` is rejected with exit code 2 and nothing changes — read `.pipeline/stage-handoff.json` again and work the new stage.
+   If the artifact is missing a required section or was not rewritten for this stage, `--continue` exits non-zero, names the file and section, and the run **stays** awaiting this stage. Fix the artifact and run `--continue` again — never edit `status.json` by hand.
 6. Repeat until the pipeline finishes or halts.
 
 **Bridge (managed) runs.** When `stage-handoff.json` has a `bridge` block and you claimed the run (`pool claim <runId>` / `run.claim`), you hold a lease: follow `bridge.instructions`, checkpoint as it says, and complete through `bridge.command` instead of a plain `--continue` — a claimed run refuses completion without its credentials. An unclaimed run uses the plain `--continue` above, and operator notes arrive in `.pipeline/followups/<stage>.txt`.

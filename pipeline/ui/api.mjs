@@ -46,7 +46,7 @@ export function createApi(projectRef) {
     poolAction: (action, featureId, reason, extra = {}) => post('/api/pool/action', { action, featureId, reason, ...extra }),
     pausePool: (why) => post('/api/pool/pause', { why }),
     resumePool: () => post('/api/pool/resume', {}),
-    continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
+    continueRun: (approve, run, handoffId) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}), ...(handoffId ? { handoffId } : {}) }),
     cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
     extendRun: (cycles, run) => post('/api/extend', { extend: cycles, ...(run ? { run } : {}) }),

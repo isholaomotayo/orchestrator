@@ -455,7 +455,7 @@ function spawnOrchestrator(project, nodeArgs, options = {}) {
     cwd: project.repoRoot,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
+    env: { ...engineEnv(), PIPELINE_UI_PORT: String(PORT) },
   });
   
   child.unref();
@@ -463,7 +463,7 @@ function spawnOrchestrator(project, nodeArgs, options = {}) {
   return child;
 }
 
-function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, maxReviewCycles, modelProfile, models, design, handoff, approvePlan }) {
+function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, maxReviewCycles, modelProfile, models, design, approvePlan }) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
@@ -480,16 +480,14 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   }
   const nodeArgs = [orchestratorEntry(project), '--task', task.trim(), '--model-profile', profile];
   if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
-  if (runner && runner !== 'auto') {
-    nodeArgs.push('--runner', runner);
-    // A dashboard-spawned run must never infer chat-vs-cli from inherited
-    // environment variables — this is a long-lived, detached process that can
-    // still carry stale IDE env vars from whatever shell originally launched
-    // it (the documented root cause of a dashboard-started run silently
-    // landing in the wrong mode). The operator's own runner choice is the
-    // only signal that matters here.
-    nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
-  }
+  // A dashboard-spawned run never infers chat-vs-cli from inherited
+  // environment variables — this long-lived, detached server can carry stale
+  // IDE env vars from whatever shell launched it (the documented root cause
+  // of dashboard runs silently landing in the wrong mode). The dashboard is
+  // not a chat session: a host run is an explicit "host" choice, and anything
+  // else runs on the CLI surface.
+  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
+  nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   if (sandbox) nodeArgs.push('--sandbox');
   const mc = positiveInt(maxCycles);
   if (mc) nodeArgs.push('--max-cycles', String(mc));
@@ -500,7 +498,6 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   // The optional stages and the approval gate were CLI-only until now, so the
   // dashboard could not start the pipeline's three headline features.
   if (design) nodeArgs.push('--design');
-  if (handoff) nodeArgs.push('--handoff');
   if (approvePlan) nodeArgs.push('--approve-plan');
   const child = spawnOrchestrator(project, nodeArgs, { append: false });
   return { ok: true, pid: child.pid };
@@ -512,6 +509,14 @@ function targetRun(project, run) {
   const status = loadRunStatus(runPaths.dir);
   if (!status) return { error: 'no run recorded at this path', code: 409 };
   return { runPaths, status, run: run || null };
+}
+
+// Chat-session markers the server may have inherited. Every engine it spawns
+// gets an explicit --mode or keeps its recorded surface, so these can only
+// mislead it (and the agent CLIs it starts).
+const CHAT_ENV_KEYS = ['CLAUDECODE', 'CLAUDE_CODE', 'CURSOR_AGENT', 'CURSOR_TRACE_ID', 'CODEX_IN_IDE', 'GEMINI_CLI_IDE', 'PIPELINE_INVOCATION'];
+function engineEnv(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !CHAT_ENV_KEYS.includes(k) && !k.startsWith('ANTIGRAVITY')));
 }
 
 function spawnForRun(project, runPaths, nodeArgs) {
@@ -574,7 +579,7 @@ function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
 // Advance a run parked at a chat handoff or the plan-approval gate. Without
 // this the dashboard could only print the shell command for the user to go and
 // type somewhere else — it could observe the pipeline but never move it.
-function continueRun(project, { approve = false, run = null } = {}) {
+function continueRun(project, { approve = false, run = null, handoffId = null } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const target = targetRun(project, run);
@@ -595,7 +600,13 @@ function continueRun(project, { approve = false, run = null } = {}) {
     return { error: `cannot continue: run is "${status.overall}", not awaiting a handoff or approval`, code: 409 };
   }
 
-  const child = spawnForRun(project, target.runPaths, [orchestratorEntry(project), '--continue']);
+  // Name the handoff this click completes, so a stale button (or a race with
+  // the host's own --continue) cannot advance a newer handoff.
+  const id = handoffId || status.handoffId || null;
+  if (handoffId && status.handoffId && handoffId !== status.handoffId) {
+    return { error: `this Continue was for an earlier handoff; the run is now awaiting ${status.awaitingStage}. Refresh and check that stage.`, code: 409 };
+  }
+  const child = spawnForRun(project, target.runPaths, [orchestratorEntry(project), '--continue', ...(id ? ['--handoff-id', id] : [])]);
   return { ok: true, pid: child.pid, continued: status.overall };
 }
 
@@ -876,6 +887,16 @@ const server = http.createServer((req, res) => {
     readBody(req, (body) => {
       const result = resumeInterruptedRunUi(project, body || {});
       json(res, result, result.code || 200);
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/run/autonomy') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => {
+      try {
+        json(res, pool.setRunAutonomy(project.paths, body?.run || null, body?.autonomy, { via: 'dashboard' }));
+      } catch (err) {
+        json(res, { error: err.message }, 400);
+      }
     });
   } else if (req.method === 'POST' && (url.pathname === '/api/run/dismiss' || url.pathname === '/api/dismiss')) {
     const project = getProjectForRequest(req, url);

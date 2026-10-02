@@ -304,3 +304,85 @@ test('a host that reports its client name as the model is not recorded as that m
     assert.notEqual(planner.modelSource, 'host-reported');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('a CLI run resumed from a chat-looking environment keeps its CLI surface unless --mode says otherwise', () => {
+  const { root, paths } = tmpRepo({ config: { customRunners: { fake: { command: process.execPath, args: ['-e', ''] } } } });
+  try {
+    fs.writeFileSync(paths.status, JSON.stringify({
+      task: 'do a thing', overall: 'halted', haltReason: 'INTERRUPTED',
+      runner: 'fake', invocationMode: 'cli', executionSurface: 'cli-subprocess',
+      hostClient: null, verdict: null, stages: [],
+    }));
+    // The UI server is often started from a chat shell; its children inherit this.
+    const res = spawnSync(process.execPath, [ENGINE, '--resume', '--no-ui'], {
+      cwd: root, encoding: 'utf8', timeout: 15000, env: { ...process.env, CLAUDECODE: '1' },
+    });
+    assert.notEqual(res.status, null, res.stdout + res.stderr);
+    const status = readStatus(paths);
+    assert.equal(status.runner, 'fake');
+    assert.equal(status.executionSurface, 'cli-subprocess');
+    assert.equal(status.surface, 'cli');
+    assert.doesNotMatch(fs.readFileSync(paths.events, 'utf8'), /surface_changed/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('an explicit --mode chat on a CLI run changes its surface and records why', () => {
+  const { root, paths } = tmpRepo();
+  try {
+    fs.writeFileSync(paths.status, JSON.stringify({
+      task: 'do a thing', overall: 'halted', haltReason: 'INTERRUPTED',
+      runner: 'claude', invocationMode: 'cli', executionSurface: 'cli-subprocess', hostClient: null, verdict: null, stages: [],
+    }));
+    assert.equal(run(root, ['--resume', '--mode', 'chat', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).surface, 'host');
+    assert.match(fs.readFileSync(paths.events, 'utf8'), /"type":"surface_changed".*"from":"cli".*"to":"host"/);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a duplicate --continue right after a handoff waits for the stage instead of halting (dashboard + host race)', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    hostRunAwaitingPlanner(root, paths);
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0, 'planner continuation accepted');
+    assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
+
+    // The second driver's --continue lands on the new plan_reviewer handoff.
+    const duplicate = run(root, ['--continue', '--no-ui']);
+    assert.equal(duplicate.status, 2, duplicate.stdout + duplicate.stderr);
+    assert.equal(readStatus(paths).overall, 'awaiting_chat');
+
+    // A review from an earlier pass is still on disk: it must not be taken as
+    // this pass's verdict.
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    const past = new Date(Date.now() - 60_000);
+    fs.utimesSync(paths.planReview, past, past);
+    const stale = run(root, ['--continue', '--no-ui']);
+    assert.equal(stale.status, 2, stale.stdout + stale.stderr);
+    assert.match(stale.stderr, /has not been written since the plan_reviewer stage was handed off/);
+    const held = readStatus(paths);
+    assert.equal(held.overall, 'awaiting_chat');
+    assert.equal(held.awaitingStage, 'plan_reviewer');
+    assert.equal(held.haltReason, null);
+
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    assert.equal(run(root, ['--continue', '--no-ui']).status, 0);
+    assert.equal(readStatus(paths).overall, 'done');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('--continue naming an older handoff never advances a newer one', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    const first = hostRunAwaitingPlanner(root, paths).handoffId;
+    fs.writeFileSync(paths.specs, validSpec());
+    assert.equal(run(root, ['--continue', '--handoff-id', first, '--no-ui']).status, 0);
+    const now = readStatus(paths);
+    assert.notEqual(now.handoffId, first);
+    fs.writeFileSync(paths.planReview, planVerdict('APPROVED'));
+    const stale = run(root, ['--continue', '--handoff-id', first, '--no-ui']);
+    assert.equal(stale.status, 2);
+    assert.match(stale.stderr, /has moved on to the plan_reviewer stage/);
+    assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

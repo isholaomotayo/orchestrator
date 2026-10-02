@@ -13,7 +13,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {
   pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock, withFileLock,
-  newStatus, ensureStageEntries, appendLine,
+  newStatus, ensureStageEntries, appendLine, appendEvent,
 } from './state.mjs';
 import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
 import {
@@ -27,6 +27,7 @@ import { classifyRun, DEFAULT_THRESHOLDS,
 import { buildSnapshot, renderDigest } from './snapshot.mjs';
 import { queueStageNote } from './events.mjs';
 import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
+import { writePolicyOverride } from './mode.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -523,6 +524,16 @@ export function requestRunResume(paths, runId) {
   return { ok: true, request: markResumeRequested(paths, runId, 'operator resume-run') };
 }
 
+/** Operator verb: change a run's autonomy; it applies at the run's next gate. */
+export function setRunAutonomy(paths, runId, autonomy, { by = 'operator', via = 'cli' } = {}) {
+  if (runId && !isValidRunId(runId)) throw new Error(`invalid run id: ${runId}`);
+  const runPaths = pipelinePaths(paths.root, runId ? { runId } : {});
+  if (!fs.existsSync(runPaths.status)) throw new Error(`run ${runId || '(root)'} has no status.json`);
+  const record = writePolicyOverride(runPaths.dir, { autonomy, by, via });
+  appendEvent(runPaths, { stage: 'orchestrator', type: 'policy_changed', autonomy, by, via });
+  return { runId: runId || null, ...record };
+}
+
 export function markResumeRequested(paths, runId, why) {
   const runPaths = pipelinePaths(paths.root, { runId });
   const meta = readRunMeta(runPaths) || {};
@@ -719,7 +730,8 @@ export function claim(paths, runId, credentials = null) {
     worktree: path.relative(paths.root, runPaths.worktree),
     brief: meta?.brief ?? null,
     stageHandoff: path.relative(paths.root, runPaths.stageHandoff),
-    continueCmd: `node pipeline/orchestrator.mjs --continue --run-id ${runId}`,
+    handoffId: status.handoffId ?? null,
+    continueCmd: `node pipeline/orchestrator.mjs --continue --run-id ${runId}${status.handoffId ? ` --handoff-id ${status.handoffId}` : ''}`,
   };
 }
 
