@@ -230,3 +230,27 @@ test('appendLine creates parent directories and appends one newline-terminated l
   assert.equal(fs.readFileSync(file, 'utf8'), 'a\nb\n');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('withFileLock is re-entrant in-process and waits for another process', async () => {
+  const { withFileLock } = await import('./state.mjs');
+  const { spawn } = await import('node:child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-'));
+  const file = path.join(dir, 'roadmap.lock');
+  assert.equal(withFileLock(file, () => withFileLock(file, () => 'nested')), 'nested');
+  assert.equal(fs.existsSync(file), false, 'released after the outermost call');
+
+  const holder = spawn(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    fs.writeFileSync(${JSON.stringify(file)}, JSON.stringify({ pid: process.pid }));
+    setTimeout(() => { fs.unlinkSync(${JSON.stringify(file)}); process.exit(0); }, 300);
+  `]);
+  await new Promise((r) => setTimeout(r, 100));
+  const started = Date.now();
+  withFileLock(file, () => {});
+  assert.ok(Date.now() - started >= 100, 'waited for the other process to release');
+  assert.throws(() => {
+    fs.writeFileSync(file, JSON.stringify({ pid: process.ppid }));
+    withFileLock(file, () => {}, { timeoutMs: 100 });
+  }, /Timed out/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

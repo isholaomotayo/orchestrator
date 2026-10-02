@@ -499,3 +499,21 @@ test('listRunStates recovers historical runs from roadmap.json and runsLedger wh
   assert.equal(snap.recentlyLanded[0].reportRel, '.pipeline/control/reports/F1/work-done.html');
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
+
+test('compile rejects a base branch that does not exist instead of failing later at landing', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pool-base-'));
+  spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: root });
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.control, { recursive: true });
+  const roadmap = (base) => ['---', 'title: Demo', `base: ${base}`, 'merge: local-only', '---', '',
+    '## F1: First', '', '- depends_on: none', '', '### Description', '', 'Do it.', '', '### Acceptance', '', '- works', ''].join('\n');
+  fs.writeFileSync(paths.roadmapMd, roadmap('release/missing'));
+  const bad = compile(paths);
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors[0].message, /release\/missing.*does not exist/);
+  fs.writeFileSync(paths.roadmapMd, roadmap('main'));
+  assert.equal(compile(paths).ok, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});

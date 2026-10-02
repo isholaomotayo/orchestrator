@@ -565,3 +565,34 @@ test('a parked host run raises one alert that escalates, then clears when picked
   assert.equal(parked().length, 0, 'cleared once the run moved on');
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a failing tick raises one supervisor-error alert, backs off, and clears on recovery', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runPaths = pipelinePaths(root, { runId: '20260930T000000Z-F1-plan-err1' });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('plan'), overall: 'awaiting_chat', featureId: 'F1' });
+  const journal = path.join(paths.control, 'bridge.journal.jsonl');
+  let clock = Date.parse('2026-09-30T10:00:00Z');
+  const sup = createSupervisor({ repoRoot: root, now: () => clock, spawnSync: () => ({ status: 0 }) });
+  fs.writeFileSync(journal, '{ not json\n');
+  assert.equal(sup.runTick(), false);
+  clock += 1_000;
+  assert.equal(sup.runTick(), null, 'backs off instead of retrying every poll');
+  clock += 120_000;
+  assert.equal(sup.runTick(), false);
+  const errors = pendingAttention(paths).filter((a) => a.kind === 'supervisor-error');
+  assert.equal(errors.length, 1, 'the same failure is one alert, not one per tick');
+  assert.match(errors[0].summary, /tick/i);
+  fs.rmSync(journal);
+  clock += 120_000;
+  assert.equal(sup.runTick(), true);
+  assert.equal(pendingAttention(paths).filter((a) => a.kind === 'supervisor-error').length, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('undeclaredFiles flags edits outside a ticket scope, honouring directory scopes', async () => {
+  const { undeclaredFiles } = await import('./supervisor.mjs');
+  assert.deepEqual(undeclaredFiles(['src/a.ts', 'src/ui/b.ts', 'api/use-content.ts', '.pipeline/changes.md'], ['src/a.ts', 'src/ui']), ['api/use-content.ts']);
+  assert.deepEqual(undeclaredFiles(['x.ts'], []), [], 'no declared scope means nothing to compare against');
+});

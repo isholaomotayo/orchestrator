@@ -153,3 +153,13 @@ test('a ticket depending on something that does not exist never becomes runnable
   const orphan = [{ id: 'T1', title: 'x', files: [], dependsOn: ['T9'], body: 'b' }];
   assert.deepEqual(scheduleTickets(orphan, { done: [], running: [], maxParallel: 3 }), []);
 });
+
+test('file scopes tolerate an annotated path with commas inside the note', () => {
+  const specs = [
+    '## 3. Tracer-Bullet Tickets', '',
+    '### Ticket 1: Health check',
+    '- **Files:** `apps/backend/convex/paymentProviders.ts` (add `checkProviderHealth` query/action, plus a test), `apps/web/src/a.ts`',
+    '- **Dependencies:** None', '',
+  ].join('\n');
+  assert.deepEqual(parseTickets(specs)[0].files, ['apps/backend/convex/paymentProviders.ts', 'apps/web/src/a.ts']);
+});

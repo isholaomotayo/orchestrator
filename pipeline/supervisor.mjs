@@ -25,7 +25,7 @@ import path from 'node:path';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
-  writeStatus, newStatus, appendEvent,
+  writeStatus, newStatus, appendEvent, withFileLock,
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
 import { writeTerminalReport, writeWorkDoneReport } from './report.mjs';
@@ -393,8 +393,18 @@ export function createSupervisor({
       worktreePath: worktree,
       message: `feat(${feature.id}${ticketRow.id ? `/${ticketRow.id}` : ''}): ${ticketRow.title}\n\nRun: ${run.runId}`,
     });
-    writeRunMeta(runPaths, { phase: 'committed', committedSha: res.sha, changedFiles: files });
+    const undeclared = undeclaredFiles(files, run.meta?.files);
+    writeRunMeta(runPaths, { phase: 'committed', committedSha: res.sha, changedFiles: files, undeclaredFiles: undeclared });
     appendRunVerb(runPaths, 'note', res.nothingToCommit ? 'no changes to commit' : `committed ${res.sha?.slice(0, 8)}`);
+    // Edits outside the ticket's declared files are how parallel tickets
+    // collide at integration (petra P8/T3). Say so at commit time, while it
+    // is still cheap to look, instead of as a merge conflict later.
+    if (undeclared.length) {
+      raiseAttention({
+        runId: run.runId, featureId: feature.id, kind: 'scope-drift', escalate: false,
+        summary: `${feature.id}/${ticketRow.id} changed ${undeclared.length} file(s) outside its declared scope: ${undeclared.slice(0, 8).join(', ')}${undeclared.length > 8 ? ', …' : ''}. Other tickets touching them may conflict at integration.`,
+      });
+    }
     return { ok: true, ...res };
   }
 
@@ -732,10 +742,15 @@ export function createSupervisor({
       const bodyFile = path.join(paths.control, 'roadmap_pr_body.md');
       fs.mkdirSync(paths.control, { recursive: true });
       fs.writeFileSync(bodyFile, `# ${rm.title}\n\nLand the working branch \`${branch}\` onto \`${rm.base}\`.\n`);
-      const pr = openPullRequest({
+      let pr = openPullRequest({
         cwd: repoRoot, provider, base: rm.base, head: branch,
         title: `${rm.title}: land roadmap`, bodyFile,
       });
+      // The PR already exists (a retry, or opened by hand): adopt it and carry
+      // on to the mergeability check, instead of escalating and resetting to
+      // awaiting_final_review on every pass (petra needed a restart).
+      const existing = !pr.ok && /already exists/.test(pr.error || '') && (pr.error || '').match(/https:\/\/[^\s]+/);
+      if (existing) pr = { ok: true, provider, url: existing[0], head: null, adopted: true };
       if (!pr.ok) {
         const err = pr.error || '';
         if (err.includes('No commits between')) {
@@ -747,13 +762,8 @@ export function createSupervisor({
           log(`landed roadmap onto ${rm.base} (no commits)`);
           return;
         }
-        let fallbackPr = null;
-        if (err.includes('already exists') || err.includes('A pull request already exists')) {
-          const m = err.match(/https:\/\/[^\s]+/);
-          if (m) fallbackPr = { url: m[0] };
-        }
         escalate(fakeFeature, null, 'pr_failed', `Could not open a pull request: ${pr.error}`);
-        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr: fallbackPr }));
+        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr: null }));
         return;
       }
       const check = checkMergeable({
@@ -1334,11 +1344,50 @@ export function createSupervisor({
     acquireLockFile(paths.lock, { pid: process.pid, role: 'supervisor' });
     fs.writeFileSync(paths.supervisorPid, String(process.pid));
     log(`supervisor started (pid ${process.pid})`);
-    const loop = () => { try { tick(); } catch (err) { log(`tick failed: ${err.stack || err.message}`); } };
+    const loop = () => { runTick(); };
     loop();
     timer = setInterval(loop, poolCfg.pollMs);
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => stop(signal));
     return { pid: process.pid };
+  }
+
+  // A tick that throws used to be logged and retried every poll forever —
+  // petra logged 56 identical failures while the pool silently stood still.
+  // Now: one deduped alert per distinct failure, exponential backoff, and the
+  // alert clears on the first clean tick. Returns true/false, or null when the
+  // tick was skipped for backoff.
+  let tickFailures = 0;
+  let nextTickAt = 0;
+  function runTick() {
+    if (now() < nextTickAt) return null;
+    try {
+      // Held for the whole tick so an operator verb never interleaves with it.
+      withFileLock(paths.roadmapLock, () => tick());
+    } catch (err) {
+      tickFailures += 1;
+      nextTickAt = now() + Math.min(poolCfg.pollMs * 2 ** tickFailures, 60_000);
+      const message = String(err?.message || err).split('\n')[0].slice(0, 300);
+      const signature = message.replace(/\d+/g, '#');
+      log(`tick failed (${tickFailures}x): ${err?.stack || message}`);
+      const open = pool.pendingAttention(paths).some((a) => a.kind === 'supervisor-error' && a.signature === signature);
+      if (!open) {
+        appendAttention(paths, {
+          kind: 'supervisor-error', escalate: true, runId: null, featureId: null, signature,
+          summary: `The supervisor tick is failing, so the pool is not advancing: ${message}. See .pipeline/control/supervisor.log.`,
+          at: new Date(now()).toISOString(),
+        });
+      }
+      return false;
+    }
+    if (tickFailures) {
+      log(`tick recovered after ${tickFailures} failure(s)`);
+      for (const item of pool.pendingAttention(paths)) {
+        if (item.kind === 'supervisor-error') ackAttention(paths, item.id, { by: 'supervisor:recovered' });
+      }
+    }
+    tickFailures = 0;
+    nextTickAt = 0;
+    return true;
   }
 
   function stop(signal = null) {
@@ -1365,10 +1414,15 @@ export function createSupervisor({
     if (signal) process.exit(0);
   }
 
-  return { tick, start, stop, archiveFeatureReport, paths, config, poolCfg, mergeCfg };
+  return { tick, runTick, start, stop, archiveFeatureReport, paths, config, poolCfg, mergeCfg };
 }
 
 // Small helpers kept at the bottom so the lifecycle above reads top to bottom.
+export function undeclaredFiles(changed = [], declared = []) {
+  if (!declared?.length) return [];
+  const within = (f) => declared.some((d) => f === d || f.startsWith(d.replace(/\/$/, '') + '/'));
+  return (changed || []).filter((f) => !f.startsWith('.pipeline/') && !within(f));
+}
 function gitIn(cwd, args) {
   const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };

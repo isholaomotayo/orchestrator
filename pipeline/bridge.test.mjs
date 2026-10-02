@@ -453,7 +453,8 @@ test('run.dismiss halts and dismisses an active or waiting run and clears owner'
 
   const updatedStatus = JSON.parse(fs.readFileSync(p.status, 'utf8'));
   assert.equal(updatedStatus.overall, 'halted');
-  assert.equal(updatedStatus.haltReason, 'Operator dismissed test run');
+  assert.equal(updatedStatus.haltReason, 'DISMISSED');
+  assert.equal(updatedStatus.dismissReason, 'Operator dismissed test run');
   assert.equal(updatedStatus.dismissed, true);
   assert.ok(updatedStatus.dismissedAt);
 
@@ -471,4 +472,34 @@ test('run.dismiss safely handles a run without status.json or with an empty dir'
   assert.equal(res.ok, true);
   assert.equal(res.dismissed, true);
   assert.equal(fs.existsSync(p.dir), false); // empty dir was cleaned up
+});
+
+test('dismissing a finished run keeps its outcome', () => {
+  const root = project(), runId = 'r1';
+  const { p, status } = awaitingRun(root, runId);
+  fs.writeFileSync(p.status, JSON.stringify({ ...status, overall: 'done', verdict: 'APPROVED' }));
+  bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup' });
+  const after = JSON.parse(fs.readFileSync(p.status, 'utf8'));
+  assert.equal(after.overall, 'done');
+  assert.equal(after.verdict, 'APPROVED');
+  assert.equal(after.dismissed, true);
+});
+
+test('dismiss is idempotent and clears dormant resume requests', () => {
+  const root = project(), runId = 'r1';
+  const { p } = awaitingRun(root, runId);
+  fs.writeFileSync(p.runMeta, JSON.stringify({ runId, featureId: 'F1', kind: 'ticket', requests: { resume: { at: 'x', why: 'old decision' } } }));
+  const first = bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup' });
+  assert.equal(first.alreadyDismissed, false);
+  assert.equal(JSON.parse(fs.readFileSync(p.runMeta, 'utf8')).requests, undefined, 'a dormant resume must not respawn a dismissed run');
+  const second = bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup again' });
+  assert.equal(second.alreadyDismissed, true);
+  assert.equal(JSON.parse(fs.readFileSync(p.status, 'utf8')).dismissReason, 'cleanup');
+});
+
+test('dismiss refuses while the run engine is alive', () => {
+  const root = project(), runId = 'r1';
+  const { p } = awaitingRun(root, runId);
+  fs.writeFileSync(p.lock, JSON.stringify({ pid: process.pid }));
+  assert.throws(() => bridgeCommand('run.dismiss', { project: root, runId, reason: 'x' }), /engine is still running/);
 });

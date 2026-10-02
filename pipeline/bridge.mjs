@@ -75,11 +75,20 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       const reason = args.reason || 'Dismissed by operator';
       let statusObj = null;
       try { statusObj = JSON.parse(fs.readFileSync(p.status, 'utf8')); } catch {}
+      // Idempotent: a second click must neither fail nor rewrite the record.
+      if (statusObj?.dismissed || state.dismissedRuns?.[key]) {
+        return { ok: true, runId: args.runId, dismissed: true, alreadyDismissed: true, reason: statusObj?.dismissReason || state.dismissedRuns?.[key]?.reason || reason };
+      }
+      if (pidAlive(readLock(p)?.pid)) throw new Error('Run engine is still running; stop it before dismissing.');
       if (statusObj) {
-        statusObj.overall = 'halted';
-        statusObj.haltReason = reason;
+        // A finished run keeps its outcome; dismissing only hides it.
+        if (statusObj.overall !== 'done') {
+          statusObj.overall = 'halted';
+          statusObj.haltReason = 'DISMISSED';
+        }
         statusObj.dismissed = true;
         statusObj.dismissedAt = stamp;
+        statusObj.dismissReason = reason;
         stageFile(p.status, JSON.stringify(statusObj, null, 2) + '\n');
       } else {
         try {
@@ -90,7 +99,8 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
             } else {
               const fallback = {
                 overall: 'halted',
-                haltReason: reason,
+                haltReason: 'DISMISSED',
+                dismissReason: reason,
                 dismissed: true,
                 dismissedAt: stamp,
               };
@@ -99,9 +109,20 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
           }
         } catch {}
       }
+      // A dormant resume/extend request would otherwise make the supervisor
+      // respawn the run it was just told to drop.
+      if (p.runMeta) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(p.runMeta, 'utf8'));
+          if (meta.requests) {
+            delete meta.requests;
+            stageFile(p.runMeta, JSON.stringify({ ...meta, dismissed: true }, null, 2));
+          }
+        } catch { /* no run.json */ }
+      }
       delete state.runs[key];
       (state.dismissedRuns ||= {})[key] = { at: stamp, reason };
-      return { ok: true, runId: args.runId, dismissed: true, reason };
+      return { ok: true, runId: args.runId, dismissed: true, alreadyDismissed: false, reason };
     }
     const status = loadStatus(p);
     const key = keyOf(args.runId);

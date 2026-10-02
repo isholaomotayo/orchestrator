@@ -218,3 +218,14 @@ test('detectPassDrop fires only when both cycles have a real pass count', () => 
   assert.equal(detectPassDrop({ passedCount: null }, { passedCount: 3 }), false);
   assert.equal(detectPassDrop(null, { passedCount: 3 }), false);
 });
+
+test('a planner spec with an invalid ticket section is rejected at the planner gate', () => {
+  const spec = [
+    '# Specification', '', '## Objective', 'x'.repeat(200), '',
+    '## 3. Tracer-Bullet Tickets', '', '### Ticket 1: A', '- **Files:** src/a.ts', '- **Dependencies:** Ticket 9', '',
+    '## Failure Modes', 'none', '', '## Acceptance', 'tests pass',
+  ].join('\n');
+  const res = validateArtifact('planner', spec);
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /Tracer-Bullet Tickets section is invalid: Unknown ticket dependency T9/);
+});

@@ -40,7 +40,7 @@ test('MAX_CYCLES extends but does not plain-resume', () => {
 });
 
 test('regressions, integrity violations, dismissals and finished runs are never resumed', () => {
-  for (const reason of ['REGRESSION_BLOCKED', 'INTEGRITY_VIOLATION', 'Dismissed from dashboard']) {
+  for (const reason of ['REGRESSION_BLOCKED', 'INTEGRITY_VIOLATION', 'DISMISSED', 'Dismissed from dashboard']) {
     const r = recoveryFor(halted(reason));
     assert.equal(r.resume || r.extend || r.autoResume, false, reason);
     assert.ok(r.reason, reason);

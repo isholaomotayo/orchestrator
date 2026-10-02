@@ -12,7 +12,7 @@ import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock,
+  pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock, withFileLock,
   newStatus, ensureStageEntries, appendLine,
 } from './state.mjs';
 import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
@@ -81,18 +81,43 @@ export function writeRoadmap(paths, roadmap) {
  * Compile `.pipeline/roadmap.md` into control state, preserving progress.
  * Returns errors rather than throwing so a CLI can print them with line numbers.
  */
-export function compile(paths, { now = new Date() } = {}) {
+function compileUnlocked(paths, { now = new Date() } = {}) {
   let source;
   try { source = fs.readFileSync(paths.roadmapMd, 'utf8'); }
   catch { return { ok: false, errors: [{ line: 0, message: `No roadmap at ${path.relative(paths.root, paths.roadmapMd)}. Write one, or run "roadmap plan".` }] }; }
 
   const { roadmap, errors } = parseRoadmapMd(source);
   if (errors.length) return { ok: false, errors };
+  const baseCheck = checkRoadmapBase(paths, roadmap);
+  if (baseCheck.errors.length) return { ok: false, errors: baseCheck.errors };
 
   const sourceSha256 = crypto.createHash('sha256').update(source).digest('hex');
   const compiled = compileRoadmap(roadmap, readRoadmap(paths), { sourceSha256, now });
   writeRoadmap(paths, compiled);
-  return { ok: true, roadmap: compiled, errors: [], warnings: [] };
+  return { ok: true, roadmap: compiled, errors: [], warnings: baseCheck.warnings };
+}
+
+// A base branch that does not exist used to surface only at landing time, as
+// a supervisor tick that failed on every poll (petra: 27 times). Check it when
+// the roadmap is compiled, where the fix is one push away.
+function checkRoadmapBase(paths, roadmap) {
+  const errors = [], warnings = [];
+  const git = (args) => spawnSync('git', args, { cwd: paths.root, encoding: 'utf8', timeout: 15_000 });
+  if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) return { errors, warnings };
+  const base = roadmap.base;
+  if (git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
+    errors.push({ line: 0, message: `Base branch "${base}" does not exist in this repository. Create it, or set "base:" in the roadmap front matter.` });
+  }
+  if (roadmap.merge && roadmap.merge !== 'local-only') {
+    const remote = mergeConfig(loadConfig(paths)).remote;
+    const res = git(['ls-remote', '--exit-code', '--heads', remote, base]);
+    if (res.status === 2) {
+      errors.push({ line: 0, message: `Base branch "${base}" is not on remote "${remote}", so merge: ${roadmap.merge} cannot land. Push it first: git push -u ${remote} ${base}` });
+    } else if (res.status !== 0) {
+      warnings.push({ message: `Could not reach remote "${remote}" to confirm base branch "${base}" exists there (${(res.stderr || res.error?.message || 'unknown error').trim().split('\n')[0]}).` });
+    }
+  }
+  return { errors, warnings };
 }
 
 function parseRunSpawnTime(runId) {
@@ -529,7 +554,7 @@ export function approvePlan(paths, runId, { by = 'operator', via = 'cli' } = {})
  * the final irreversible step. This records consent only; the supervisor still
  * performs a live mergeability read before anything is merged.
  */
-export function approveMerge(paths, featureId, { by = 'operator', via = 'cli', note = null } = {}) {
+function approveMergeUnlocked(paths, featureId, { by = 'operator', via = 'cli', note = null } = {}) {
   const roadmap = readRoadmap(paths);
   if (!roadmap) throw new Error('No compiled roadmap.');
   if (!featureId || featureId === 'roadmap') {
@@ -552,7 +577,7 @@ export function landRoadmap(paths, opts = {}) {
   return approveRoadmapMerge(paths, opts);
 }
 
-export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note = null } = {}) {
+function approveRoadmapMergeUnlocked(paths, { by = 'operator', via = 'cli', note = null } = {}) {
   const roadmap = readRoadmap(paths);
   if (!roadmap) throw new Error('No compiled roadmap.');
   if (roadmap.review !== 'end') {
@@ -574,7 +599,7 @@ export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note 
  * baseRef. Tickets and runs are discarded; landed work on earlier features is
  * not touched.
  */
-export function retryFeature(paths, featureId) {
+function retryFeatureUnlocked(paths, featureId) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -597,7 +622,7 @@ export function retryFeature(paths, featureId) {
  * tickets and the approved plan are kept; the superseded run id is recorded
  * on the ticket for lineage.
  */
-export function retryTicket(paths, featureId, ticketId) {
+function retryTicketUnlocked(paths, featureId, ticketId) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -618,7 +643,7 @@ export function retryTicket(paths, featureId, ticketId) {
   return { featureId, ticketId, status: 'queued', supersedes: ticket.runId || null };
 }
 
-export function requestChanges(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
+function requestChangesUnlocked(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -636,14 +661,14 @@ export function requestChanges(paths, featureId, text, { by = 'operator', via = 
   return { featureId, runId: runId ?? null };
 }
 
-export function holdFeature(paths, featureId, why = '') {
+function holdFeatureUnlocked(paths, featureId, why = '') {
   const roadmap = readRoadmap(paths);
   if (!roadmap?.features?.some((f) => f.id === featureId)) throw new Error(`Unknown feature "${featureId}".`);
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'held', { heldReason: why || null }));
   return { featureId, status: 'held' };
 }
 
-export function releaseFeature(paths, featureId) {
+function releaseFeatureUnlocked(paths, featureId) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -652,7 +677,7 @@ export function releaseFeature(paths, featureId) {
   return { featureId, status: 'queued' };
 }
 
-export function skipFeature(paths, featureId, why = '') {
+function skipFeatureUnlocked(paths, featureId, why = '') {
   const roadmap = readRoadmap(paths);
   if (!roadmap?.features?.some((f) => f.id === featureId)) throw new Error(`Unknown feature "${featureId}".`);
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'skipped', { skipReason: why || null }));
@@ -747,3 +772,17 @@ export function reset(paths, { archive = true, hard = false } = {}) {
 }
 
 export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };
+
+// Operator verbs and the supervisor tick both read-modify-write roadmap.json;
+// without one lock an operator's retry could be overwritten by a tick that
+// started before it (lost update).
+const underRoadmapLock = (fn) => (paths, ...rest) => withFileLock(paths.roadmapLock, () => fn(paths, ...rest));
+export const compile = underRoadmapLock(compileUnlocked);
+export const approveMerge = underRoadmapLock(approveMergeUnlocked);
+export const approveRoadmapMerge = underRoadmapLock(approveRoadmapMergeUnlocked);
+export const retryFeature = underRoadmapLock(retryFeatureUnlocked);
+export const retryTicket = underRoadmapLock(retryTicketUnlocked);
+export const requestChanges = underRoadmapLock(requestChangesUnlocked);
+export const holdFeature = underRoadmapLock(holdFeatureUnlocked);
+export const releaseFeature = underRoadmapLock(releaseFeatureUnlocked);
+export const skipFeature = underRoadmapLock(skipFeatureUnlocked);

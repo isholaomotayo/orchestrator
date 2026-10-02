@@ -41,6 +41,7 @@ export function pipelinePaths(repoRoot, { runId = null } = {}) {
     controlLock: path.join(control, '.lock'),
     snapshot: path.join(control, 'snapshot.json'),
     roadmapJson: path.join(control, 'roadmap.json'),
+    roadmapLock: path.join(control, 'roadmap.lock'),
     decisions: path.join(control, 'decisions.jsonl'),
     attention: path.join(control, 'attention.jsonl'),
     briefs: path.join(control, 'briefs'),
@@ -322,5 +323,31 @@ export function tailFile(file, maxLines = 200) {
     return lines.slice(Math.max(0, lines.length - maxLines)).join('\n');
   } catch {
     return '';
+  }
+}
+
+// Re-entrant within a process: the supervisor holds the roadmap lock for a
+// whole tick and calls pool verbs that take it too.
+const heldFileLocks = new Map();
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Run `fn` while holding an exclusive lock file, waiting up to `timeoutMs` for
+ * another process to release it. Synchronous, like the callers it guards.
+ */
+export function withFileLock(file, fn, { timeoutMs = 15_000, pollMs = 25 } = {}) {
+  if (heldFileLocks.has(file)) {
+    heldFileLocks.set(file, heldFileLocks.get(file) + 1);
+    try { return fn(); } finally { heldFileLocks.set(file, heldFileLocks.get(file) - 1); }
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (!acquireLockFile(file, { pid: process.pid })) {
+    if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs}ms waiting for ${path.basename(file)}; another pipeline process is holding it.`);
+    Atomics.wait(sleepCell, 0, 0, pollMs);
+  }
+  heldFileLocks.set(file, 1);
+  try { return fn(); } finally {
+    heldFileLocks.delete(file);
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
   }
 }
