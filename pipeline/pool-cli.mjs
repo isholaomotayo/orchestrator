@@ -33,7 +33,8 @@ Acting:
   approve-merge [featureId] [--note "..."]   omit featureId to land a review:end roadmap
   land-roadmap [--note "..."]
   request-changes <featureId> "<text>"
-  retry <featureId>
+  retry <featureId>            replan the whole feature from scratch
+  retry-ticket <featureId> <ticketId>   rerun one failed/held ticket, keeping the plan and committed tickets
   extend <runId> <cycles>
   resume-run <runId>           resume one halted run in place (after fixing its artifact)
   ack <attentionId>
@@ -244,6 +245,12 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
       case 'extend': {
         if (!args[1] || !args[2]) { console.error(USAGE); return 2; }
         out(json, pool.requestExtend(paths, args[1], args[2]), `Asked the supervisor to extend ${args[1]} by ${args[2]} cycle(s).`);
+        return 0;
+      }
+      case 'retry-ticket': {
+        if (!args[1] || !args[2]) { console.error(USAGE); return 2; }
+        const res = pool.retryTicket(paths, args[1], args[2]);
+        out(json, res, `Requeued ${args[1]}/${args[2]}${res.supersedes ? ` (supersedes ${res.supersedes})` : ''}; the supervisor will start it.`);
         return 0;
       }
       case 'resume-run': {

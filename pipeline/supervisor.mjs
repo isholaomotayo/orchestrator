@@ -321,7 +321,10 @@ export function createSupervisor({
       .filter((t) => t.status === 'running' && t.runId)
       .map((t) => [t.runId, tickets.find((x) => x.id === t.id)?.files || []]));
 
-    const wave = scheduleTickets(tickets, {
+    // A held ticket waits for repair: never reschedule it (its dependents wait
+    // with it), but it does not occupy a parallel slot either.
+    const held = new Set(recorded.filter((t) => t.status === 'held').map((t) => t.id));
+    const wave = scheduleTickets(tickets.filter((t) => !held.has(t.id)), {
       done, running,
       maxParallel: Math.min(feature.maxParallel || poolCfg.maxParallel, running.length + availableSlots()),
       runningFiles,
@@ -991,6 +994,7 @@ export function createSupervisor({
           ackAttention(paths, item.id, { by: 'supervisor:agent-queue' });
           continue;
         }
+        if (item.kind === 'ticket-held' && run.status?.overall === 'halted') continue;
         if (item.kind === 'halted' && run.status?.overall === 'halted') {
           const featureStatus = rm.features?.find((feature) => feature.id === item.featureId)?.status;
           if (!item.featureId || ['failed', 'held'].includes(featureStatus)) continue;
@@ -1153,18 +1157,35 @@ export function createSupervisor({
         let changed = false;
         const tickets = (current.tickets || []).map((t) => ({ ...t }));
         for (const ticket of tickets) {
-          if (ticket.status !== 'running' || !ticket.runId) continue;
+          if (!['running', 'held'].includes(ticket.status) || !ticket.runId) continue;
           const run = byRun(ticket.runId);
           if (!run) continue;
           if (run.status?.overall === 'done') {
+            // Includes adopting a held ticket whose run was repaired and finished.
             const committed = commitTicket(current, ticket, run);
             ticket.status = committed.ok ? 'committed' : 'failed';
             if (!committed.ok) escalate(current, run, 'commit-failed', committed.reason);
             changed = true;
           } else if (run.status?.overall === 'halted' && !isRetrying(run)) {
-            ticket.status = 'failed';
+            if (recoveryFor(run.status).resume) {
+              // Fixable in place (missing section, unparseable verdict, a
+              // non-transient CLI error once its cause is fixed): hold this
+              // ticket instead of failing the feature and replanning from
+              // scratch — that discarded committed work in the field.
+              if (ticket.status !== 'held') {
+                ticket.status = 'held';
+                changed = true;
+                escalate(current, run, 'ticket-held',
+                  `${current.id}/${ticket.id} halted (${run.status.haltReason}) and is held for repair; other tickets continue. Fix it and run \`pool resume-run ${run.runId}\`, or \`pool retry-ticket ${current.id} ${ticket.id}\` to rerun just this ticket.`);
+              }
+            } else {
+              ticket.status = 'failed';
+              changed = true;
+              escalate(current, run, 'halted', `${current.id}/${ticket.id} halted: ${run.status.haltReason}. Rerun just this ticket with \`pool retry-ticket ${current.id} ${ticket.id}\`.`);
+            }
+          } else if (ticket.status === 'held' && ['running', 'awaiting_chat'].includes(run.status?.overall)) {
+            ticket.status = 'running';
             changed = true;
-            escalate(current, run, 'halted', `${current.id}/${ticket.id} halted: ${run.status.haltReason}`);
           }
         }
         if (changed) saveRoadmap(setFeatureStatus(roadmap(), current.id, 'executing', { tickets }));

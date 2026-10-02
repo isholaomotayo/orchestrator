@@ -78,6 +78,29 @@ export function buildSnapshot({
       });
       covered.add(feature.id);
     }
+    // A held or failed ticket is repaired or rerun on its own; it never needs
+    // the whole feature replanned.
+    if (['executing', 'failed'].includes(feature.status) && !covered.has(feature.id)) {
+      const stuck = (feature.tickets || []).filter((t) => ['held', 'failed'].includes(t.status));
+      for (const ticket of stuck) {
+        needsDecision.push({
+          decisionId: null,
+          kind: ticket.status === 'held' ? 'ticket-held' : 'ticket-failed',
+          runId: ticket.runId ?? null,
+          featureId: feature.id,
+          ticketId: ticket.id,
+          featureTitle: feature.title,
+          question: ticket.status === 'held'
+            ? `${feature.id}/${ticket.id} is held for repair; the rest of ${feature.id} continues.`
+            : `${feature.id}/${ticket.id} failed.`,
+          options: ticket.status === 'held' ? ['resume-run', 'retry-ticket'] : ['retry-ticket'],
+          recommended: ticket.status === 'held' ? 'resume-run' : 'retry-ticket',
+          artifacts: [],
+          since: feature.startedAt ?? null,
+        });
+      }
+      if (stuck.length) covered.add(feature.id);
+    }
     if (!['failed', 'held'].includes(feature.status) || covered.has(feature.id)) continue;
     needsDecision.push({
       decisionId: null,
@@ -275,6 +298,10 @@ export function renderDigest(snapshot) {
     const recommended = d.recommended ? ` Recommended: ${d.recommended}.` : '';
     const how = d.decisionId
       ? ` — answer with \`pool decide ${d.decisionId} "<answer>"\``
+      : d.kind === 'ticket-held'
+        ? ` — after fixing it, \`pool resume-run ${d.runId}\`; or rerun it with \`pool retry-ticket ${d.featureId} ${d.ticketId}\``
+      : d.kind === 'ticket-failed'
+        ? ` — rerun just this ticket with \`pool retry-ticket ${d.featureId} ${d.ticketId}\` (or \`pool retry ${d.featureId}\` to replan)`
       : d.kind === 'feature-failed'
         ? ` — retry with \`pool retry ${d.featureId}\`, or skip with \`roadmap skip ${d.featureId}\``
         : d.kind === 'held'

@@ -592,6 +592,32 @@ export function retryFeature(paths, featureId) {
   return { featureId, status: 'queued' };
 }
 
+/**
+ * Rerun one failed or held ticket without replanning the feature. Committed
+ * tickets and the approved plan are kept; the superseded run id is recorded
+ * on the ticket for lineage.
+ */
+export function retryTicket(paths, featureId, ticketId) {
+  const roadmap = readRoadmap(paths);
+  const feature = roadmap?.features?.find((f) => f.id === featureId);
+  if (!feature) throw new Error(`Unknown feature "${featureId}".`);
+  if (!['failed', 'executing'].includes(feature.status)) {
+    throw new Error(`Feature "${featureId}" is ${feature.status}; only an executing or failed feature's tickets can be retried.`);
+  }
+  const ticket = feature.tickets?.find((t) => t.id === ticketId);
+  if (!ticket) throw new Error(`Feature "${featureId}" has no ticket "${ticketId}".`);
+  if (!['failed', 'held'].includes(ticket.status)) {
+    throw new Error(`Ticket "${ticketId}" is ${ticket.status}; only a failed or held ticket can be retried.`);
+  }
+  const tickets = feature.tickets.map((t) => (t.id !== ticketId ? t : {
+    ...t, status: 'queued', runId: null,
+    previousRunIds: [...(t.previousRunIds || []), t.runId].filter(Boolean),
+  }));
+  writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'executing', { tickets }));
+  if (ticket.runId) appendRunVerb(pipelinePaths(paths.root, { runId: ticket.runId }), 'note', `superseded by retry-ticket ${featureId}/${ticketId}`);
+  return { featureId, ticketId, status: 'queued', supersedes: ticket.runId || null };
+}
+
 export function requestChanges(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);

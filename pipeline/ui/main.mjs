@@ -530,7 +530,7 @@ function viewOverview(wrap) {
 // item with no real decisionId — its "options" are pool verbs (retry/hold/
 // release/skip), not free-text answers, so they get their own explicit
 // action buttons rather than routing through the answer-a-decision flow.
-const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held']);
+const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held', 'ticket-held', 'ticket-failed']);
 
 function decisionCard(item) {
   const isFeatureAction = !item.decisionId && item.featureId && FEATURE_ACTION_KINDS.has(item.kind);
@@ -547,7 +547,7 @@ function decisionCard(item) {
       onclick: isFeatureAction
         ? async () => {
           try {
-            await api.poolAction(option, item.featureId, answer.value.trim() || undefined);
+            await api.poolAction(option, item.featureId, answer.value.trim() || undefined, { ticketId: item.ticketId, runId: item.runId });
             toast(`${option} recorded for ${item.featureId}.`);
             refresh();
           } catch (err) { toast(err.message); }

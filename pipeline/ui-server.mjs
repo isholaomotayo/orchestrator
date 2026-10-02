@@ -773,6 +773,11 @@ const server = http.createServer((req, res) => {
     return readBody(req, body => {
       try {
         const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature,skip:pool.skipFeature};
+        if (body?.action === 'retry-ticket') return json(res, pool.retryTicket(project.paths, body.featureId, body.ticketId));
+        if (body?.action === 'resume-run') {
+          const result = pool.requestRunResume(project.paths, body.runId);
+          return result.ok ? json(res, result) : json(res, { error: result.reason }, 409);
+        }
         if (!actions[body?.action]) throw new Error('Unknown action');
         return json(res,actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action'));
       } catch (err) { return json(res,{error:err.message},409); }

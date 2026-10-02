@@ -568,3 +568,63 @@ test('a resolved merge-conflict rerun-ticket leaves integrating', async (t) => {
   assert.equal(after.features[0].status, 'executing');
   assert.ok(['queued', 'running'].includes(after.features[0].tickets.find((tk) => tk.id === 'T1').status));
 });
+
+function seedExecutingTicket(root, { haltReason, ticketStatus = 'running' }) {
+  const paths = pipelinePaths(root);
+  pool.compile(paths);
+  const runId = '20260930T000000Z-F1-T1-cafe0001';
+  const rm = pool.readRoadmap(paths);
+  const f = rm.features.find((x) => x.id === 'F1');
+  f.status = 'executing';
+  f.specRunId = 'plan-1';
+  f.tickets = [{ id: 'T1', title: 't', runId, status: ticketStatus }];
+  f.baseRef = git(root, 'rev-parse', 'HEAD');
+  pool.writeRoadmap(paths, rm);
+  const rp = pipelinePaths(root, { runId });
+  fs.mkdirSync(rp.dir, { recursive: true });
+  fs.writeFileSync(rp.status, JSON.stringify({ overall: 'halted', haltReason, haltedStage: 'coder', featureId: 'F1', stages: [] }));
+  fs.writeFileSync(rp.runMeta, JSON.stringify({ runId, featureId: 'F1', ticketId: 'T1', kind: 'ticket', runner: 'host' }));
+  return { paths, runId };
+}
+
+test('a recoverable ticket halt holds the ticket for repair instead of failing the feature', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const { paths, runId } = seedExecutingTicket(root, { haltReason: 'MISSING_ARTIFACT' });
+  const sup = createSupervisor({ repoRoot: root, spawn: () => ({ pid: 4242, unref() {} }), spawnSync: () => ({ status: 0 }) });
+  sup.tick(); sup.tick();
+  const f = pool.readRoadmap(paths).features.find((x) => x.id === 'F1');
+  assert.notEqual(f.status, 'failed', 'a fixable halt must not fail the whole feature');
+  assert.equal(f.tickets[0].status, 'held');
+  const held = pool.pendingAttention(paths).filter((a) => a.kind === 'ticket-held' && a.runId === runId);
+  assert.equal(held.length, 1, 'one alert, not one per tick');
+  assert.match(held[0].summary, /resume-run/);
+  assert.match(held[0].summary, /retry-ticket/);
+});
+
+test('a non-recoverable ticket halt still fails the feature', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const { paths } = seedExecutingTicket(root, { haltReason: 'INTEGRITY_VIOLATION' });
+  createSupervisor({ repoRoot: root, spawn: () => ({ pid: 4242, unref() {} }), spawnSync: () => ({ status: 0 }) }).tick();
+  assert.equal(pool.readRoadmap(paths).features.find((x) => x.id === 'F1').status, 'failed');
+});
+
+test('retry-ticket requeues one ticket, keeps the others, and records lineage', async (t) => {
+  const root = makeProject();
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const { paths, runId } = seedExecutingTicket(root, { haltReason: 'INTEGRITY_VIOLATION', ticketStatus: 'failed' });
+  const rm = pool.readRoadmap(paths);
+  const f = rm.features.find((x) => x.id === 'F1');
+  f.status = 'failed';
+  f.tickets.push({ id: 'T2', title: 'u', runId: 'r-committed', status: 'committed' });
+  pool.writeRoadmap(paths, rm);
+  const res = pool.retryTicket(paths, 'F1', 'T1');
+  assert.equal(res.supersedes, runId);
+  const after = pool.readRoadmap(paths).features.find((x) => x.id === 'F1');
+  assert.equal(after.status, 'executing');
+  assert.equal(after.specRunId, 'plan-1', 'the approved plan is kept');
+  assert.deepEqual(after.tickets.map((x) => [x.id, x.status, x.runId]), [['T1', 'queued', null], ['T2', 'committed', 'r-committed']]);
+  assert.deepEqual(after.tickets[0].previousRunIds, [runId]);
+  assert.throws(() => pool.retryTicket(paths, 'F1', 'T2'), /committed/);
+});

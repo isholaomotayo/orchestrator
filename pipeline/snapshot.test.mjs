@@ -312,3 +312,14 @@ test('dismissed runs are excluded from needsDecision, inProgress, and blocked co
   assert.equal(s.counts.blocked, 0);
   assert.equal(s.history.some((r) => r.runId === 'r_dead'), true);
 });
+
+test('a held ticket gets its own repair card instead of a feature-wide retry', () => {
+  const snap = buildSnapshot({
+    roadmap: { features: [{ id: 'F1', title: 'Feat', status: 'executing',
+      tickets: [{ id: 'T1', runId: 'r1', status: 'held' }, { id: 'T2', runId: 'r2', status: 'committed' }] }] },
+    runs: [{ runId: 'r1', overall: 'halted', featureId: 'F1' }], decisions: [], attention: [],
+  });
+  const cards = snap.needsDecision.filter((d) => d.featureId === 'F1');
+  assert.deepEqual(cards.map((d) => [d.kind, d.ticketId, d.options]), [['ticket-held', 'T1', ['resume-run', 'retry-ticket']]]);
+  assert.match(renderDigest(snap), /pool resume-run r1/);
+});

@@ -43,7 +43,7 @@ export function createApi(projectRef) {
     approveMerge: (featureId, note) => post('/api/merge/approve', { featureId, note }),
     requestChanges: (featureId, text) => post('/api/merge/request-changes', { featureId, text }),
     followup: (stage, text, run) => post('/api/followup', { stage, text, run }),
-    poolAction: (action, featureId, reason) => post('/api/pool/action', { action, featureId, reason }),
+    poolAction: (action, featureId, reason, extra = {}) => post('/api/pool/action', { action, featureId, reason, ...extra }),
     pausePool: (why) => post('/api/pool/pause', { why }),
     resumePool: () => post('/api/pool/resume', {}),
     continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
