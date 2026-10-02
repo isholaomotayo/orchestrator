@@ -31,8 +31,7 @@ const FATAL_PATTERNS = [
   /please (run|log ?in)\b/i,
   /please run .* login/i,
   /invalid api key/i,
-  /unauthorized/i,
-  /permission denied/i,
+  /\b401\b.*unauthori[sz]ed|unauthori[sz]ed.*\b(api|key|token|credential)/i,
   /(unknown|invalid|unsupported) model/i,
   /model .* (not found|does not exist)/i,
   /requires a newer version/i,
@@ -45,13 +44,21 @@ const FATAL_PATTERNS = [
  * @returns {{ transient: boolean, reason: string }}
  */
 export function classifyFailure(res, logTail = '') {
-  const haystack = `${res?.error || ''}\n${logTail}`;
+  // A timeout is a capacity/latency symptom, not a broken invocation — the same
+  // stage often completes on a retry. Decided before any text matching: the
+  // log of a timed-out agent is full of its own work, not of its failure.
+  if (res?.timedOut) return { transient: true, reason: 'agent timed out' };
+  // Read the agent CLI's own failure channel (stderr and its final result
+  // lines), not the whole log tail: that tail holds the tests and tools the
+  // agent ran, and names like `rejects_unauthorized_*` or an EACCES from a
+  // test used to turn a 529 into a "fatal auth" halt.
+  const own = res && (res.stderrTail !== undefined || res.outputTail !== undefined);
+  const haystack = own
+    ? `${res.error || ''}\n${res.stderrTail || ''}\n${res.outputTail || ''}`
+    : `${res?.error || ''}\n${logTail}`;
   for (const p of FATAL_PATTERNS) {
     if (p.test(haystack)) return { transient: false, reason: 'fatal: authentication, quota, or model configuration' };
   }
-  // A timeout is a capacity/latency symptom, not a broken invocation — the same
-  // stage often completes on a retry.
-  if (res?.timedOut) return { transient: true, reason: 'agent timed out' };
   for (const p of TRANSIENT_PATTERNS) {
     if (p.test(haystack)) return { transient: true, reason: 'transient: provider or network error' };
   }

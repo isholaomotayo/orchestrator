@@ -118,6 +118,13 @@ function probeClaudeAuth() {
 function probeCursorAuth() {
   if (!binExists('cursor-agent')) return false;
   if (process.env.CURSOR_API_KEY) return true;
+  // `status` answers without sending a prompt (the old probe spent a real
+  // model call, and up to 8s, just to learn whether the user is logged in).
+  const status = spawnSync('cursor-agent', ['status'], { encoding: 'utf8', timeout: 5000, input: '' });
+  const said = `${status.stdout || ''}\n${status.stderr || ''}`;
+  if (/not logged in|unauthenticated|please log ?in/i.test(said)) return false;
+  if (status.status === 0 && /logged in|authenticated as|signed in/i.test(said)) return true;
+  // Older CLIs without `status`: fall back to the prompt probe.
   const res = spawnSync('cursor-agent', ['--trust', '-p', 'ok', '--output-format', 'text'], {
     encoding: 'utf8',
     timeout: 8000,

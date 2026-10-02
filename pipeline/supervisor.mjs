@@ -1437,7 +1437,10 @@ export function undeclaredFiles(changed = [], declared = []) {
   return (changed || []).filter((f) => !f.startsWith('.pipeline/') && !within(f));
 }
 function gitIn(cwd, args) {
-  const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  // A hung push/fetch must not freeze the (synchronous) supervisor tick for
+  // every other run; on timeout the call fails like any other git error.
+  const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 180_000 });
+  if (res.error?.code === 'ETIMEDOUT') return { status: 124, stdout: res.stdout || '', stderr: `git ${args[0]} timed out after 180s` };
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 

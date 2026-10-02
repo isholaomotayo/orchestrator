@@ -85,3 +85,33 @@ test('the shared parser still understands a Claude assistant line', () => {
   assert.equal(blocks[0].text, 'Claude wrote a paragraph.');
   assert.equal(parseAgentEvent('not-json')[0].kind, 'text');
 });
+
+test('a timed-out CLI agent is killed with its whole process tree', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-tree-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const pidFile = path.join(root, 'grandchild.pid');
+  const fake = path.join(root, 'fake-agent.mjs');
+  // The "agent" starts a long-lived grandchild (like a test watcher) and hangs.
+  fs.writeFileSync(fake, `
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+const gc = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+fs.writeFileSync(${JSON.stringify(pidFile)}, String(gc.pid));
+setInterval(() => {}, 1000);
+`);
+  const promptFile = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(promptFile, 'sys');
+  const res = await runAgent({
+    runner: 'fake-hang', stage: 'coder', cycle: 1, task: 't', systemPromptFile: promptFile, cwd: root, paths,
+    config: { agentTimeoutMs: 1500, customRunners: { 'fake-hang': { command: process.execPath, args: [fake] } } },
+  });
+  assert.equal(res.timedOut, true);
+  const gc = Number(fs.readFileSync(pidFile, 'utf8'));
+  await new Promise((r) => setTimeout(r, 200));
+  let alive = true;
+  try { process.kill(gc, 0); } catch { alive = false; }
+  if (alive) process.kill(gc, 'SIGKILL');
+  assert.equal(alive, false, 'the grandchild must not outlive the timed-out agent');
+  fs.rmSync(root, { recursive: true, force: true });
+});

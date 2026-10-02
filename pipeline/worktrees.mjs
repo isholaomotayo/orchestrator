@@ -17,8 +17,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+// No git call may hang a run or the supervisor forever (network remotes,
+// credential prompts, a locked index).
+const GIT_TIMEOUT_MS = 180_000;
+
 function git(cwd, args, { check = true } = {}) {
-  const res = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const res = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: GIT_TIMEOUT_MS });
   if (check && res.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed in ${cwd}: ${(res.stderr || res.stdout || '').trim()}`);
   }

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { parseTestCounts } from './checker.mjs';
 
 test('parseTestCounts reads node --test TAP summary', () => {
@@ -52,4 +53,24 @@ test('parseTestCounts sums every TAP summary in multi-suite output', () => {
     '# tests 47', '# pass 47', '# fail 0',
   ].join('\n');
   assert.deepEqual(parseTestCounts(output), { passedCount: 168, failedCount: 2 });
+});
+
+test('a check that times out is killed with its whole process tree', async () => {
+  const { runChecks } = await import('./checker.mjs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chk-'));
+  const pidFile = path.join(dir, 'worker.pid');
+  // A "test runner" that forks a worker and hangs.
+  const cmd = `node -e "const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});require('fs').writeFileSync('${pidFile}',String(c.pid));setInterval(()=>{},1000)"`;
+  const paths = { checkerReport: path.join(dir, 'checker_report.md'), events: path.join(dir, 'events.jsonl'), dir };
+  const res = runChecks({ cwd: dir, config: { checks: { test: cmd }, checkTimeoutMs: 1500 }, paths });
+  assert.equal(res.isPassed, false);
+  const worker = Number(fs.readFileSync(pidFile, 'utf8'));
+  let alive = true;
+  try { process.kill(worker, 0); } catch { alive = false; }
+  if (alive) process.kill(worker, 'SIGKILL');
+  assert.equal(alive, false, 'the forked worker must not outlive the timed-out check');
+  assert.match(fs.readFileSync(paths.checkerReport, 'utf8'), /timed out/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

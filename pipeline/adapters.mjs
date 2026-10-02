@@ -122,6 +122,24 @@ export function agentEnv(base = process.env) {
   return env;
 }
 
+// Agent CLIs currently running for this engine, so a stop or signal can take
+// them down with it instead of leaving orphans editing the worktree.
+const liveAgents = new Set();
+
+function killAgentTree(child, signal) {
+  try {
+    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch { try { child.kill(signal); } catch { /* already gone */ } }
+}
+
+/** Signal every live agent's whole process group; returns how many were signalled. */
+export function killLiveAgents(signal = 'SIGTERM') {
+  let n = 0;
+  for (const child of liveAgents) { killAgentTree(child, signal); n += 1; }
+  return n;
+}
+
 export function binExists(bin) {
   const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { encoding: 'utf8' });
   return res.status === 0;
@@ -350,13 +368,19 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
   appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined, effort: level || undefined });
 
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Own process group, so a stop/timeout reaches everything the agent
+    // started (test runners, dev servers), not just the CLI itself. No forge
+    // tokens: stages never push or merge; the supervisor does.
+    const child = spawn(bin, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    liveAgents.add(child);
+    const stderrLines = [];
+    const outputLines = [];
 
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       appendEvent(paths, { stage, cycle, type: 'agent_timeout', timeoutMs: config.agentTimeoutMs });
-      child.kill('SIGKILL');
+      killAgentTree(child, 'SIGKILL');
     }, config.agentTimeoutMs);
 
     let buffer = '';
@@ -371,6 +395,8 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
         log.write(`${line}\n`);
+        const keep = isErr ? stderrLines : outputLines;
+        if (line.trim()) { keep.push(line); if (keep.length > (isErr ? 40 : 5)) keep.shift(); }
         if (isErr) {
           if (line.trim()) emit({ kind: 'err', text: line });
           continue;
@@ -383,6 +409,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      liveAgents.delete(child);
       log.write(`[error] failed to spawn ${bin}: ${err.message}\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, error: err.message });
       log.end();
@@ -390,6 +417,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      liveAgents.delete(child);
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
         parser.pushLine(buffer).forEach(emit);
@@ -398,7 +426,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
       if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code, timedOut: timedOut || undefined });
       log.end();
-      resolve({ ok: code === 0, exitCode: code, timedOut });
+      resolve({ ok: code === 0, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n') });
     });
   });
 }

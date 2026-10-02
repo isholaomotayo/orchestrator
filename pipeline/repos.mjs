@@ -41,7 +41,7 @@ export const SKIP_DIRS = new Set([
 ]);
 
 export function gitAt(cwd) {
-  return (args) => spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  return (args) => spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
 }
 
 /**

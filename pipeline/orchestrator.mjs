@@ -12,9 +12,9 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
-import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile } from './state.mjs';
+import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile, atomicWrite } from './state.mjs';
 import { runChecks } from './checker.mjs';
-import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconcileChatRunner } from './adapters.mjs';
+import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconcileChatRunner, killLiveAgents } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
@@ -291,6 +291,10 @@ function haltAndExit(code) {
   process.exit(code);
 }
 function interrupted(code) {
+  // Take the agent's whole process tree down with the engine: an orphaned CLI
+  // would keep editing the worktree of a run that is now marked stopped.
+  const killed = killLiveAgents('SIGTERM');
+  if (killed) console.error(`[Orchestrator] Stopped ${killed} running agent process group(s).`);
   if (status) {
     status.overall = 'halted';
     status.haltReason = status.haltReason || 'INTERRUPTED';
@@ -868,6 +872,8 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     if (res.ok) break;
 
     const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
+    // classifyFailure prefers res.stderrTail/outputTail; logTail is only the
+    // fallback for runners that do not report them.
     const { transient, reason } = classifyFailure(res, logTail);
     if (!transient || attempt === maxAttempts) {
       if (soft) return res; // caller degrades gracefully (handoff stage)
@@ -918,7 +924,9 @@ function enforceHandoffIntegrity() {
 function failStage(name, res, logTail, { reason, attempts, transient = false }) {
   const tried = attempts > 1 ? ` after ${attempts} attempts` : '';
   const haltOpts = { haltTransient: !!transient };
-  if (/authentication required|not authenticated|please run .* login/i.test(logTail)) {
+  const ownOutput = res.stderrTail !== undefined || res.outputTail !== undefined
+    ? `${res.error || ''}\n${res.stderrTail || ''}\n${res.outputTail || ''}` : logTail;
+  if (/authentication required|not authenticated|please run .* login/i.test(ownOutput)) {
     halt(name, 'AGENT_ERROR', `${runner} is not authenticated. ${agentAuthHint(runner)} Or re-run from IDE chat without --runner to use host mode.`, { haltTransient: false });
   }
   if (res.timedOut) {
@@ -959,7 +967,7 @@ function writeDiffArtifact() {
   try { fs.writeFileSync(paths.diff, body); } catch {}
 }
 
-function saveHistory() { fs.writeFileSync(paths.testHistory, JSON.stringify(history, null, 2)); }
+function saveHistory() { atomicWrite(paths.testHistory, JSON.stringify(history, null, 2)); }
 
 // Returns 'pass' | 'continue', or halts the process on regression. Regression
 // halts are intentionally NOT resumable via --extend — a passed-count drop
