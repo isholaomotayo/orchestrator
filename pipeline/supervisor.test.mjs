@@ -523,6 +523,7 @@ test('stopping the supervisor queues a resume for each live worker', async () =>
     createSupervisor({ repoRoot: root, spawn: () => { throw new Error('no spawn'); }, spawnSync: () => ({ status: 0 }) }).stop();
     const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
     assert.ok(meta.requests?.resume, 'a worker interrupted by supervisor stop must be resumed on restart');
+    assert.equal(JSON.parse(fs.readFileSync(paths.snapshot, 'utf8')).supervisor.alive, false, 'the snapshot left behind says the supervisor stopped');
   } finally {
     worker.kill('SIGKILL');
     fs.rmSync(root, { recursive: true, force: true });
@@ -595,4 +596,30 @@ test('undeclaredFiles flags edits outside a ticket scope, honouring directory sc
   const { undeclaredFiles } = await import('./supervisor.mjs');
   assert.deepEqual(undeclaredFiles(['src/a.ts', 'src/ui/b.ts', 'api/use-content.ts', '.pipeline/changes.md'], ['src/a.ts', 'src/ui']), ['api/use-content.ts']);
   assert.deepEqual(undeclaredFiles(['x.ts'], []), [], 'no declared scope means nothing to compare against');
+});
+
+test('a feature report marks earlier attempts as superseded, with what replaced them', async () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const rm = readRoadmap(paths);
+  const feature = rm.features[0];
+  feature.status = 'accepted'; feature.specRunId = 'run-plan';
+  feature.tickets = [{ id: 'T1', title: 'Ticket', status: 'committed', runId: 'run-new', previousRunIds: ['run-old'] }];
+  writeRoadmap(paths, rm);
+  for (const runId of ['run-plan', 'run-old', 'run-new']) {
+    const runPaths = pipelinePaths(root, { runId });
+    fs.mkdirSync(runPaths.reports, { recursive: true });
+    const status = newStatus(runId); status.runId = runId; status.featureId = 'F1';
+    status.overall = runId === 'run-old' ? 'halted' : 'done';
+    writeStatus(runPaths, status);
+    writeRunMeta(runPaths, { runId, featureId: 'F1', kind: runId === 'run-plan' ? 'plan' : 'ticket', runner: 'host' });
+  }
+  assert.equal(await poolCli(['reports', 'rebuild'], { cwd: root }), 0);
+  const index = JSON.parse(fs.readFileSync(path.join(paths.controlReports, 'F1', 'report.json'), 'utf8'));
+  const old = index.relatedRuns.find((r) => r.runId === 'run-old');
+  assert.equal(old.role, 'superseded');
+  assert.equal(old.supersededBy, 'run-new');
+  assert.equal(index.relatedRuns.find((r) => r.runId === 'run-new').role, 'current');
+  assert.match(fs.readFileSync(path.join(paths.controlReports, 'F1', 'work-done.html'), 'utf8'), /superseded by run-new/);
+  fs.rmSync(root, { recursive: true, force: true });
 });

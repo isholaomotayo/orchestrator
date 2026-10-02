@@ -63,6 +63,25 @@ export function commandState(dir, name = 'bridge') {
   const rows = readJournal(path.join(dir, `${name}.journal.jsonl`));
   return rows.at(-1)?.state ?? { version: 2, revision: 0, sessions: {}, runs: {}, messages: [], receipts: {} };
 }
+// Each record carries the full state, so the journal grew without bound (14.7MB
+// for 375 commands in the field) and every read parsed all of it. Once the
+// last record's writes are applied, the journal can be replaced by one record
+// holding the current state. Receipts are kept for recent commands only — a
+// retry of an old commandId is no longer deduplicated.
+export const COMPACT_JOURNAL_BYTES = 1024 * 1024;
+export const KEEP_RECEIPTS = 500;
+function compactJournal(dir, name, { maxBytes = COMPACT_JOURNAL_BYTES } = {}) {
+  const journal = path.join(dir, `${name}.journal.jsonl`);
+  let size = 0;
+  try { size = fs.statSync(journal).size; } catch { return false; }
+  if (size <= maxBytes) return false;
+  const last = readJournal(journal).at(-1);
+  if (!last || last.writes?.length) return false; // a projection is still pending
+  const state = { ...last.state, receipts: Object.fromEntries(Object.entries(last.state.receipts || {}).slice(-KEEP_RECEIPTS)) };
+  durableWrite(journal, JSON.stringify({ at: new Date().toISOString(), command: 'journal.compacted', commandId: null, state }) + '\n');
+  return true;
+}
+
 export function transact(dir, command, input, mutate, { name = 'bridge', expectedRevision, commandId = crypto.randomUUID() } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, `${name}.lock`);
@@ -98,6 +117,7 @@ export function transact(dir, command, input, mutate, { name = 'bridge', expecte
       error.committed = true;
       throw error;
     }
+    compactJournal(dir, name);
     return response;
   } finally { fs.unlinkSync(lock); }
 }

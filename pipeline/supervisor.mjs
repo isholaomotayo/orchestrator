@@ -364,6 +364,11 @@ export function createSupervisor({
       const runPaths = pipelinePaths(repoRoot,{runId});
       fs.mkdirSync(runPaths.dir, {recursive:true});
       writeRunMeta(runPaths,{files:ticket.files,inputShas});
+      const previous = (recorded.find((t) => t.id === ticket.id)?.previousRunIds || []).at(-1);
+      if (previous) {
+        writeRunMeta(runPaths, { supersedes: previous });
+        writeRunMeta(pipelinePaths(repoRoot, { runId: previous }), { supersededBy: runId });
+      }
       const spawned = spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
         brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: ticketBase,
@@ -845,8 +850,14 @@ export function createSupervisor({
     const related = pool.listRunStates(paths, poolCfg, now())
       .filter((r) => r.featureId === feature.id)
       .sort((a, b) => String(a.spawnedAt || '').localeCompare(String(b.spawnedAt || '')));
+    // Lineage: a run the feature no longer points at was an earlier attempt.
+    // Field reports listed those as plain "done", hiding every retry.
+    const current = new Set([feature.specRunId, feature.integrationRunId, ...(feature.tickets || []).map((t) => t.runId)].filter(Boolean));
+    const replacedBy = new Map((feature.tickets || []).flatMap((t) => (t.previousRunIds || []).map((old) => [old, t.runId || `${t.id} (queued)`])));
     const relatedRuns = related.map((r) => ({
       runId: r.runId, kind: r.kind, ticketId: r.ticketId,
+      role: current.has(r.runId) ? 'current' : 'superseded',
+      supersededBy: current.has(r.runId) ? null : (replacedBy.get(r.runId) || r.meta?.supersededBy || null),
       overall: r.status?.overall || r.overall || 'unknown',
       haltReason: r.status?.haltReason || null,
       stages: (r.status?.stages || []).filter((s) => s.status !== 'pending').map((s) => ({ name: s.name, status: s.status })),
@@ -1423,6 +1434,8 @@ export function createSupervisor({
       } catch { /* not ours */ }
     }
     try { fs.unlinkSync(paths.supervisorPid); } catch { /* already gone */ }
+    // Leave a truthful snapshot behind: the last tick's copy still said alive.
+    try { pool.writeSnapshot(paths, pool.snapshot(paths, { config, now: new Date(now()) })); } catch { /* best effort */ }
     log(`supervisor stopped${signal ? ` (${signal})` : ''}`);
     if (signal) process.exit(0);
   }

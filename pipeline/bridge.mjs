@@ -52,6 +52,12 @@ export function inspectBridge(project, runId = null, { now = Date.now() } = {}) 
   return { revision: state.revision, status, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null,
     capability, ownershipRequired: !!(owner || state.managedRuns?.[keyOf(runId)]), messages: state.messages.filter(m => m.runId === (runId || null)).map(messageView) };
 }
+/** The stable id a host conversation registers under (no write needed). */
+export function sessionIdFor(project, host, conversationId) {
+  const p = bridgePaths(project, null);
+  return crypto.createHash('sha256').update(`${p.root}\0${host}\0${conversationId}`).digest('hex').slice(0, 24);
+}
+
 export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   const p = bridgePaths(args.project, args.runId);
   if (command === 'run.inspect') return inspectBridge(args.project, args.runId, { now });
@@ -65,7 +71,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   return transact(p.control, command, input, (state, stageFile) => {
     if (command === 'session.register') {
       if (!validHost(args.host) || !args.conversationId?.trim()) throw new Error('host and conversationId are required.');
-      const sessionId = crypto.createHash('sha256').update(`${p.root}\0${args.host}\0${args.conversationId}`).digest('hex').slice(0, 24);
+      const sessionId = sessionIdFor(args.project, args.host, args.conversationId);
       const prev = state.sessions[sessionId];
       state.sessions[sessionId] = { ...prev, sessionId, host: args.host, conversationId: args.conversationId, project: p.root, capabilities: args.capabilities || prev?.capabilities || {}, actualModel: args.actualModel || prev?.actualModel || null, modelSource: args.actualModel ? 'host-observed' : prev?.modelSource || 'unknown', registeredAt: prev?.registeredAt || stamp, connectedAt: stamp };
       return { sessionId, capabilities: state.sessions[sessionId].capabilities };

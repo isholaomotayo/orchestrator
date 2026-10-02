@@ -28,6 +28,7 @@ import { buildSnapshot, renderDigest } from './snapshot.mjs';
 import { queueStageNote } from './events.mjs';
 import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
 import { writePolicyOverride } from './mode.mjs';
+import { recordIntervention } from './interventions.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -448,6 +449,15 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   else if (awaitingChat) status.overall = 'awaiting_chat';
   else if (awaitingPlan) status.overall = 'awaiting_plan_approval';
   else status.overall = 'running';
+  // With no run in flight there is no stage to mirror: say so instead of
+  // showing a "done" pool whose every stage is still "pending".
+  if (!primary?.status?.stages) {
+    for (const st of status.stages) {
+      st.status = 'skipped';
+      st.detail = 'Pool mirror: stage state lives in each run under .pipeline/runs/<runId>/.';
+    }
+  }
+  if (['done', 'halted'].includes(status.overall)) status.endedAt = status.endedAt || new Date().toISOString();
 
   status.pool = {
     snapshot: path.relative(paths.root, paths.snapshot),
@@ -489,6 +499,7 @@ export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli'
     return approveRoadmapMerge(paths, { by, via, note: answer });
   }
   const resolved = resolveDecision(paths, decisionId, { decision: answer, by, via });
+  if (decision.runId) recordIntervention(paths.root, decision.runId, { action: `answered ${decision.kind || 'decision'}`, by, via, detail: String(answer).slice(0, 500) });
   if (decision.runId && decision.stage) {
     queueFollowup(paths, decision.runId, decision.stage, `Decision from the operator: ${answer}`);
   }
@@ -521,6 +532,7 @@ export function requestRunResume(paths, runId) {
     const check = haltedArtifactCheck(status, runPaths.dir);
     if (!check.ok) return { ok: false, reason: `${check.file ? path.relative(paths.root, check.file) : 'the artifact'} is still unusable (${check.reason})` };
   }
+  recordIntervention(paths.root, runId, { action: 'resume requested', via: 'operator' });
   return { ok: true, request: markResumeRequested(paths, runId, 'operator resume-run') };
 }
 
@@ -531,6 +543,7 @@ export function setRunAutonomy(paths, runId, autonomy, { by = 'operator', via = 
   if (!fs.existsSync(runPaths.status)) throw new Error(`run ${runId || '(root)'} has no status.json`);
   const record = writePolicyOverride(runPaths.dir, { autonomy, by, via });
   appendEvent(runPaths, { stage: 'orchestrator', type: 'policy_changed', autonomy, by, via });
+  recordIntervention(paths.root, runId, { action: `set autonomy ${autonomy}`, by, via });
   return { runId: runId || null, ...record };
 }
 
@@ -650,7 +663,7 @@ function retryTicketUnlocked(paths, featureId, ticketId) {
     previousRunIds: [...(t.previousRunIds || []), t.runId].filter(Boolean),
   }));
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'executing', { tickets }));
-  if (ticket.runId) appendRunVerb(pipelinePaths(paths.root, { runId: ticket.runId }), 'note', `superseded by retry-ticket ${featureId}/${ticketId}`);
+  if (ticket.runId) recordIntervention(paths.root, ticket.runId, { action: 'retry-ticket', detail: `${featureId}/${ticketId} requeued; this run is superseded` });
   return { featureId, ticketId, status: 'queued', supersedes: ticket.runId || null };
 }
 
@@ -746,8 +759,10 @@ export function resume(paths) {
   return { paused: false };
 }
 
-export function dismissRun(paths, runId, reason = 'Dismissed by operator') {
-  return bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
+export function dismissRun(paths, runId, reason = 'Dismissed by operator', { via = 'cli' } = {}) {
+  const res = bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
+  if (!res.alreadyDismissed) recordIntervention(paths.root, runId, { action: 'dismissed', via, detail: reason });
+  return res;
 }
 
 export function reset(paths, { archive = true, hard = false } = {}) {

@@ -2,7 +2,7 @@
 // Host-specific envelopes around one portable checkpoint. No transcript scraping.
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { bridgeCommand, readBridge, HOSTS } from './bridge.mjs';
+import { bridgeCommand, readBridge, sessionIdFor, HOSTS } from './bridge.mjs';
 
 export function hookIdentity(host, input) {
   return { conversationId: input.session_id || input.conversation_id || input.conversationId,
@@ -27,6 +27,11 @@ export function handleHostHook(host, project, input, forcedEvent = null) {
   if (!identity.conversationId) return {};
   // Calling bridge tools must not recursively trigger checkpoints or stop work.
   if (/orchestrator|bridge[-_.]|run_checkpoint|message_ack|message_resolve|stage_complete/.test(identity.tool)) return {};
+  // Read before writing: most tool calls come from a conversation that owns no
+  // run, and registering on every one appended an fsynced journal record per
+  // tool call for nothing.
+  const sessionId = sessionIdFor(project, host, identity.conversationId);
+  if (!Object.values(readBridge(project).runs).some((r) => r.sessionId === sessionId)) return {};
   const registration = bridgeCommand('session.register', {project,host,conversationId:identity.conversationId,actualModel:identity.actualModel,capabilities:{hooks:true,version:2}});
   const state = readBridge(project);
   const entry = Object.entries(state.runs).find(([,r]) => r.sessionId === registration.sessionId);

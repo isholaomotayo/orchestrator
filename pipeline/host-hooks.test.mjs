@@ -136,3 +136,14 @@ test('Antigravity telemetry leaves messages queued until an injection-capable ho
   assert.equal(after.messages[0].status, 'delivered');
   assert.equal(after.messages[0].deliveries.length, 1);
 });
+
+test('a hook from a conversation that owns no run writes nothing to the bridge journal', async () => {
+  const fsMod = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const root = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'hook-idle-'));
+  fsMod.mkdirSync(pathMod.join(root, '.pipeline', 'control'), { recursive: true });
+  for (let i = 0; i < 5; i++) handleHostHook('claude', root, { session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name: 'Edit' });
+  assert.equal(fsMod.existsSync(pathMod.join(root, '.pipeline', 'control', 'bridge.journal.jsonl')), false);
+  fsMod.rmSync(root, { recursive: true, force: true });
+});

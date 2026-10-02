@@ -623,7 +623,9 @@ function finalize() {
     writeRunMeta(paths, { phase: 'failed' });
   }
   if (['done','halted'].includes(status.overall)) {
-    const report = writeTerminalReport(paths,status,history,inspectBridge(repoRoot,args.runId).messages);
+    let rendered = null;
+    try { rendered = JSON.parse(fs.readFileSync(path.join(paths.reports, 'reporter-render.json'), 'utf8')); } catch { /* no Reporter output */ }
+    const report = writeTerminalReport(paths,status,history,inspectBridge(repoRoot,args.runId).messages, rendered || {});
     if (!report.ok) {
       status.reportError = report.error;
       appendEvent(paths, { stage: 'reporter', type: 'report_failed', error: report.error });
@@ -1446,6 +1448,15 @@ function finishReporterStage(agentOk) {
     detail: written.ok ? null : `report could not be written: ${written.error}`,
   });
   if (written.ok) {
+    // finalize() rewrites the report once the run ends; keep what the
+    // Reporter rendered so that rewrite does not drop its diagrams and title.
+    try {
+      atomicWrite(path.join(paths.reports, 'reporter-render.json'), JSON.stringify({
+        title: `Work Done — ${status.featureId ? `${status.featureId}: ` : ''}${firstLine(status.task)}`,
+        narrative: valid ? stripDiagramSpecs(narrativeRaw) : '',
+        diagrams: diagrams.filter((d) => d.ok),
+      }, null, 2));
+    } catch { /* the terminal report falls back to its own defaults */ }
     appendEvent(paths, { stage: 'reporter', type: 'report_written', report: written.htmlRel, diagrams: diagrams.filter((d) => d.ok).length });
     console.log(`[Stage] Reporter — report: ${written.htmlRel}`);
   }

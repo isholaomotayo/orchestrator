@@ -905,8 +905,7 @@ const server = http.createServer((req, res) => {
       try {
         const runId = body?.run || body?.runId || null;
         const reason = body?.reason || 'Dismissed from dashboard';
-        const result = bridgeCommand('run.dismiss', { project: project.repoRoot, runId, reason });
-        json(res, result);
+        json(res, pool.dismissRun(project.paths, runId, reason, { via: 'dashboard' }));
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
