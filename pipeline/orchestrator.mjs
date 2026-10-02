@@ -20,7 +20,7 @@ import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, un
 import { writeHaltHandoff } from './handoff.mjs';
 import { isOrchestratorSourceRepo, selfTargetAllowed, selfGuardMessage } from './self-guard.mjs';
 import { snapshotControlPlane, controlPlaneViolations, workingTreeFingerprint, readOnlyViolated, HANDOFF_OWNED_FILES, ORCHESTRATOR_OWNED_FILES } from './integrity.mjs';
-import { parseVerdict, validateArtifactFile, detectTestWeakening, compactChangelog } from './artifacts.mjs';
+import { parseVerdict, validateArtifactFile, detectTestWeakening, detectPassDrop, compactChangelog } from './artifacts.mjs';
 import { classifyFailure, backoffMs, sleep } from './retry.mjs';
 import { discoverRepos, captureBaseRefs, buildDiffArtifact } from './repos.mjs';
 import { LENSES, aggregatePanel } from './review-panel.mjs';
@@ -935,11 +935,11 @@ function evaluateChecks(phase, stageName, check) {
   const weakening = detectTestWeakening(prev, check);
   if (weakening.weakened) {
     halt(stageName, 'REGRESSION_BLOCKED',
-      `Test count dropped from ${weakening.before} to ${weakening.after} — tests were deleted, skipped, or commented out rather than fixed. Inspect the diff for removed assertions; this halt is intentionally not extendable.`);
+      `Test count dropped from ${weakening.before} to ${weakening.after}. Possible causes: tests deleted or skipped, or a suite that no longer ran or reported. Compare checker_report.md with the previous cycle and inspect the diff; this halt is intentionally not extendable.`);
   }
 
   if (check.isPassed) return 'pass';
-  if (prev && check.passedCount < prev.passedCount) {
+  if (detectPassDrop(prev, check)) {
     halt(stageName, 'REGRESSION_BLOCKED',
       `Previous cycle passed ${prev.passedCount} tests; this cycle only passed ${check.passedCount}. A change broke existing functionality — human inspection required.`);
   }

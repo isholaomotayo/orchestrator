@@ -183,3 +183,13 @@ export function detectTestWeakening(prev, current) {
   if (before <= 1 && after <= 1) return { weakened: false, before, after };
   return { weakened: after < before, before, after };
 }
+
+/**
+ * A cycle that passes fewer tests than the previous one. Unparsed counts
+ * (null) carry no information and never count as a drop.
+ */
+export function detectPassDrop(prev, current) {
+  const before = prev ? Number(prev.passedCount ?? NaN) : NaN;
+  const after = current ? Number(current.passedCount ?? NaN) : NaN;
+  return Number.isFinite(before) && Number.isFinite(after) && after < before;
+}

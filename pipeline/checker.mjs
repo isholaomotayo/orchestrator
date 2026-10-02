@@ -42,9 +42,15 @@ function lastMatch(output, re) {
 // Extract passed/failed test counts from common runner outputs.
 // Supports: node --test (TAP), jest, vitest, mocha, pytest.
 export function parseTestCounts(output) {
+  // node --test TAP: "# pass 3" / "# fail 1". These lines are only ever the
+  // end-of-run summary, so every one is a real suite total — a multi-suite
+  // `npm test` prints one per suite and they must be summed, not last-matched.
+  const tapPass = [...output.matchAll(/^#\s*pass\s+(\d+)/gm)];
+  if (tapPass.length) {
+    const sum = (ms) => ms.reduce((n, m) => n + parseInt(m[1], 10), 0);
+    return { passedCount: sum(tapPass), failedCount: sum([...output.matchAll(/^#\s*fail\s+(\d+)/gm)]) };
+  }
   const patterns = [
-    // node --test TAP: "# pass 3" / "# fail 1"
-    { pass: /^#\s*pass\s+(\d+)/m, fail: /^#\s*fail\s+(\d+)/m },
     // jest/pytest style: "3 passed" / "1 failed"
     { pass: /(\d+)\s+passed/, fail: /(\d+)\s+failed/ },
     // mocha: "3 passing" / "1 failing"

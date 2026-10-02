@@ -42,3 +42,14 @@ test('parseTestCounts still reads a plain TAP summary', () => {
 test('parseTestCounts returns nulls when no counts are present', () => {
   assert.deepEqual(parseTestCounts('build succeeded'), { passedCount: null, failedCount: null });
 });
+
+test('parseTestCounts sums every TAP summary in multi-suite output', () => {
+  // `npm test` across workspaces prints one TAP summary per suite; reading only
+  // the last one made the regression guard see a fraction of the suite.
+  const output = [
+    '# tests 76', '# pass 76', '# fail 0', '',
+    '# tests 47', '# pass 45', '# fail 2', '',
+    '# tests 47', '# pass 47', '# fail 0',
+  ].join('\n');
+  assert.deepEqual(parseTestCounts(output), { passedCount: 168, failedCount: 2 });
+});

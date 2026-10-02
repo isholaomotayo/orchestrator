@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVerdict, validateArtifact, detectTestWeakening, totalTests, compactChangelog } from './artifacts.mjs';
+import { parseVerdict, validateArtifact, detectTestWeakening, detectPassDrop, totalTests, compactChangelog } from './artifacts.mjs';
 
 const SPEC = `# TECHNICAL SPECIFICATION: Thing
 ## 2. Technical Specification (PRD)
@@ -208,4 +208,13 @@ test('placeholder writes are rejected for every stage', () => {
     assert.equal(validateArtifact(stage, 'TODO').ok, false, stage);
     assert.equal(validateArtifact(stage, '').ok, false, stage);
   }
+});
+
+test('detectPassDrop fires only when both cycles have a real pass count', () => {
+  assert.equal(detectPassDrop({ passedCount: 40 }, { passedCount: 35 }), true);
+  assert.equal(detectPassDrop({ passedCount: 40 }, { passedCount: 40 }), false);
+  // An unparsed count must not read as a drop (`null < 40` is true in JS).
+  assert.equal(detectPassDrop({ passedCount: 40 }, { passedCount: null }), false);
+  assert.equal(detectPassDrop({ passedCount: null }, { passedCount: 3 }), false);
+  assert.equal(detectPassDrop(null, { passedCount: 3 }), false);
 });
