@@ -60,6 +60,13 @@ side changes its output, re-recording the fixtures will show the difference in
   - A destructive action needs a confirming second click.
   - Clicking twice never sends a command twice, because commands carry a `commandId`.
   - Actions that need free text open the web dashboard instead.
+- Decision cards (merge approval, merge conflict) and a plan-approval card.
+  Merge approvals and dropping a ticket need a confirming second click. Choices that
+  need a written reason ("request changes") open the web dashboard.
+- A Guided | Autonomous control per run, and **Pause all autonomy**. It pauses each
+  pool with live autonomous work and puts every live autonomous run back to guided.
+- Acknowledge for a run's attention items.
+- The attention count on the Dock icon (macOS).
 - Native notifications for state changes that need a person. Each one is shown
   once, including across relaunches, and clicking it opens the run.
 - The attention count in the window title.

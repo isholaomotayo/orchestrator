@@ -298,6 +298,35 @@ pub struct AttentionItem {
     pub level: Option<u32>,
     #[serde(default)]
     pub at: Option<String>,
+    /// The decision this item is about, when it is one (merge approval or conflict).
+    #[serde(default)]
+    pub decision_id: Option<String>,
+}
+
+/// A question the pool put to a person (`decisions.jsonl`). Answering one is
+/// the `decision.answer` command with `{decisionId, answer}`.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Decision {
+    pub decision_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub feature_id: Option<String>,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub stage: Option<String>,
+    #[serde(default)]
+    pub question: String,
+    #[serde(default)]
+    pub options: Vec<String>,
+    #[serde(default)]
+    pub recommended: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<String>,
+    #[serde(default)]
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -309,7 +338,7 @@ pub struct Snapshot {
     #[serde(default)]
     pub attention: Vec<AttentionItem>,
     #[serde(default)]
-    pub decisions: Vec<Value>,
+    pub decisions: Vec<Decision>,
     #[serde(default)]
     pub pool: Option<Value>,
 }

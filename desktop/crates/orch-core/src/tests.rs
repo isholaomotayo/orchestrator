@@ -99,6 +99,7 @@ fn escalated_attention_notifies_per_item_and_level() {
         escalate: true,
         level: Some(level),
         at: None,
+        decision_id: None,
     };
     let fx = s.apply(Input::Server(ServerEvent::AttentionUpdated {
         project_id: "p".into(),
@@ -163,4 +164,97 @@ fn a_reset_asks_for_a_fresh_snapshot() {
             reason: "server_restarted".into()
         })
         .contains(&Effect::Resnapshot));
+}
+
+fn decision(id: &str, run: &str) -> orch_contract::Decision {
+    serde_json::from_value(serde_json::json!({
+        "decisionId": id, "runId": run, "kind": "merge-approval", "status": "open",
+        "question": "Merge it?", "options": ["approve", "request-changes"], "recommended": "approve",
+        "artifacts": ["review_report.md"],
+    }))
+    .unwrap()
+}
+
+fn attention_for(decision_id: &str) -> AttentionItem {
+    serde_json::from_value(serde_json::json!({
+        "id": format!("att-{decision_id}"), "kind": "merge-approval", "runId": "a",
+        "summary": "ready to merge", "decisionId": decision_id,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn open_decisions_are_listed_under_their_run() {
+    let mut s = AppState::default();
+    let mut snap = snapshot(vec![run("a", Bucket::NeedsYou), run("b", Bucket::Working)]);
+    snap.decisions = vec![decision("d1", "a"), decision("d2", "b")];
+    s.apply(Input::Snapshot(snap));
+    let ids: Vec<_> = s.decisions_for("p", "a").iter().map(|d| d.decision_id.as_str()).collect();
+    assert_eq!(ids, ["d1"]);
+    assert!(s.decisions_for("p", "nope").is_empty());
+}
+
+#[test]
+fn attention_naming_an_unknown_decision_asks_for_a_fresh_snapshot() {
+    let mut s = AppState::default();
+    s.apply(Input::Snapshot(snapshot(vec![run("a", Bucket::NeedsYou)])));
+    let attention = |s: &mut AppState| {
+        s.apply(Input::Server(ServerEvent::AttentionUpdated {
+            project_id: "p".into(),
+            items: vec![attention_for("d1")],
+        }))
+    };
+    assert!(attention(&mut s).contains(&Effect::Resnapshot), "decisions never stream, so fetch them");
+    let mut snap = snapshot(vec![run("a", Bucket::NeedsYou)]);
+    snap.decisions = vec![decision("d1", "a")];
+    s.apply(Input::Snapshot(snap));
+    assert!(!attention(&mut s).contains(&Effect::Resnapshot), "known decision: nothing to fetch");
+}
+
+#[test]
+fn pause_all_targets_only_live_autonomous_runs() {
+    let mut s = AppState::default();
+    let auto = |id: &str, b: Bucket, dismissed: bool| -> RunSummary {
+        let mut r = run(id, b);
+        r.autonomy = orch_contract::Autonomy::Autonomous;
+        r.dismissed = dismissed;
+        r
+    };
+    s.apply(Input::Snapshot(snapshot(vec![
+        auto("live", Bucket::Working, false),
+        auto("done", Bucket::Done, false),
+        auto("gone", Bucket::Blocked, true),
+        run("guided", Bucket::Working),
+    ])));
+    assert_eq!(s.autonomous_runs(), vec![("p".to_string(), "live".to_string())]);
+}
+
+#[test]
+fn pause_all_pauses_only_pools_with_live_autonomous_work() {
+    let mut s = AppState::default();
+    let pooled = |id: &str| -> RunSummary {
+        let mut r = run(id, Bucket::Working);
+        r.autonomy = orch_contract::Autonomy::Autonomous;
+        r.feature_id = Some("F1".into());
+        r
+    };
+    let mut plain = run("solo", Bucket::Working);
+    plain.autonomy = orch_contract::Autonomy::Autonomous;
+    s.apply(Input::Snapshot(snapshot(vec![pooled("t1"), pooled("t2")])));
+    let mut other = snapshot(vec![plain]);
+    other.project.project_id = "q".into();
+    s.apply(Input::Snapshot(other));
+    let plan = s.pause_all_plan();
+    assert_eq!(plan.pools, vec!["p".to_string()], "no pool in project q, so nothing to pause there");
+    assert_eq!(plan.runs.len(), 3);
+}
+
+#[test]
+fn attention_is_listed_under_its_run() {
+    let mut s = AppState::default();
+    let mut snap = snapshot(vec![run("a", Bucket::NeedsYou)]);
+    snap.attention = vec![attention_for("d1")];
+    s.apply(Input::Snapshot(snap));
+    assert_eq!(s.attention_for("p", "a").len(), 1);
+    assert!(s.attention_for("p", "b").is_empty());
 }

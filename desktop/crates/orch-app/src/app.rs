@@ -6,13 +6,29 @@ use gpui::{
     SystemNotificationAction, SystemNotificationResponse, Window, div, prelude::*, px,
 };
 use orch_client::{Client, ClientEvent, ClientHandle, StreamEvent, discovery};
-use orch_contract::{Action, Bucket, CommandStatus, RunSummary, Surface};
+use orch_contract::{Action, Autonomy, Bucket, CommandStatus, Decision, RunSummary, Surface};
 use orch_core::{AppState, Connection, Effect, Input};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Actions whose arguments need free text: offered in the web dashboard.
 const NEEDS_TEXT: [&str; 2] = ["plan.reject", "message.queue"];
+
+/// Actions with a control of their own, so the generic action row skips them.
+const OWN_CONTROL: [&str; 3] = ["run.set_autonomy", "plan.approve", "plan.reject"];
+
+/// Choices that cannot be taken back. They need a confirming second click.
+fn irreversible(decision_kind: &str, option: &str) -> bool {
+    matches!(
+        (decision_kind, option),
+        ("merge-approval" | "roadmap-merge", "approve") | ("merge-conflict", "drop-ticket")
+    )
+}
+
+/// Choices the server only accepts with a written reason ("request-changes: …").
+fn needs_text(decision_kind: &str, option: &str) -> bool {
+    matches!((decision_kind, option), ("merge-approval", "request-changes"))
+}
 
 #[derive(Clone)]
 struct Selected {
@@ -183,6 +199,10 @@ impl OrchestratorApp {
                     Ok(_) => ("Done.".into(), false),
                     Err(err) => (err.into(), true),
                 });
+                // Decisions never stream: re-read them so an answered card goes away.
+                if let Some(h) = &self.handle {
+                    h.refresh();
+                }
                 None
             }
             ClientEvent::Error(err) => {
@@ -211,7 +231,7 @@ impl OrchestratorApp {
                             h.refresh()
                         }
                     }
-                    Effect::Badge(_) => {}
+                    Effect::Badge(count) => crate::platform::set_dock_badge(count),
                 }
             }
             if notified_changed {
@@ -306,6 +326,68 @@ impl OrchestratorApp {
         cx.notify();
     }
 
+    /// Send one command and track it under `key` until it completes.
+    fn send(&mut self, key: String, project_id: &str, kind: &str, run_id: Option<&str>, args: Value) {
+        if let Some(handle) = &self.handle {
+            let request = handle.command(project_id, kind, run_id, args);
+            self.pending.insert(key, request);
+        }
+    }
+
+    /// The first click arms `key`; the second returns true. For choices that cannot be undone.
+    fn armed(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+        if self.confirming.as_deref() == Some(key) {
+            self.confirming = None;
+            return true;
+        }
+        self.confirming = Some(key.to_string());
+        cx.notify();
+        false
+    }
+
+    fn answer_decision(&mut self, project_id: &str, d: &Decision, option: &str, cx: &mut Context<Self>) {
+        if needs_text(&d.kind, option) {
+            self.open_dashboard(cx);
+            return;
+        }
+        let key = format!("decision:{}:{option}", d.decision_id);
+        if irreversible(&d.kind, option) && !self.armed(&key, cx) {
+            return;
+        }
+        let args = json!({ "decisionId": d.decision_id, "answer": option });
+        self.send(key, project_id, "decision.answer", d.run_id.as_deref(), args);
+        cx.notify();
+    }
+
+    fn set_autonomy(&mut self, project_id: &str, run_id: &str, value: &str, cx: &mut Context<Self>) {
+        let args = json!({ "autonomy": value });
+        self.send(format!("autonomy:{run_id}"), project_id, "run.set_autonomy", Some(run_id), args);
+        cx.notify();
+    }
+
+    fn acknowledge(&mut self, project_id: &str, id: &str, cx: &mut Context<Self>) {
+        self.send(format!("ack:{id}"), project_id, "attention.ack", None, json!({ "id": id }));
+        cx.notify();
+    }
+
+    /// The panic button: stop pools starting work and hand every live
+    /// autonomous run back to a person.
+    fn pause_all(&mut self, cx: &mut Context<Self>) {
+        if !self.armed("pause-all", cx) {
+            return;
+        }
+        let plan = self.state.pause_all_plan();
+        for (i, project) in plan.pools.iter().enumerate() {
+            let args = json!({ "reason": "Paused from the desktop app" });
+            self.send(format!("pause-all:pool:{i}"), project, "pool.pause", None, args);
+        }
+        for (project, run) in &plan.runs {
+            let args = json!({ "autonomy": "guided" });
+            self.send(format!("pause-all:run:{run}"), project, "run.set_autonomy", Some(run), args);
+        }
+        cx.notify();
+    }
+
     fn open_dashboard(&self, cx: &mut Context<Self>) {
         if let (Phase::Connected { base_url }, Some(sel)) = (&self.phase, &self.selected) {
             let repo = self
@@ -362,13 +444,13 @@ impl Render for OrchestratorApp {
             .text_color(theme::text())
             .text_sm()
             .font_family(".SystemUIFont")
-            .child(self.render_status_bar())
+            .child(self.render_status_bar(cx))
             .child(body)
     }
 }
 
 impl OrchestratorApp {
-    fn render_status_bar(&self) -> impl IntoElement {
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (dot, label) = match &self.state.connection {
             Connection::Live { .. } => (theme::bucket(Bucket::Done), "Live".to_string()),
             Connection::Connecting => (theme::muted(), "Connecting…".to_string()),
@@ -381,6 +463,9 @@ impl OrchestratorApp {
             ),
         };
         let toast = self.toast.clone();
+        let live_autonomous = self.state.pause_all_plan().runs.len();
+        let pausing = self.pending.keys().any(|k| k.starts_with("pause-all"));
+        let armed = self.confirming.as_deref() == Some("pause-all");
         div()
             .flex()
             .items_center()
@@ -393,6 +478,17 @@ impl OrchestratorApp {
             .child(div().size(px(8.)).rounded_full().bg(dot))
             .child(div().text_color(theme::muted()).child(label))
             .child(div().flex_1())
+            .children((live_autonomous > 0).then(|| {
+                let label = if pausing {
+                    "Pausing…".to_string()
+                } else if armed {
+                    format!("Click again: hand {live_autonomous} run(s) back to guided")
+                } else {
+                    "Pause all autonomy".to_string()
+                };
+                button("pause-all", label, !pausing)
+                    .on_click(cx.listener(|this, _, _, cx| this.pause_all(cx)))
+            }))
             .children(toast.map(|(text, bad)| {
                 div()
                     .px_2()
@@ -570,39 +666,28 @@ impl OrchestratorApp {
         let project_id = sel.project_id.clone();
 
         let mut actions = div().flex().flex_wrap().gap_2();
-        for (i, action) in run.actions.iter().enumerate() {
-            let pending = self.pending.contains_key(&action.id);
-            let confirming = self.confirming.as_deref() == Some(action.id.as_str());
-            let mut label = if pending {
-                format!("{}…", action.label)
-            } else if confirming {
-                format!("Click again: {}", action.label)
-            } else {
-                action.label.clone()
-            };
-            if NEEDS_TEXT.contains(&action.id.as_str()) {
-                label.push_str(" ↗");
-            }
-            let (a, r, p) = (action.clone(), run.clone(), project_id.clone());
-            let mut b = button(("action", i), label, action.enabled && !pending);
-            if action.enabled && !pending {
-                b = b.on_click(cx.listener(move |this, _, _, cx| this.run_action(&a, &r, &p, cx)));
-            }
-            actions = actions.child(
-                div().flex().flex_col().gap_1().child(b).children(
-                    (!action.enabled)
-                        .then(|| action.disabled_reason.clone())
-                        .flatten()
-                        .map(|why| {
-                            div()
-                                .text_xs()
-                                .text_color(theme::muted())
-                                .max_w(px(260.))
-                                .child(why)
-                        }),
-                ),
-            );
+        for (i, action) in run
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| !OWN_CONTROL.contains(&a.id.as_str()))
+        {
+            actions = actions.child(self.action_button(i, action, &run, &project_id, cx));
         }
+        let autonomy = self.render_autonomy(&run, &project_id, cx);
+        let plan_card = self.render_plan_card(&run, &project_id, cx);
+        let decisions: Vec<Decision> = self
+            .state
+            .decisions_for(&sel.project_id, &sel.run_id)
+            .into_iter()
+            .cloned()
+            .collect();
+        let attention: Vec<(String, String)> = self
+            .state
+            .attention_for(&sel.project_id, &sel.run_id)
+            .into_iter()
+            .map(|a| (a.id.clone(), a.summary.clone()))
+            .collect();
 
         div()
             .id("run")
@@ -630,10 +715,7 @@ impl OrchestratorApp {
                         theme::bucket(run.bucket),
                     ))
                     .child(chip(surface, theme::raised()))
-                    .child(chip(
-                        format!("{:?}", run.autonomy).to_lowercase(),
-                        theme::raised(),
-                    ))
+                    .child(autonomy)
                     .child(chip(presence, theme::raised())),
             )
             .children(run.stage.as_ref().map(|s| {
@@ -659,6 +741,20 @@ impl OrchestratorApp {
                             .map(|c| format!(" ({c})"))
                             .unwrap_or_default()
                     ))
+            }))
+            .children(plan_card)
+            .children(decisions.iter().enumerate().map(|(i, d)| self.render_decision(i, d, &project_id, cx)))
+            .children(attention.into_iter().enumerate().map(|(i, (id, summary))| {
+                let p = project_id.clone();
+                card()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().child(summary))
+                    .child(
+                        button(("ack", i), "Acknowledge".to_string(), !self.pending.contains_key(&format!("ack:{id}")))
+                            .on_click(cx.listener(move |this, _, _, cx| this.acknowledge(&p, &id, cx))),
+                    )
             }))
             .child(actions)
             .child(
@@ -704,6 +800,169 @@ impl OrchestratorApp {
             )
             .into_any_element()
     }
+}
+
+impl OrchestratorApp {
+    /// One server-provided action as a button, with its disabled reason under it.
+    fn action_button(
+        &self,
+        index: usize,
+        action: &Action,
+        run: &RunSummary,
+        project_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let pending = self.pending.contains_key(&action.id);
+        let confirming = self.confirming.as_deref() == Some(action.id.as_str());
+        let mut label = if pending {
+            format!("{}…", action.label)
+        } else if confirming {
+            format!("Click again: {}", action.label)
+        } else {
+            action.label.clone()
+        };
+        if NEEDS_TEXT.contains(&action.id.as_str()) {
+            label.push_str(" ↗");
+        }
+        let (a, r, p) = (action.clone(), run.clone(), project_id.to_string());
+        let mut b = button(("action", index), label, action.enabled && !pending);
+        if action.enabled && !pending {
+            b = b.on_click(cx.listener(move |this, _, _, cx| this.run_action(&a, &r, &p, cx)));
+        }
+        div().flex().flex_col().gap_1().child(b).children(
+            (!action.enabled)
+                .then(|| action.disabled_reason.clone())
+                .flatten()
+                .map(|why| div().text_xs().text_color(theme::muted()).max_w(px(260.)).child(why)),
+        )
+    }
+
+    /// Guided | Autonomous. The effective policy is highlighted; the server
+    /// decides whether it can be changed right now.
+    fn render_autonomy(&self, run: &RunSummary, project_id: &str, cx: &mut Context<Self>) -> Div {
+        let control = run.actions.iter().find(|a| a.id == "run.set_autonomy");
+        let can_set = control.is_some_and(|a| a.enabled);
+        let busy = self.pending.contains_key(&format!("autonomy:{}", run.run_id));
+        let segment = |i: usize, value: &'static str, mine: Autonomy| {
+            let active = run.autonomy == mine;
+            let (p, r) = (project_id.to_string(), run.run_id.clone());
+            let mut s = div()
+                .id(("autonomy", i))
+                .px_2()
+                .py(px(2.))
+                .text_xs()
+                .bg(if active { theme::accent() } else { theme::raised() })
+                .text_color(if active { theme::text() } else { theme::muted() })
+                .child(value);
+            if can_set && !active && !busy {
+                s = s
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _, _, cx| this.set_autonomy(&p, &r, value, cx)));
+            }
+            s
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .rounded_md()
+                    .overflow_hidden()
+                    .child(segment(0, "guided", Autonomy::Guided))
+                    .child(segment(1, "autonomous", Autonomy::Autonomous)),
+            )
+            .children(
+                control
+                    .filter(|a| !a.enabled)
+                    .and_then(|a| a.disabled_reason.clone())
+                    .map(|why| div().text_xs().text_color(theme::muted()).child(why)),
+            )
+    }
+
+    /// Shown while the run waits on plan approval. The plan itself is long, so
+    /// it is read in the web dashboard; asking for changes needs free text.
+    fn render_plan_card(&self, run: &RunSummary, project_id: &str, cx: &mut Context<Self>) -> Option<Div> {
+        let approve = run.actions.iter().position(|a| a.id == "plan.approve")?;
+        let reject = run.actions.iter().position(|a| a.id == "plan.reject");
+        let waiting = run.actions[approve].enabled;
+        Some(
+            card()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(if waiting { "The plan is waiting for your approval" } else { "Plan approval" }),
+                )
+                .child(div().text_color(theme::muted()).child(
+                    "Read it in the web dashboard first. Approving starts the build.",
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(self.action_button(approve, &run.actions[approve], run, project_id, cx))
+                        .children(reject.map(|i| self.action_button(i, &run.actions[i], run, project_id, cx)))
+                        .child(
+                            button("plan-read", "Read the plan ↗".to_string(), true)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_dashboard(cx))),
+                        ),
+                ),
+        )
+    }
+
+    fn render_decision(&self, index: usize, d: &Decision, project_id: &str, cx: &mut Context<Self>) -> Div {
+        let mut options = div().flex().flex_wrap().gap_2();
+        for (i, option) in d.options.iter().enumerate() {
+            let key = format!("decision:{}:{option}", d.decision_id);
+            let pending = self.pending.contains_key(&key);
+            let armed = self.confirming.as_deref() == Some(key.as_str());
+            let name = if needs_text(&d.kind, option) {
+                format!("{} ↗", option.replace('-', " "))
+            } else {
+                option.replace('-', " ")
+            };
+            let recommended = d.recommended.as_deref() == Some(option.as_str());
+            let label = if pending {
+                format!("{name}…")
+            } else if armed {
+                format!("Click again: {name}")
+            } else if recommended {
+                format!("{name} (recommended)")
+            } else {
+                name
+            };
+            let (p, dd, o) = (project_id.to_string(), d.clone(), option.clone());
+            let mut b = button(("decision", index * 16 + i), label, !pending);
+            if !pending {
+                b = b.on_click(cx.listener(move |this, _, _, cx| this.answer_decision(&p, &dd, &o, cx)));
+            }
+            options = options.child(b);
+        }
+        card()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(div().text_xs().text_color(theme::muted()).child(d.kind.replace('-', " ").to_uppercase()))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child(d.question.clone()))
+            .children((!d.artifacts.is_empty()).then(|| {
+                div().text_xs().text_color(theme::muted()).child(d.artifacts.join(" · "))
+            }))
+            .child(options)
+    }
+}
+
+fn card() -> Div {
+    div()
+        .p_3()
+        .rounded_md()
+        .bg(theme::panel())
+        .border_1()
+        .border_color(theme::border())
 }
 
 fn chip(text: String, bg: gpui::Rgba) -> Div {

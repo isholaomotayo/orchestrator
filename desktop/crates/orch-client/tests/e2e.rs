@@ -159,4 +159,73 @@ fn discover_snapshot_live_update_and_command() {
         ClientEvent::CommandDone { request: r, result: Ok(res) } if *r == request && res.status == CommandStatus::Applied)),
         "the command is applied"
     );
+
+    open_decision_is_typed_and_answerable(&server, &handle, project.as_deref().unwrap());
+    control_commands_are_accepted(&handle, project.as_deref().unwrap());
+}
+
+/// A decision the pool opened shows up typed in the snapshot (it never streams),
+/// and answering it by command resolves it.
+fn open_decision_is_typed_and_answerable(server: &Server, handle: &ClientHandle, project: &str) {
+    write(
+        &server.root.join(".pipeline/control/decisions.jsonl"),
+        concat!(
+            r#"{"decisionId":"d-e2e","ts":"2026-10-03T00:00:00Z","status":"open","runId":"r1","featureId":"F1","kind":"question","stage":"coder","question":"Keep going?","options":["yes","no"],"recommended":"yes","artifacts":["review_report.md"]}"#,
+            "\n"
+        ),
+    );
+    write(
+        &server.root.join(".pipeline/control/attention.jsonl"),
+        concat!(
+            r#"{"type":"item","id":"att-e2e","ts":"2026-10-03T00:00:00Z","kind":"question","runId":"r1","decisionId":"d-e2e","summary":"Keep going?"}"#,
+            "\n"
+        ),
+    );
+    handle.refresh();
+    assert!(
+        recv_until(handle, Duration::from_secs(10), |ev| {
+            matches!(ev, ClientEvent::Snapshot(s)
+                if s.decisions.iter().any(|d| d.decision_id == "d-e2e"
+                    && d.options == ["yes", "no"]
+                    && d.recommended.as_deref() == Some("yes")
+                    && d.run_id.as_deref() == Some("r1"))
+                && s.attention.iter().any(|a| a.decision_id.as_deref() == Some("d-e2e")))
+        }),
+        "the decision and its attention item arrive typed"
+    );
+    let request = handle.command(
+        project,
+        "decision.answer",
+        Some("r1"),
+        serde_json::json!({ "decisionId": "d-e2e", "answer": "yes" }),
+    );
+    assert!(
+        recv_until(handle, Duration::from_secs(10), |ev| matches!(ev,
+        ClientEvent::CommandDone { request: r, result: Ok(res) } if *r == request && res.status == CommandStatus::Applied)),
+        "the answer is applied"
+    );
+    handle.refresh();
+    assert!(
+        recv_until(handle, Duration::from_secs(10), |ev| {
+            matches!(ev, ClientEvent::Snapshot(s) if s.decisions.iter().all(|d| d.decision_id != "d-e2e"))
+        }),
+        "an answered decision is no longer open"
+    );
+}
+
+/// The exact commands behind the autonomy control, "Pause all autonomy" and Acknowledge.
+fn control_commands_are_accepted(handle: &ClientHandle, project: &str) {
+    let cases = [
+        ("run.set_autonomy", Some("r1"), serde_json::json!({ "autonomy": "guided" })),
+        ("pool.pause", None, serde_json::json!({ "reason": "Paused from the desktop app" })),
+        ("attention.ack", None, serde_json::json!({ "id": "att-e2e" })),
+    ];
+    for (kind, run, args) in cases {
+        let request = handle.command(project, kind, run, args);
+        assert!(
+            recv_until(handle, Duration::from_secs(10), |ev| matches!(ev,
+            ClientEvent::CommandDone { request: r, result: Ok(res) } if *r == request && res.status == CommandStatus::Applied)),
+            "{kind} is applied"
+        );
+    }
 }

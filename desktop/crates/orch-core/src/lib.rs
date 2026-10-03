@@ -4,7 +4,9 @@
 //! `Effect`s (notify, badge, re-snapshot). The notification policy lives here
 //! so it is tested without a window, a clock, or a server.
 
-use orch_contract::{AttentionItem, Bucket, ProjectInfo, RunSummary, ServerEvent, Snapshot};
+use orch_contract::{
+    AttentionItem, Autonomy, Bucket, Decision, ProjectInfo, RunSummary, ServerEvent, Snapshot,
+};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -50,11 +52,22 @@ pub struct FeedLine {
     pub text: String,
 }
 
+/// The commands behind "Pause all autonomy".
+#[derive(Debug, Clone, PartialEq)]
+pub struct PausePlan {
+    /// Projects whose pool should stop starting work (`pool.pause`).
+    pub pools: Vec<String>,
+    /// `(project, run)` pairs to switch to guided (`run.set_autonomy`).
+    pub runs: Vec<(String, String)>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ProjectState {
     pub info: Option<ProjectInfo>,
     pub runs: BTreeMap<String, RunSummary>,
     pub attention: Vec<AttentionItem>,
+    /// Open decisions. They never stream; a snapshot is the only source.
+    pub decisions: Vec<Decision>,
     /// Becomes true after the first snapshot: only later changes notify.
     pub primed: bool,
 }
@@ -113,6 +126,7 @@ impl AppState {
                     .map(|r| (r.run_id.clone(), r.clone()))
                     .collect();
                 p.attention = snap.attention.clone();
+                p.decisions = snap.decisions.iter().filter(|d| d.status != "resolved").cloned().collect();
                 // Anything already waiting when we connect is in the inbox, not a
                 // fresh notification; mark it seen so it does not fire later either.
                 if !p.primed {
@@ -195,6 +209,14 @@ impl AppState {
                         }
                     }
                 }
+                // A decision card needs the decision itself, which only a snapshot carries.
+                if items
+                    .iter()
+                    .filter_map(|i| i.decision_id.as_deref())
+                    .any(|id| !p.decisions.iter().any(|d| d.decision_id == id))
+                {
+                    effects.push(Effect::Resnapshot);
+                }
                 p.attention = items;
             }
             ServerEvent::PoolUpdated { .. }
@@ -242,6 +264,66 @@ impl AppState {
             .get(&(project_id.to_string(), run_id.to_string()))
             .map(|f| f.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Open decisions put to a person about this run.
+    pub fn decisions_for(&self, project_id: &str, run_id: &str) -> Vec<&Decision> {
+        self.projects
+            .get(project_id)
+            .map(|p| {
+                p.decisions
+                    .iter()
+                    .filter(|d| d.run_id.as_deref() == Some(run_id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Pending attention items about this run, for acknowledging.
+    pub fn attention_for(&self, project_id: &str, run_id: &str) -> Vec<&AttentionItem> {
+        self.projects
+            .get(project_id)
+            .map(|p| {
+                p.attention
+                    .iter()
+                    .filter(|a| a.run_id.as_deref() == Some(run_id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Live runs that decide for themselves: what "pause all autonomy" must
+    /// switch back to guided.
+    pub fn autonomous_runs(&self) -> Vec<(String, String)> {
+        self.projects
+            .iter()
+            .flat_map(|(pid, p)| {
+                p.runs
+                    .values()
+                    .filter(|r| {
+                        r.autonomy == Autonomy::Autonomous
+                            && !r.dismissed
+                            && r.bucket != Bucket::Done
+                    })
+                    .map(move |r| (pid.clone(), r.run_id.clone()))
+            })
+            .collect()
+    }
+
+    /// What the panic button sends: pause each pool that has autonomous
+    /// feature work in flight, and put every live autonomous run back to guided.
+    pub fn pause_all_plan(&self) -> PausePlan {
+        let runs = self.autonomous_runs();
+        let mut pools: Vec<String> = runs
+            .iter()
+            .filter(|(p, r)| {
+                self.run(p, r)
+                    .is_some_and(|run| run.feature_id.is_some())
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        pools.dedup();
+        PausePlan { pools, runs }
     }
 
     pub fn run(&self, project_id: &str, run_id: &str) -> Option<&RunSummary> {

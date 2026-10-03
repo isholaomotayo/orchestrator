@@ -20,3 +20,9 @@ async-channel.workspace = true
 gpui = { package = "gpui-pre", version = "=0.3.7" }
 # `font-kit` is what renders text on macOS; the platform crate defaults it off.
 gpui-platform = { package = "gpui-pre-platform", version = "=0.3.7", features = ["font-kit"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Dock badge. Same majors GPUI already resolves, so no duplicate copies.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }

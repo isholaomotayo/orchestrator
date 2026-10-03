@@ -5,6 +5,7 @@
 
 mod app;
 mod notified;
+mod platform;
 mod theme;
 
 use gpui::{App, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
