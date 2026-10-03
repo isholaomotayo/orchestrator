@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import { bridgeCommand, inspectBridge } from './bridge.mjs';
 import { isValidRunId } from './run-registry.mjs';
+import { recordIntervention } from './interventions.mjs';
 import { readUsage } from './usage.mjs';
 import path from 'node:path';
 import http from 'node:http';
@@ -666,7 +667,7 @@ function spawnForRun(project, runPaths, nodeArgs) {
   });
 }
 
-function extendRun(project, { extend, runner, run = null } = {}) {
+function extendRun(project, { extend, runner, run = null, via = 'web' } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const n = positiveInt(extend);
@@ -674,9 +675,8 @@ function extendRun(project, { extend, runner, run = null } = {}) {
   const target = targetRun(project, run);
   if (target.error) return target;
   if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
-  if (target.status.overall !== 'halted' || target.status.haltReason !== 'MAX_CYCLES') {
-    return { error: `cannot extend: last halt reason was "${target.status.haltReason || target.status.overall}", not MAX_CYCLES`, code: 409 };
-  }
+  const recovery = recoveryFor(target.status, { engineAlive: false });
+  if (!recovery.extend) return { error: `cannot extend: ${recovery.reason || `the run is ${target.status.overall}`}`, code: 409 };
   const nodeArgs = [orchestratorEntry(project), '--resume', '--extend', String(n)];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
@@ -689,10 +689,11 @@ function extendRun(project, { extend, runner, run = null } = {}) {
     nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
+  recordIntervention(project.paths.root, target.runPaths.runId || null, { action: 'extend', via, detail: `+${n} cycles` });
   return { ok: true, pid: child.pid, extend: n };
 }
 
-function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
+function resumeInterruptedRunUi(project, { runner, run = null, via = 'web' } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const target = targetRun(project, run);
@@ -712,6 +713,7 @@ function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
     nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
+  recordIntervention(project.paths.root, target.runPaths.runId || null, { action: 'resume', via, detail: target.status?.haltReason || null });
   return { ok: true, pid: child.pid };
 }
 
@@ -916,8 +918,8 @@ function v1Commands(project) {
         queueStageNote(runPathsFor(project, run(b)), 'planner', a(b).note.trim());
         return settleSpawn(continueRun(project, { approve: true, run: run(b) }));
       },
-      'run.resume': (b) => settleSpawn(resumeInterruptedRunUi(project, { run: run(b) })),
-      'run.extend': (b) => settleSpawn(extendRun(project, { extend: a(b).extend, run: run(b) })),
+      'run.resume': (b) => settleSpawn(resumeInterruptedRunUi(project, { run: run(b), via: via(b) })),
+      'run.extend': (b) => settleSpawn(extendRun(project, { extend: a(b).extend, run: run(b), via: via(b) })),
       'run.cancel': (b) => cancelRun(project, { run: run(b) }),
       'run.dismiss': (b) => pool.dismissRun(project.paths, run(b), a(b).reason || 'Dismissed', { via: via(b) }),
       'run.set_autonomy': (b) => pool.setRunAutonomy(project.paths, run(b), a(b).autonomy, { via: via(b) }),

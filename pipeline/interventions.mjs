@@ -15,3 +15,22 @@ export function recordIntervention(root, runId, { action, by = 'operator', via =
   } catch { /* the action itself already happened; never fail it over the log */ }
   return event;
 }
+
+/**
+ * An automatic recovery (the supervisor resuming, extending or retrying on
+ * its own). Kept apart from `intervention`, which is a person's action, so a
+ * report can tell "someone fixed it" from "it fixed itself".
+ */
+export function recordRecovery(root, runId, { action, cause = null, detail = null, via = 'self-heal' }) {
+  if (runId && !isValidRunId(runId)) return null;
+  const runPaths = pipelinePaths(root, runId ? { runId } : {});
+  const event = {
+    stage: 'orchestrator', type: 'recovered', action, via,
+    ...(cause ? { cause } : {}), ...(detail ? { detail } : {}),
+  };
+  try {
+    appendEvent(runPaths, event);
+    appendRunVerb(runPaths, 'note', `${action} (${via})${cause ? ` after ${cause}` : ''}${detail ? `: ${detail}` : ''}`);
+  } catch { /* the recovery itself already happened; never fail it over the log */ }
+  return event;
+}

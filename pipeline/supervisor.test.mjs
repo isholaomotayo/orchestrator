@@ -337,6 +337,30 @@ test('a fatal AGENT_ERROR is not auto-resumed; a transient one is', () => {
   fs.rmSync(transient.root, { recursive: true, force: true });
 });
 
+test('an automatic resume leaves a recovered event saying what it did and why', () => {
+  const repo = tmpRepo();
+  compile(repo.paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaac';
+  seedHalted(repo.root, runId, { haltTransient: true });
+  const rm = readRoadmap(repo.paths);
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(repo.paths, rm);
+  createSupervisor({
+    repoRoot: repo.root,
+    spawn: () => ({ pid: 1, unref() {} }),
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  const events = fs.readFileSync(pipelinePaths(repo.root, { runId }).events, 'utf8')
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const recovered = events.find((e) => e.type === 'recovered');
+  assert.ok(recovered, 'the auto-resume must be on the record');
+  assert.equal(recovered.via, 'self-heal');
+  assert.equal(recovered.action, 'auto-resume');
+  assert.equal(recovered.cause, 'AGENT_ERROR');
+  fs.rmSync(repo.root, { recursive: true, force: true });
+});
+
 function seedHalted(root, runId, { haltTransient }) {
   const runPaths = pipelinePaths(root, { runId });
   fs.mkdirSync(runPaths.dir, { recursive: true });

@@ -362,8 +362,9 @@ if (args.continue) {
   }
   const isExtend = args.extend !== null;
   if (isExtend) {
-    if (onDisk.overall !== 'halted' || onDisk.haltReason !== 'MAX_CYCLES' || !onDisk.haltedPhase) {
-      console.error(`[Orchestrator] Cannot resume: last run's halt reason was "${onDisk.haltReason || onDisk.overall}", not MAX_CYCLES. Only cycle-budget halts can be extended.`);
+    const extendable = recoveryFor(onDisk, { engineAlive: false });
+    if (!extendable.extend) {
+      console.error(`[Orchestrator] Cannot extend: ${extendable.reason || `the last run is ${onDisk.overall}`}. Only cycle-budget halts (MAX_CYCLES) can be extended.`);
       haltAndExit(1);
     }
     status = onDisk;

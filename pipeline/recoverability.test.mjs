@@ -47,3 +47,51 @@ test('regressions, integrity violations, dismissals and finished runs are never 
   }
   assert.equal(recoveryFor({ overall: 'done' }).resume, false);
 });
+
+// ---- one registry of halt reasons -------------------------------------------
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { HALT_REASONS, hintFor } from './recoverability.mjs';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+function haltReasonsWrittenBySources() {
+  const found = new Map();
+  const patterns = [
+    /\bhalt\([^,\n]+,\s*'([A-Z][A-Z_]+)'/g,
+    /haltReason\s*[:=]\s*'([A-Z][A-Z_]+)'/g,
+  ];
+  for (const file of fs.readdirSync(here).filter((f) => f.endsWith('.mjs') && !f.endsWith('.test.mjs'))) {
+    const text = fs.readFileSync(path.join(here, file), 'utf8');
+    for (const re of patterns) for (const m of text.matchAll(re)) found.set(m[1], file);
+  }
+  return found;
+}
+
+test('every halt reason the engine, supervisor, bridge or pool can write is registered', () => {
+  const written = haltReasonsWrittenBySources();
+  assert.ok(written.size >= 10, `the scan should find the known reasons (found ${[...written.keys()]})`);
+  const missing = [...written].filter(([reason]) => !HALT_REASONS[reason]).map(([r, f]) => `${r} (${f})`);
+  assert.deepEqual(missing, [], 'add these to HALT_REASONS in recoverability.mjs, with a hint');
+});
+
+test('every registered reason has its own hint, never the generic fallback', () => {
+  const generic = hintFor('NOT_A_REAL_REASON');
+  for (const reason of Object.keys(HALT_REASONS)) {
+    assert.ok(hintFor(reason) && hintFor(reason) !== generic, `${reason} needs a specific hint`);
+  }
+});
+
+test('a hint never tells a person to resume or extend what the table says cannot be', () => {
+  for (const reason of Object.keys(HALT_REASONS)) {
+    const r = recoveryFor(halted(reason, { haltedPhase: 'coder' }));
+    if (r.resume || r.extend) continue;
+    assert.doesNotMatch(hintFor(reason), /--resume|--extend/, `${reason} is not resumable, so its hint must not say to resume`);
+  }
+});
+
+test('an unknown reason still gets a safe fallback that does not promise a resume', () => {
+  assert.doesNotMatch(hintFor('SOMETHING_NEW'), /--resume/);
+  assert.match(hintFor('SOMETHING_NEW'), /status\.json/);
+});

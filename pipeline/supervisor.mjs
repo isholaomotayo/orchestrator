@@ -28,6 +28,7 @@ import {
   writeStatus, newStatus, appendEvent, withFileLock,
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { recordRecovery } from './interventions.mjs';
 import { writeTerminalReport, writeWorkDoneReport } from './report.mjs';
 import { resolvePoolRunner, checkRunnerAvailable, resolveExecutionSurface } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
@@ -1108,6 +1109,11 @@ export function createSupervisor({
           ? ['--resume', '--extend', String(config.maxCoderCycles ?? 5)]
           : ['--resume'];
         recordAutoResume(run, reason);
+        recordRecovery(repoRoot, run.runId, {
+          action: reason === 'MAX_CYCLES' ? 'auto-extend' : 'auto-resume',
+          cause: reason,
+          detail: reason === 'MAX_CYCLES' ? `added ${config.maxCoderCycles ?? 5} cycles` : null,
+        });
         respawn(run, extra);
         resumingThisTick.add(run.runId);
         log(`auto-resumed ${run.runId} (${reason})`);
@@ -1196,6 +1202,7 @@ export function createSupervisor({
               ticket.previousRunIds = [...(ticket.previousRunIds || []), ticket.runId];
               ticket.autoRetries = Number(ticket.autoRetries || 0) + 1;
               appendRunVerb(pipelinePaths(repoRoot, { runId: run.runId }), 'note', `superseded by autonomous retry of ${current.id}/${ticket.id}`);
+              recordRecovery(repoRoot, run.runId, { action: 'auto-retry', cause: run.status.haltReason, detail: `${current.id}/${ticket.id} rerun as a new run` });
               raiseAttention({ runId: run.runId, featureId: current.id, kind: 'auto-retried', escalate: false,
                 summary: `${current.id}/${ticket.id} halted (${run.status.haltReason}); autonomous policy retried it once.` });
               ticket.status = 'queued';

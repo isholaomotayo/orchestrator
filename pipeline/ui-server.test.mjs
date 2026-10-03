@@ -544,6 +544,42 @@ test('v1: commands are idempotent and a refused one says why', withServer(async 
   assert.equal(again.status, 'duplicate');
 }));
 
+test('v1: a resume from the desktop is recorded as an intervention from that client', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json', Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const run = pipelinePaths(root, { runId: 'r2' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', stages: [] }));
+  fs.writeFileSync(run.events, '');
+  await fetch(`${base}/api/v1/projects/${project.projectId}/commands`, {
+    method: 'POST', headers,
+    body: JSON.stringify({ commandId: 'c-r2', type: 'run.resume', runId: 'r2', client: { kind: 'desktop' } }),
+  }).then((r) => r.json());
+  const events = fs.readFileSync(run.events, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const logged = events.find((e) => e.type === 'intervention' && e.action === 'resume');
+  assert.ok(logged, 'a person-triggered resume must be on the record');
+  assert.equal(logged.via, 'desktop');
+}));
+
+test('v1: an extend is refused with the recoverability table\'s own reason', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, 'Content-Type': 'application/json', Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const run = pipelinePaths(root, { runId: 'r3' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  // No haltedPhase: the table says there is nothing to extend, and says why.
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'halted', haltReason: 'MAX_CYCLES', stages: [] }));
+  fs.writeFileSync(run.events, '');
+  const res = await fetch(`${base}/api/v1/projects/${project.projectId}/commands`, {
+    method: 'POST', headers, body: JSON.stringify({ commandId: 'c-r3', type: 'run.extend', runId: 'r3', args: { extend: 2 } }),
+  }).then((r) => r.json());
+  assert.equal(res.status, 'rejected');
+  assert.match(res.error.message, /no recorded phase/);
+  const events = fs.readFileSync(run.events, 'utf8');
+  assert.doesNotMatch(events, /"action":"extend"/, 'a refused extend must not be logged as done');
+}));
+
 test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base }) => {
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-registered-'));
   const res = await fetch(`${base}/api/state?project=${encodeURIComponent(elsewhere)}`);
