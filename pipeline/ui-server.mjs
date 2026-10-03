@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import { bridgeCommand, inspectBridge } from './bridge.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { recordIntervention } from './interventions.mjs';
+import { readRunSummary } from './run-reader.mjs';
 import { readUsage } from './usage.mjs';
 import path from 'node:path';
 import http from 'node:http';
@@ -24,7 +25,7 @@ import { openDecisions } from './attention.mjs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {
-  API_VERSION, CONTRACT, CAPABILITIES, projectIdOf, runSummary, summarySignature,
+  API_VERSION, CONTRACT, CAPABILITIES, projectIdOf, summarySignature,
   createEventHub, createEventTail, createCommandExecutor,
 } from './api-v1.mjs';
 import { isOrchestratorSourceRepo } from './self-guard.mjs';
@@ -198,18 +199,12 @@ function projectById(projectId) {
 }
 
 function computeSummary(project, runId) {
-  const dir = runDir(project, runId);
-  if (!dir) return null;
-  const status = loadRunStatus(dir);
-  if (!status) return null;
-  const runPaths = runPathsFor(project, runId);
-  const lock = readLock(runPaths);
-  const engineAlive = !!(lock && pidAlive(lock.pid));
-  let owner = null;
-  try { owner = inspectBridge(project.repoRoot, runId).owner; } catch { /* unreadable journal: no owner */ }
-  let lastEventAt = null;
-  try { lastEventAt = fs.statSync(runPaths.events).mtime.toISOString(); } catch { /* no events yet */ }
-  return runSummary({ runId: runId || 'root', status, dir, config: project.config, engineAlive, pid: engineAlive ? lock.pid : null, owner, lastEventAt });
+  const read = readRunSummary(project.repoRoot, runId || null, { config: project.config });
+  if (!read) return null;
+  // The liveness this summary was built with: publishProjectChanges compares it
+  // to detect the supervisor starting or stopping.
+  if (read.supervisor) project.supervisorAlive = read.supervisor.alive;
+  return read.summary;
 }
 
 // Turn file changes into typed v1 events: run.upserted when a run's summary
@@ -225,6 +220,15 @@ function publishProjectChanges(project, files) {
     else if (/^control\//.test(rel)) control = true;
     else if (rel === '*') { for (const id of listRunIds(project)) runIds.add(id); control = true; }
     else runIds.add(null);
+  }
+  if (control) {
+    let alive = null;
+    try { alive = pool.supervisorState(project.paths).alive; } catch { /* no pool state */ }
+    // computeSummary records the liveness it last used; a different answer now means
+    // every pool run's diagnosis is out of date, though none of their files changed.
+    if (alive !== null && project.supervisorAlive !== undefined && project.supervisorAlive !== alive) {
+      for (const id of listRunIds(project)) runIds.add(id);
+    }
   }
   for (const runId of runIds) {
     const runPaths = runPathsFor(project, runId);

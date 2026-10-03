@@ -71,7 +71,27 @@
         "disabledReason": "no stage is active",
         "danger": "none"
       }
-    ]
+    ],
+    "diagnosis": {
+      "waitingOn": null,
+      "since": null,
+      "evidence": [
+        "status.json: haltReason=MISSING_ARTIFACT",
+        "coder: missing self-review"
+      ],
+      "remedies": [
+        {
+          "verb": "resume",
+          "safe": true,
+          "auto": false,
+          "command": "run.resume",
+          "reason": "fix the artifact named above first; resume then re-validates it"
+        }
+      ],
+      "state": "halted-recoverable",
+      "cause": "halt:MISSING_ARTIFACT",
+      "explanation": "Halted with MISSING_ARTIFACT. A stage's artifact is missing or lacks a required section (named in the halt detail above). Fix that file in place, then `node pipeline/orchestrator.mjs --resume` — it re-validates the artifact and continues from the same step; no fresh run needed."
+    }
   },
   "status": {
     "overall": "halted",

@@ -267,6 +267,9 @@ pub struct RunSummary {
     /// Why a host agent's last completion did not commit (only while parked).
     #[serde(default)]
     pub completion_blocked: Option<String>,
+    /// The doctor's reading of this run. Absent from servers older than the doctor.
+    #[serde(default)]
+    pub diagnosis: Option<Diagnosis>,
     #[serde(default)]
     pub dismissed: bool,
     #[serde(default)]
@@ -280,6 +283,95 @@ pub struct RunSummary {
 impl RunSummary {
     pub fn action(&self, id: &str) -> Option<&Action> {
         self.actions.iter().find(|a| a.id == id)
+    }
+}
+
+/// What the doctor says a run is doing. Computed by the server; an app only shows it.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum DoctorState {
+    Finished,
+    Healthy,
+    Waiting,
+    Stalled,
+    DeadEngine,
+    ParkedNoHost,
+    Held,
+    HaltedRecoverable,
+    HaltedTerminal,
+    PoolStopped,
+    PoolPaused,
+    SupervisorDead,
+    #[serde(other)]
+    Unknown,
+}
+
+impl DoctorState {
+    /// Words for a person; the wire names are for programs.
+    pub fn label(self) -> &'static str {
+        match self {
+            DoctorState::Finished => "Finished",
+            DoctorState::Healthy => "Healthy",
+            DoctorState::Waiting => "Waiting",
+            DoctorState::Stalled => "Stalled, no output",
+            DoctorState::DeadEngine => "Engine stopped",
+            DoctorState::ParkedNoHost => "Parked, nobody driving",
+            DoctorState::Held => "Held",
+            DoctorState::HaltedRecoverable => "Halted, can recover",
+            DoctorState::HaltedTerminal => "Halted, needs you",
+            DoctorState::PoolStopped => "Supervisor not running",
+            DoctorState::PoolPaused => "Pool paused",
+            DoctorState::SupervisorDead => "Supervisor not running",
+            DoctorState::Unknown => "Unclear",
+        }
+    }
+}
+
+/// One way to fix a run. `command` is a v1 command type; `shell` is for what
+/// has no command (starting the supervisor). Only `safe` + `auto` remedies may
+/// ever run unattended.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct Remedy {
+    pub verb: String,
+    #[serde(default)]
+    pub command: Option<String>,
+    #[serde(default)]
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub safe: bool,
+    #[serde(default)]
+    pub auto: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Diagnosis {
+    pub state: DoctorState,
+    #[serde(default)]
+    pub cause: String,
+    #[serde(default)]
+    pub explanation: String,
+    #[serde(default)]
+    pub waiting_on: Option<String>,
+    #[serde(default)]
+    pub since: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+    #[serde(default)]
+    pub remedies: Vec<Remedy>,
+}
+
+impl Diagnosis {
+    /// Worth a person's eyes. Same rule as `orchestrate.sh doctor`: a live agent
+    /// holding the work is somebody else's move; waiting on `you` is yours.
+    pub fn needs_attention(&self) -> bool {
+        match self.state {
+            DoctorState::Finished | DoctorState::Healthy => false,
+            DoctorState::Waiting => self.waiting_on.as_deref() == Some("you"),
+            _ => true,
+        }
     }
 }
 

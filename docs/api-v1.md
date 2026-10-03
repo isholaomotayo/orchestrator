@@ -24,6 +24,16 @@ holds `{instanceId, port, pid, token, startedAt, apiVersions, serverVersion, url
 The server deletes the record when it exits. `GET /healthz` needs no token and
 returns `instanceId`, `apiVersions`, `contract` and `capabilities`.
 
+## Explain a run without a server
+
+```bash
+bash .pipeline/orchestrate.sh doctor [--json] [--all]
+```
+
+Prints each run that needs attention with its explanation, evidence and fixes. It reads files only, so it works
+with no dashboard and no desktop app, and uses the same code as the `diagnosis` field. Exit code: `0` nothing
+needs attention, `1` something does, `2` not an orchestrator project.
+
 ## Authentication and safety
 
 - Every `/api/v1` request needs `Authorization: Bearer <token>`. EventSource
@@ -60,6 +70,16 @@ A **RunSummary** contains `bucket`, `driver`, `actions` and the fields below.
 - `actions` is a list of `{id, label, enabled, disabledReason?, primary?, danger, params?}`.
   Action ids are command types, so a client can show exactly the buttons the
   server would accept.
+- `diagnosis` is the doctor's reading of the run: `{state, cause, explanation, waitingOn, since, evidence[], remedies[]}`.
+  - `state` is one of `finished`, `healthy`, `waiting`, `stalled`, `dead-engine`, `parked-no-host`, `held`,
+    `halted-recoverable`, `halted-terminal`, `pool-stopped`, `pool-paused`, `supervisor-dead`, `unknown`.
+  - A run is always progressing, waiting on a named party (`waitingOn`), or carrying remedies. `unknown` still shows its `evidence`.
+  - `remedies[]` come from the same recoverability table the engine enforces. Each is `{verb, command|shell, safe, auto, reason}`.
+    `command` is a v1 command type; `shell` is for what has none (starting the supervisor).
+    Only `safe` remedies are ever idempotent, and only `safe` + `auto` ones may run unattended.
+  - It holds no durations. `since` is a timestamp; the client works out the age.
+  - For a pool run whose supervisor is not running, `state` is `supervisor-dead` and `underlying` holds the diagnosis it replaced.
+- `completionBlocked` is why a chat agent's last completion did not commit, while the run is still parked.
 - The other fields are: `surface` (`host`|`cli`), `autonomy`, `policy.effective`,
   `stage`, `waitingSince`, `handoffId`, `haltReason`, `haltClass`
   (`recoverable`|`terminal`).

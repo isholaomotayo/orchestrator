@@ -52,6 +52,34 @@
     "haltReason": { "type": ["string", "null"] },
     "haltClass": { "enum": ["recoverable", "terminal", null] },
     "completionBlocked": { "type": ["string", "null"] },
+    "diagnosis": {
+      "type": "object",
+      "required": ["state", "cause", "explanation", "evidence", "remedies"],
+      "properties": {
+        "state": { "enum": ["finished", "healthy", "waiting", "stalled", "dead-engine", "parked-no-host", "held", "halted-recoverable", "halted-terminal", "pool-stopped", "pool-paused", "supervisor-dead", "unknown"] },
+        "cause": { "type": "string" },
+        "explanation": { "type": "string" },
+        "waitingOn": { "type": ["string", "null"] },
+        "since": { "type": ["string", "null"] },
+        "evidence": { "type": "array", "items": { "type": "string" } },
+        "remedies": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["verb", "safe", "auto", "reason"],
+            "properties": {
+              "verb": { "type": "string" },
+              "command": { "type": "string" },
+              "shell": { "type": "string" },
+              "safe": { "type": "boolean" },
+              "auto": { "type": "boolean" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "underlying": { "type": "object" }
+      }
+    },
     "dismissed": { "type": "boolean" },
     "startedAt": { "type": ["string", "null"] },
     "endedAt": { "type": ["string", "null"] },

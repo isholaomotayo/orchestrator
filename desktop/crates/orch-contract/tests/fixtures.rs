@@ -125,3 +125,72 @@ fn a_blocked_completion_is_carried_and_absent_is_none() {
     .unwrap();
     assert!(without.completion_blocked.is_none());
 }
+
+#[test]
+fn a_diagnosis_parses_and_a_state_from_a_newer_server_does_not_break_it() {
+    use orch_contract::{DoctorState, RunSummary};
+    let parse = |state: &str| -> RunSummary {
+        serde_json::from_value(serde_json::json!({
+            "runId": "a", "title": "t", "autonomy": "guided", "bucket": "blocked",
+            "driver": { "kind": "none", "presence": "absent" }, "actions": [], "dismissed": false,
+            "diagnosis": {
+                "state": state, "cause": "halt:INTERRUPTED", "explanation": "Halted with INTERRUPTED.",
+                "waitingOn": "you", "since": null, "evidence": ["status.json: haltReason=INTERRUPTED"],
+                "remedies": [
+                    { "verb": "resume", "command": "run.resume", "safe": true, "auto": false, "reason": "continues from the step that failed" },
+                    { "verb": "start-supervisor", "shell": "bash .pipeline/orchestrate.sh pool start", "safe": true, "auto": false, "reason": "starts it" }
+                ],
+                "underlying": { "state": "halted-recoverable" }
+            },
+        }))
+        .unwrap()
+    };
+    let run = parse("halted-recoverable");
+    let d = run.diagnosis.expect("diagnosis");
+    assert_eq!(d.state, DoctorState::HaltedRecoverable);
+    assert_eq!(d.waiting_on.as_deref(), Some("you"));
+    assert_eq!(d.remedies[0].command.as_deref(), Some("run.resume"));
+    assert!(d.remedies[1].shell.as_deref().unwrap().contains("pool start"));
+    assert_eq!(parse("some-future-state").diagnosis.unwrap().state, DoctorState::Unknown);
+    assert!(
+        serde_json::from_value::<RunSummary>(serde_json::json!({
+            "runId": "a", "title": "t", "autonomy": "guided", "bucket": "working",
+            "driver": { "kind": "none", "presence": "absent" }, "actions": [], "dismissed": false,
+        }))
+        .unwrap()
+        .diagnosis
+        .is_none(),
+        "an older server sends no diagnosis"
+    );
+}
+
+#[test]
+fn needs_attention_matches_the_cli_rule() {
+    use orch_contract::{Diagnosis, DoctorState};
+    let d = |state, waiting_on: Option<&str>| Diagnosis {
+        state,
+        cause: String::new(),
+        explanation: String::new(),
+        waiting_on: waiting_on.map(str::to_string),
+        since: None,
+        evidence: vec![],
+        remedies: vec![],
+    };
+    assert!(!d(DoctorState::Finished, None).needs_attention());
+    assert!(!d(DoctorState::Healthy, None).needs_attention());
+    // A live chat agent holding the lease is somebody else's move...
+    assert!(!d(DoctorState::Waiting, Some("claude-code")).needs_attention());
+    // ...but a plan waiting on you is yours.
+    assert!(d(DoctorState::Waiting, Some("you")).needs_attention());
+    assert!(d(DoctorState::ParkedNoHost, Some("a chat agent")).needs_attention());
+    assert!(d(DoctorState::Unknown, None).needs_attention(), "when in doubt, show it");
+}
+
+#[test]
+fn doctor_states_have_plain_labels() {
+    use orch_contract::DoctorState;
+    assert_eq!(DoctorState::HaltedTerminal.label(), "Halted, needs you");
+    assert_eq!(DoctorState::ParkedNoHost.label(), "Parked, nobody driving");
+    assert_eq!(DoctorState::DeadEngine.label(), "Engine stopped");
+    assert_eq!(DoctorState::Unknown.label(), "Unclear");
+}

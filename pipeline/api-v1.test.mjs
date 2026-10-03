@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  bucketOf, driverOf, actionsFor, runSummary, createEventHub, createEventTail, createCommandExecutor, projectIdOf,
+  bucketOf, driverOf, actionsFor, runSummary, summarySignature, createEventHub, createEventTail, createCommandExecutor, projectIdOf,
 } from './api-v1.mjs';
 
 const now = Date.parse('2026-10-02T12:00:00Z');
@@ -127,4 +127,28 @@ test('a parked run whose completion was blocked says so, instead of looking idle
   const moved = { ...parked, overall: 'running' };
   assert.equal(runSummary({ runId: 'r1', status: moved, dir: null, now }).completionBlocked, null);
   assert.equal(runSummary({ runId: 'r1', status: { overall: 'awaiting_chat', stages: [] }, dir: null, now }).completionBlocked, null);
+});
+
+test('every run summary carries the doctor\'s diagnosis, including a dead supervisor for pool runs', () => {
+  const parked = { overall: 'awaiting_chat', awaitingStage: 'coder', hostClient: 'antigravity', stages: [{ name: 'coder', startedAt: ago(40 * 60_000) }] };
+  const s = runSummary({ runId: 'r1', status: parked, dir: null, now });
+  assert.equal(s.diagnosis.state, 'parked-no-host');
+  assert.equal(s.diagnosis.waitingOn, 'a chat agent');
+  assert.equal(s.diagnosis.since, s.waitingSince);
+
+  const regression = runSummary({ runId: 'r2', status: { overall: 'halted', haltReason: 'REGRESSION_BLOCKED', stages: [] }, dir: null, now });
+  assert.equal(regression.diagnosis.state, 'halted-terminal');
+  assert.equal(regression.haltClass, 'terminal', 'the doctor and the summary agree on recoverability');
+
+  const pooled = { overall: 'halted', haltReason: 'INTERRUPTED', featureId: 'F1', stages: [] };
+  const dead = runSummary({ runId: 'r3', status: pooled, dir: null, now, supervisor: { alive: false, paused: false, heartbeatAt: ago(3_600_000) } });
+  assert.equal(dead.diagnosis.state, 'supervisor-dead');
+  assert.equal(runSummary({ runId: 'r3', status: pooled, dir: null, now }).diagnosis.state, 'halted-recoverable', 'no supervisor info means no accusation');
+});
+
+test('an unchanged diagnosis leaves the summary signature alone, so nothing is re-published', () => {
+  const parked = { overall: 'awaiting_chat', awaitingStage: 'coder', stages: [{ name: 'coder', startedAt: ago(40 * 60_000) }] };
+  const a = runSummary({ runId: 'r1', status: parked, dir: null, now });
+  const b = runSummary({ runId: 'r1', status: parked, dir: null, now: now + 120_000 });
+  assert.equal(summarySignature(a), summarySignature(b));
 });

@@ -9,7 +9,7 @@
       "engine": {
         "source": "host",
         "projectCommit": null,
-        "hostCommit": "1cf9270f78d300ac108c691a65b565040eff8afc",
+        "hostCommit": "e533f8e8e842a84ccf21588f42a059af2bc4487e",
         "mismatch": false
       },
       "install": null
@@ -113,7 +113,19 @@
           "enabled": true,
           "danger": "none"
         }
-      ]
+      ],
+      "diagnosis": {
+        "waitingOn": "a chat agent",
+        "since": "2026-10-03T06:52:28.613Z",
+        "evidence": [
+          "status.overall=awaiting_chat (coder)",
+          "no live lease on the handoff"
+        ],
+        "remedies": [],
+        "state": "parked-no-host",
+        "cause": "no-host",
+        "explanation": "Stage coder is waiting for a chat agent (last host: antigravity) and no session holds it."
+      }
     },
     {
       "runId": "r-done",
@@ -180,7 +192,16 @@
           "disabledReason": "no stage is active",
           "danger": "none"
         }
-      ]
+      ],
+      "diagnosis": {
+        "waitingOn": null,
+        "since": null,
+        "evidence": [],
+        "remedies": [],
+        "state": "finished",
+        "cause": "done",
+        "explanation": "This run finished."
+      }
     },
     {
       "runId": "r-halted",
@@ -254,7 +275,27 @@
           "disabledReason": "no stage is active",
           "danger": "none"
         }
-      ]
+      ],
+      "diagnosis": {
+        "waitingOn": null,
+        "since": null,
+        "evidence": [
+          "status.json: haltReason=MISSING_ARTIFACT",
+          "coder: missing self-review"
+        ],
+        "remedies": [
+          {
+            "verb": "resume",
+            "safe": true,
+            "auto": false,
+            "command": "run.resume",
+            "reason": "fix the artifact named above first; resume then re-validates it"
+          }
+        ],
+        "state": "halted-recoverable",
+        "cause": "halt:MISSING_ARTIFACT",
+        "explanation": "Halted with MISSING_ARTIFACT. A stage's artifact is missing or lacks a required section (named in the halt detail above). Fix that file in place, then `node pipeline/orchestrator.mjs --resume` — it re-validates the artifact and continues from the same step; no fresh run needed."
+      }
     },
     {
       "runId": "r-plan",
@@ -336,7 +377,33 @@
           "disabledReason": "no stage is active",
           "danger": "none"
         }
-      ]
+      ],
+      "diagnosis": {
+        "waitingOn": "you",
+        "since": null,
+        "evidence": [
+          "status.overall=awaiting_plan_approval"
+        ],
+        "remedies": [
+          {
+            "verb": "approve-plan",
+            "safe": false,
+            "auto": false,
+            "command": "plan.approve",
+            "reason": "approving starts the build; a person decides"
+          },
+          {
+            "verb": "request-plan-changes",
+            "safe": false,
+            "auto": false,
+            "command": "plan.reject",
+            "reason": "needs a written note for the planner"
+          }
+        ],
+        "state": "waiting",
+        "cause": "plan-approval",
+        "explanation": "The plan is ready and waiting for your approval before the build starts."
+      }
     },
     {
       "runId": "r-unattended",
@@ -418,7 +485,19 @@
           "enabled": true,
           "danger": "none"
         }
-      ]
+      ],
+      "diagnosis": {
+        "waitingOn": "a chat agent",
+        "since": "2026-10-03T03:54:28.613Z",
+        "evidence": [
+          "status.overall=awaiting_chat (tester)",
+          "no live lease on the handoff"
+        ],
+        "remedies": [],
+        "state": "parked-no-host",
+        "cause": "no-host",
+        "explanation": "Stage tester is waiting for a chat agent and no session holds it."
+      }
     }
   ],
   "attention": [],

@@ -36,6 +36,7 @@ USAGE='Usage: bash .pipeline/orchestrate.sh "task description" [--runner claude|
    or: bash .pipeline/orchestrate.sh --continue
    or: bash .pipeline/orchestrate.sh --resume [--extend <n>] [--runner ...] [--no-ui]
    or: bash .pipeline/orchestrate.sh ui --ensure [--json]   (find or start the dashboard for this project)
+   or: bash .pipeline/orchestrate.sh doctor [--json] [--all]   (explain the state of every run and what would fix it)
 
 --task-file reads the task text from a file instead of a shell argument — prefer it in chat mode so free-form task text never has to be embedded in a command line.
 Exit code 3 = self-target guard: this repo is the orchestrator source; override with --allow-self or ORCH_ALLOW_SELF=1.'
@@ -51,6 +52,12 @@ case "${1:-}" in
     ARGS=()
     for a in "$@"; do [ "$a" = "--ensure" ] || ARGS+=("$a"); done
     exec "$JS_RUNNER" "$REPO_ROOT/pipeline/ui-ensure.mjs" --repo "$REPO_ROOT" "${ARGS[@]+"${ARGS[@]}"}"
+    ;;
+  doctor)
+    # `doctor [--json] [--all]`: explain every run's state and what would fix it.
+    # Reads files only, so it works with no dashboard and no desktop app.
+    shift
+    exec "$JS_RUNNER" "$REPO_ROOT/pipeline/doctor-cli.mjs" --repo "$REPO_ROOT" "$@"
     ;;
   pool|roadmap)
     SUB="$1"; shift

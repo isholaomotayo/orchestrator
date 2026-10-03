@@ -8,7 +8,7 @@
         "engine": {
           "source": "host",
           "projectCommit": null,
-          "hostCommit": "1cf9270f78d300ac108c691a65b565040eff8afc",
+          "hostCommit": "e533f8e8e842a84ccf21588f42a059af2bc4487e",
           "mismatch": false
         },
         "install": null

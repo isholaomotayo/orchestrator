@@ -6,7 +6,7 @@ use gpui::{
     SystemNotificationAction, SystemNotificationResponse, Window, div, prelude::*, px,
 };
 use orch_client::{Client, ClientEvent, ClientHandle, StreamEvent, discovery};
-use orch_contract::{Action, Autonomy, Bucket, CommandStatus, Decision, RunSummary, Surface};
+use orch_contract::{Action, Autonomy, Bucket, CommandStatus, Decision, Diagnosis, RunSummary, Surface};
 use orch_core::{AppState, Connection, Effect, Input};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -694,6 +694,7 @@ impl OrchestratorApp {
             .flex()
             .flex_col()
             .flex_1()
+            .min_w_0()
             .h_full()
             .overflow_y_scroll()
             .p_6()
@@ -728,6 +729,7 @@ impl OrchestratorApp {
                         .unwrap_or_default()
                 ))
             }))
+            .children(run.diagnosis.as_ref().filter(|d| d.needs_attention()).map(render_diagnosis))
             .children(run.completion_blocked.as_ref().map(|why| {
                 div()
                     .p_3()
@@ -962,6 +964,42 @@ impl OrchestratorApp {
             }))
             .child(options)
     }
+}
+
+/// The doctor's reading: what is wrong, who it waits on, the evidence, and what would fix it.
+/// Fix buttons come from the server's `actions[]`; this explains why they matter.
+fn render_diagnosis(d: &Diagnosis) -> Div {
+    card()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(div().text_xs().text_color(theme::muted()).child(
+            format!("DIAGNOSIS · {}", d.state.label().to_uppercase()),
+        ))
+        .child(div().font_weight(FontWeight::SEMIBOLD).child(d.explanation.clone()))
+        .children(d.waiting_on.as_ref().map(|who| {
+            div().text_color(theme::muted()).child(format!(
+                "Waiting on {who}{}",
+                d.since.as_ref().map(|t| format!(" since {t}")).unwrap_or_default()
+            ))
+        }))
+        .children(d.evidence.iter().map(|e| {
+            div().text_xs().text_color(theme::muted()).font_family("Menlo").child(format!("· {e}"))
+        }))
+        .children(d.remedies.iter().map(|r| {
+            div()
+                .flex()
+                .flex_col()
+                .child(div().child(format!(
+                    "→ {}{}: {}",
+                    r.verb,
+                    if r.safe { "" } else { " (needs your call)" },
+                    r.reason
+                )))
+                .children(r.shell.as_ref().map(|c| {
+                    div().text_xs().font_family("Menlo").text_color(theme::muted()).child(c.clone())
+                }))
+        }))
 }
 
 fn card() -> Div {

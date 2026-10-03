@@ -580,6 +580,68 @@ test('v1: an extend is refused with the recoverability table\'s own reason', wit
   assert.doesNotMatch(events, /"action":"extend"/, 'a refused extend must not be logged as done');
 }));
 
+test('v1: a pool run with no supervisor running is diagnosed as supervisor-dead', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const run = pipelinePaths(root, { runId: 'r4' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', featureId: 'F1', stages: [] }));
+  fs.writeFileSync(run.events, '');
+  const snap = await (await fetch(`${base}/api/v1/projects/${project.projectId}/snapshot`, { headers })).json();
+  const r4 = snap.runs.find((r) => r.runId === 'r4');
+  assert.equal(r4.diagnosis.state, 'supervisor-dead');
+  assert.equal(r4.diagnosis.underlying.state, 'halted-recoverable');
+  // A run that is not in a pool is never blamed on the supervisor.
+  const r1 = snap.runs.find((r) => r.runId === 'r1');
+  assert.equal(r1.diagnosis.state, 'finished');
+}));
+
+test('v1: starting the supervisor republishes the diagnosis of pool runs that were waiting on it', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const run = pipelinePaths(root, { runId: 'r5' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', featureId: 'F1', stages: [] }));
+  fs.writeFileSync(run.events, '');
+  const before = await (await fetch(`${base}/api/v1/projects/${project.projectId}/snapshot`, { headers })).json();
+  assert.equal(before.runs.find((r) => r.runId === 'r5').diagnosis.state, 'supervisor-dead');
+
+  const ctrl = new AbortController();
+  const stream = await fetch(`${base}/api/v1/events?projects=${project.projectId}`, { headers, signal: ctrl.signal });
+  const reader = stream.body.getReader();
+  let text = '';
+  // One pending read, kept across polls: racing a fresh read() against a timer would
+  // abandon the old read, and the chunk it later receives would be lost.
+  let pending = null;
+  const pump = async (ms) => {
+    pending ??= reader.read();
+    const r = await Promise.race([pending, new Promise((res) => setTimeout(() => res(null), ms))]);
+    if (r?.value) { text += new TextDecoder().decode(r.value); pending = null; }
+  };
+  const until = async (re, ms = 6000) => {
+    const deadline = Date.now() + ms;
+    while (!re.test(text) && Date.now() < deadline) await pump(200);
+    return re.test(text);
+  };
+  assert.ok(await until(/event: hello/));
+  const states = () => [...text.matchAll(/event: run\.upserted\ndata: (.*)\n/g)]
+    .map((m) => JSON.parse(m[1])).filter((f) => f.run.runId === 'r5').map((f) => f.run.diagnosis.state);
+  // Provoke one publish of r5 while no supervisor exists, so the only thing that can
+  // change its diagnosis afterwards is the supervisor coming up.
+  fs.appendFileSync(run.events, JSON.stringify({ ts: new Date().toISOString(), stage: 'orchestrator', type: 'note' }) + '\n');
+  for (let i = 0; i < 20 && !states().includes('supervisor-dead'); i++) await pump(300);
+  assert.ok(states().includes('supervisor-dead'), `first publish: ${states()}`);
+  // This test process stands in for a live supervisor.
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(path.dirname(paths.supervisorPid), { recursive: true });
+  fs.writeFileSync(paths.supervisorPid, String(process.pid));
+  for (let i = 0; i < 20 && !states().includes('halted-recoverable'); i++) await pump(300);
+  assert.ok(states().includes('halted-recoverable'), `top-level diagnosis states seen: ${states()}\n${text.slice(-1500)}`);
+  ctrl.abort();
+}));
+
 test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base }) => {
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-registered-'));
   const res = await fetch(`${base}/api/state?project=${encodeURIComponent(elsewhere)}`);

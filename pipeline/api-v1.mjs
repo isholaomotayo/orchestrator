@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { recoveryFor } from './recoverability.mjs';
+import { diagnose } from './doctor.mjs';
 import { surfaceOf, policyOf, readPolicyOverride } from './mode.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { STAGE_ARTIFACT_FILES } from './stages.mjs';
@@ -108,7 +109,7 @@ export function actionsFor(status, { engineAlive = false, dir = null } = {}) {
 }
 
 /** The RunSummary every list and badge is built from. */
-export function runSummary({ runId = null, status, dir, config = {}, engineAlive = false, pid = null, owner = null, lastEventAt = null, now = Date.now() }) {
+export function runSummary({ runId = null, status, dir, config = {}, engineAlive = false, pid = null, owner = null, lastEventAt = null, supervisor = null, now = Date.now() }) {
   const driver = driverOf(status, { engineAlive, pid, owner, lastEventAt, now });
   const active = (status?.stages || []).find((s) => ['running', 'awaiting_host'].includes(s.status))
     || (status?.stages || []).find((s) => s.name === status?.awaitingStage) || null;
@@ -139,6 +140,10 @@ export function runSummary({ runId = null, status, dir, config = {}, engineAlive
     startedAt: status?.startedAt ?? null,
     endedAt: status?.endedAt ?? null,
     actions: actionsFor(status, { engineAlive, dir }),
+    diagnosis: diagnose({
+      status, engineAlive, driver, lastEventAt, supervisor, now,
+      waitingSince: status?.overall === 'awaiting_chat' ? waitingSince(status) : null,
+    }),
   };
 }
 
