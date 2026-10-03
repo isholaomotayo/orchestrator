@@ -258,3 +258,24 @@ fn attention_is_listed_under_its_run() {
     assert_eq!(s.attention_for("p", "a").len(), 1);
     assert!(s.attention_for("p", "b").is_empty());
 }
+
+#[test]
+fn self_heal_alerts_have_their_own_notification_titles() {
+    let mut s = AppState::default();
+    s.apply(Input::Snapshot(snapshot(vec![run("a", Bucket::Working)])));
+    let alert = |kind: &str, id: &str| -> AttentionItem {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "kind": kind, "runId": "a", "summary": "details", "escalate": true,
+        }))
+        .unwrap()
+    };
+    let titles = |s: &mut AppState, item: AttentionItem| -> Vec<String> {
+        let fx = s.apply(Input::Server(ServerEvent::AttentionUpdated {
+            project_id: "p".into(),
+            items: vec![item],
+        }));
+        notifies(&fx).iter().map(|n| n.title.clone()).collect()
+    };
+    assert_eq!(titles(&mut s, alert("supervisor-dead", "s1")), ["The roadmap supervisor stopped"]);
+    assert_eq!(titles(&mut s, alert("self-heal-exhausted", "s2")), ["Automatic recovery gave up"]);
+}

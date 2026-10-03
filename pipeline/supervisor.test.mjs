@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pipelinePaths, writeStatus, newStatus } from './state.mjs';
-import { writeRunMeta } from './run-registry.mjs';
+import { writeRunMeta, readRunMeta } from './run-registry.mjs';
+import { writePolicyOverride, readPolicyOverride } from './mode.mjs';
 import { createSupervisor } from './supervisor.mjs';
 import { main as poolCli } from './pool-cli.mjs';
 import { compile, writeRoadmap, readRoadmap, listRunStates, pendingAttention } from './pool.mjs';
@@ -359,6 +360,89 @@ test('an automatic resume leaves a recovered event saying what it did and why', 
   assert.equal(recovered.action, 'auto-resume');
   assert.equal(recovered.cause, 'AGENT_ERROR');
   fs.rmSync(repo.root, { recursive: true, force: true });
+});
+
+// ---- self-heal: a run whose engine process is gone ---------------------------
+
+function seedDeadEngine(root, runId, { autonomy, autoResumes = 0 }) {
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('coder'), overall: 'running', featureId: 'F1' });
+  writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'ticket', runner: 'cursor', phase: 'running', autoResumes, pid: null });
+  writePolicyOverride(runPaths.dir, { autonomy });
+  fs.writeFileSync(runPaths.events, '');
+  return runPaths;
+}
+
+function healRig(autonomy, { autoResumes = 0 } = {}) {
+  const repo = tmpRepo();
+  compile(repo.paths);
+  const runId = '20260909T000000Z-F1-ticket-dddddd';
+  const runPaths = seedDeadEngine(repo.root, runId, { autonomy, autoResumes });
+  const spawned = [];
+  let clock = Date.parse('2026-10-03T12:00:00Z');
+  const sup = createSupervisor({
+    repoRoot: repo.root, now: () => clock,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  });
+  const advance = (ms) => { clock += ms; };
+  const events = () => fs.readFileSync(runPaths.events, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  return { ...repo, runId, runPaths, spawned, sup, advance, events, done: () => fs.rmSync(repo.root, { recursive: true, force: true }) };
+}
+
+test('self-heal: an autonomous run whose engine died is restarted once it has stayed dead past the grace period', () => {
+  const r = healRig('autonomous');
+  r.sup.tick();
+  assert.equal(r.spawned.length, 0, 'first sight only starts the clock');
+  r.advance(20_000); r.sup.tick();
+  assert.equal(r.spawned.length, 0, 'still inside the grace period');
+  r.advance(15_000); r.sup.tick();
+  assert.equal(r.spawned.length, 1);
+  assert.ok(r.spawned[0].includes('--resume'));
+  const recovered = r.events().find((e) => e.type === 'recovered');
+  assert.equal(recovered.action, 'auto-respawn');
+  assert.equal(recovered.via, 'self-heal');
+  assert.equal(recovered.cause, 'engine-gone');
+  const meta = readRunMeta(r.runPaths);
+  assert.equal(meta.autoResumes, 1);
+  assert.ok(meta.lastHealAt);
+  r.done();
+});
+
+test('self-heal: a run that keeps dying is restarted within its budget, then handed back to a person once', () => {
+  const r = healRig('autonomous');
+  r.sup.tick(); r.advance(31_000); r.sup.tick();           // restart 1
+  assert.equal(r.spawned.length, 1);
+  r.advance(1_000); r.sup.tick();
+  assert.equal(r.spawned.length, 1, 'a freshly restarted engine gets the grace period before it is judged');
+  r.advance(40_000); r.sup.tick();                          // restart 2
+  assert.equal(r.spawned.length, 2);
+  r.advance(60_000); r.sup.tick(); r.advance(60_000); r.sup.tick(); // budget spent: twice, to prove it escalates once
+  assert.equal(r.spawned.length, 2, 'no restart past the budget');
+  assert.equal(readPolicyOverride(r.runPaths.dir).autonomy, 'guided', 'the run is handed back');
+  assert.equal(readPolicyOverride(r.runPaths.dir).by, 'self-heal');
+  const items = pendingAttention(r.paths).filter((a) => a.kind === 'self-heal-exhausted' && a.runId === r.runId);
+  assert.equal(items.length, 1, 'one alert, not one per tick');
+  assert.equal(items[0].escalate, true);
+  assert.match(items[0].summary, /guided/);
+  r.done();
+});
+
+test('self-heal: a guided run is never restarted on its own', () => {
+  const r = healRig('guided');
+  for (let i = 0; i < 6; i++) { r.advance(60_000); r.sup.tick(); }
+  assert.equal(r.spawned.length, 0);
+  assert.equal(readRunMeta(r.runPaths).autoResumes, 0);
+  r.done();
+});
+
+test('self-heal: a run whose engine is alive is left alone', () => {
+  const r = healRig('autonomous');
+  fs.writeFileSync(r.runPaths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  for (let i = 0; i < 4; i++) { r.advance(60_000); r.sup.tick(); }
+  assert.equal(r.spawned.length, 0);
+  r.done();
 });
 
 function seedHalted(root, runId, { haltTransient }) {

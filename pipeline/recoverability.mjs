@@ -5,7 +5,8 @@
 // refused, so every "automatic retry" failed.
 //
 //   resume      — `--resume` may re-enter the halted step (manual).
-//   autoResume  — the supervisor may do that unattended.
+//   autoResume  — the supervisor may do that unattended (self-heal.mjs adds a
+//                 grace period and a per-run budget).
 //   extend      — `--resume --extend N` may add cycle budget.
 //   needsValidArtifact — resume is allowed only once the halted stage's
 //                 artifact validates (a human or host agent fixed it).
@@ -54,7 +55,7 @@ export function recoveryFor(status, { engineAlive = false } = {}) {
   if (status.overall === 'running') {
     return engineAlive
       ? { ...NONE, reason: 'the run is still active' }
-      : { ...NONE, resume: true, autoResume: false, reason: null, stale: true };
+      : { ...NONE, resume: true, autoResume: true, reason: null, stale: true };
   }
   if (status.overall !== 'halted') return { ...NONE, reason: `the run is ${status.overall}` };
   switch (status.haltReason) {

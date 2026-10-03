@@ -350,6 +350,8 @@ fn attention_title(kind: &str) -> &'static str {
         "ticket-held" => "A ticket is held for repair",
         "supervisor-error" => "The roadmap supervisor is failing",
         "plan-approval" => "A plan needs your approval",
+        "supervisor-dead" => "The roadmap supervisor stopped",
+        "self-heal-exhausted" => "Automatic recovery gave up",
         "merge-conflict" => "A merge conflict needs a decision",
         _ => "The orchestrator needs you",
     }

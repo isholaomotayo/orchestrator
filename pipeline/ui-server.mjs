@@ -21,7 +21,8 @@ import { policyOf, readPolicyOverride } from './mode.mjs';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, EFFORT_LEVELS, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
 import { isTrustedRequest, isLoopbackHost } from './http-guard.mjs';
-import { openDecisions } from './attention.mjs';
+import { openDecisions, appendAttention } from './attention.mjs';
+import { planSupervisorWatch } from './self-heal.mjs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {
@@ -1374,6 +1375,24 @@ function anyRunActive() {
   return false;
 }
 setInterval(() => hub.heartbeat(), 15000).unref?.();
+
+// The supervisor cannot report its own death, so the dashboard server (which is
+// usually awake when someone is looking) does. Writing the attention file is
+// enough: the file watcher publishes it to every client.
+const SUPERVISOR_WATCH_MS = Number(process.env.PIPELINE_SUPERVISOR_WATCH_MS) || 30000;
+function watchSupervisors() {
+  for (const project of projects.values()) {
+    try {
+      const plan = planSupervisorWatch({
+        state: pool.supervisorState(project.paths), pending: pool.pendingAttention(project.paths), now: Date.now(),
+      });
+      for (const id of plan.ack) pool.ackAttention(project.paths, id, { by: 'ui-server:supervisor-back' });
+      if (plan.raise) appendAttention(project.paths, plan.raise);
+    } catch { /* unreadable pool state: nothing to report */ }
+  }
+}
+setInterval(watchSupervisors, SUPERVISOR_WATCH_MS).unref?.();
+watchSupervisors();
 
 setInterval(() => {
   for (const project of projects.values()) {

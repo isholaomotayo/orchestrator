@@ -9,6 +9,10 @@ test('a running run is resumable only when its engine is gone (stale)', () => {
   const stale = recoveryFor({ overall: 'running' }, { engineAlive: false });
   assert.equal(stale.resume, true);
   assert.equal(stale.stale, true);
+  // The engine is gone and nothing else is working on the run, so restarting it unattended is safe;
+  // self-heal still applies a grace period and a budget before doing so.
+  assert.equal(stale.autoResume, true);
+  assert.equal(recoveryFor({ overall: 'running' }, { engineAlive: true }).autoResume, false);
 });
 
 test('transient agent errors auto-resume; non-transient ones resume only by hand', () => {

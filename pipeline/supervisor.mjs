@@ -29,6 +29,8 @@ import {
 } from './state.mjs';
 import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
 import { recordRecovery } from './interventions.mjs';
+import { planHeal } from './self-heal.mjs';
+import { readRunSummary } from './run-reader.mjs';
 import { writeTerminalReport, writeWorkDoneReport } from './report.mjs';
 import { resolvePoolRunner, checkRunnerAvailable, resolveExecutionSurface } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
@@ -1118,6 +1120,7 @@ export function createSupervisor({
         resumingThisTick.add(run.runId);
         log(`auto-resumed ${run.runId} (${reason})`);
       }
+      healDeadEngines(runs);
     }
 
     // 3. Advance the feature currently in flight.
@@ -1340,11 +1343,49 @@ export function createSupervisor({
     return resumableHalt(run);
   }
 
-  function recordAutoResume(run, reason) {
+  // Self-heal for the one case nobody else handles: the run says it is running
+  // but its engine process is gone (a crash or SIGKILL records no halt), so no
+  // resume request exists and the run just sits there. Autonomous runs only,
+  // after a grace period, within a budget; see self-heal.mjs.
+  const deadSince = new Map();
+  function healDeadEngines(runs) {
+    for (const run of runs) {
+      if (resumingThisTick.has(run.runId)) { deadSince.delete(run.runId); continue; }
+      const read = readRunSummary(repoRoot, run.runId, { config, now: now() });
+      // This code is the supervisor: "the supervisor is not running" cannot be the
+      // news here, so look through that overlay to what is actually wrong with the run.
+      const shown = read?.summary.diagnosis;
+      const diagnosis = shown?.state === 'supervisor-dead' ? shown.underlying : shown;
+      if (diagnosis?.state !== 'dead-engine') { deadSince.delete(run.runId); continue; }
+      if (!deadSince.has(run.runId)) deadSince.set(run.runId, now());
+      const plan = planHeal({
+        diagnosis, autonomy: read.summary.autonomy, meta: run.meta || {}, now: now(),
+        observedSince: deadSince.get(run.runId), maxResumes: poolCfg.autoResumeMax,
+      });
+      if (plan.action === 'respawn') {
+        recordAutoResume(run, 'ENGINE_GONE', { lastHealAt: new Date(now()).toISOString() });
+        recordRecovery(repoRoot, run.runId, {
+          action: 'auto-respawn', cause: 'engine-gone',
+          detail: `engine process was gone for ${Math.round((now() - deadSince.get(run.runId)) / 1000)}s`,
+        });
+        respawn(run, ['--resume']);
+        resumingThisTick.add(run.runId);
+        log(`self-heal: restarted ${run.runId} (engine was gone)`);
+      } else if (plan.action === 'escalate') {
+        // Hand the run back before saying so, so the alert is true when it is read.
+        pool.setRunAutonomy(paths, run.runId, 'guided', { by: 'self-heal', via: 'self-heal' });
+        raiseAttention({ runId: run.runId, featureId: run.featureId, kind: plan.kind, escalate: true, summary: plan.summary });
+        log(`self-heal: gave up on ${run.runId}: ${plan.reason}`);
+      }
+    }
+  }
+
+  function recordAutoResume(run, reason, extra = {}) {
     const runPaths = pipelinePaths(repoRoot, { runId: run.runId });
     const meta = readRunMeta(runPaths) || {};
     const next = {
       ...meta,
+      ...extra,
       autoResumes: Number(meta.autoResumes || 0) + 1,
       ...(reason === 'MAX_CYCLES' ? { autoCycleExtends: Number(meta.autoCycleExtends || 0) + 1 } : {}),
     };

@@ -53,10 +53,10 @@ function makeProject() {
   return { root, paths };
 }
 
-async function startServer(root, port) {
+async function startServer(root, port, extraEnv = {}) {
   const child = spawn(process.execPath, [path.join(HERE, 'ui-server.mjs')], {
     cwd: root,
-    env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0', ORCHESTRATOR_HOME: path.join(root, '.orch-home') },
+    env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0', ORCHESTRATOR_HOME: path.join(root, '.orch-home'), ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   for (let i = 0; i < 100; i++) {
@@ -70,11 +70,11 @@ async function startServer(root, port) {
   throw new Error('the dashboard server did not start');
 }
 
-function withServer(fn) {
+function withServer(fn, { env = {} } = {}) {
   return async (t) => {
     const { root, paths } = makeProject();
     const port = await freePort();
-    const child = await startServer(root, port);
+    const child = await startServer(root, port, env);
     const base = `http://127.0.0.1:${port}`;
     const get = (p) => fetch(`${base}${p}${p.includes('?') ? '&' : '?'}project=${encodeURIComponent(root)}`);
     const post = (p, body, headers = {}) => fetch(`${base}${p}?project=${encodeURIComponent(root)}`, {
@@ -641,6 +641,27 @@ test('v1: starting the supervisor republishes the diagnosis of pool runs that we
   assert.ok(states().includes('halted-recoverable'), `top-level diagnosis states seen: ${states()}\n${text.slice(-1500)}`);
   ctrl.abort();
 }));
+
+test('a supervisor that crashed is reported once, and the alert clears when it is back', withServer(async ({ base, root }) => {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const attention = async () => (await (await fetch(`${base}/api/v1/projects/${project.projectId}/snapshot`, { headers })).json())
+    .attention.filter((a) => a.kind === 'supervisor-dead');
+  const until = async (pred) => { for (let i = 0; i < 40; i++) { const v = await attention(); if (pred(v)) return v; await new Promise((r) => setTimeout(r, 150)); } return attention(); };
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(path.dirname(paths.supervisorPid), { recursive: true });
+
+  fs.writeFileSync(paths.supervisorPid, '2147483646'); // a pid with no process: it crashed and left the file
+  const raised = await until((v) => v.length > 0);
+  assert.equal(raised.length, 1);
+  assert.match(raised[0].summary, /pool start/);
+  await new Promise((r) => setTimeout(r, 700)); // several more checks: still exactly one
+  assert.equal((await attention()).length, 1, 'not re-raised on every check');
+
+  fs.writeFileSync(paths.supervisorPid, String(process.pid)); // back
+  assert.equal((await until((v) => v.length === 0)).length, 0, 'the alert clears itself');
+}, { env: { PIPELINE_SUPERVISOR_WATCH_MS: '200' } }));
 
 test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base }) => {
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-registered-'));
