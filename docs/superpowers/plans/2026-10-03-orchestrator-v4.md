@@ -10,7 +10,22 @@
 | Stage 1, WP1–WP10 | Landed (commits `063d773`..`fb6bd24`); `npm test` 884/884 |
 | Stage 2 M1 (thin) | Landed: inbox, run view, server-driven actions, notifications, decision and plan cards, autonomy control, pause-all, ack, Dock badge |
 | M1 still open | Projects → Runs tree, stage rail and tabs, tray, snooze (needs WP12) |
-| WP11 (Doctor), WP12 (History API), Desktop track D1–D4 | Planned: see the addendum at the end |
+| WP11 R1 (one halt-reason registry, audit trail) | Landed (`1cf9270`, `e533f8e`). Still open: the table's surface axis, `ui/actions.mjs` mirror |
+| WP11 R2 (Doctor: `diagnose()`, `diagnosis` in the API, `orchestrate.sh doctor`) | Landed (`880c77b`) |
+| WP11 R3 (self-heal) | Landed: dead-engine restart with grace, backoff and budget; hand-back to guided; supervisor-crash alert; `doctor --fix`. Deferred, see below |
+| WP12 (History API), Desktop track D1–D4 | Planned: see the addendum at the end |
+
+**R3, deliberately not built, and why**
+
+- **Held-ticket timeout.** An autonomous run already retries a halted ticket once at the moment it halts, so a ticket
+  only reaches `held` after that budget is spent or when the run is guided. A held ticket is already resurfaced
+  hourly. Retrying it again on a timer would spend a second budget on a failure already seen twice.
+- **Automatic `reassign` of a parked host run.** A parked run needs a new chat session to claim it, and nothing the
+  engine can do unattended supplies one. The doctor already names who it is waiting on; `reassign` stays a manual or
+  host action.
+- **Gating the existing halt auto-resume by autonomy.** The supervisor still auto-resumes transient `AGENT_ERROR`
+  and does one auto-extend for `MAX_CYCLES` whatever the run's autonomy. That predates self-heal and changing it
+  would alter field behaviour, so it needs its own decision.
 
 The original v4 plan follows unchanged. The addendum extends WP1, WP6, WP7, WP8, WP10 and Stage 2 M1/M2.
 

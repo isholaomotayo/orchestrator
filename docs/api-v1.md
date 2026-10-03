@@ -34,6 +34,19 @@ Prints each run that needs attention with its explanation, evidence and fixes. I
 with no dashboard and no desktop app, and uses the same code as the `diagnosis` field. Exit code: `0` nothing
 needs attention, `1` something does, `2` not an orchestrator project.
 
+```bash
+bash .pipeline/orchestrate.sh doctor --fix [--yes]
+```
+
+Applies the remedies the doctor marks `safe`, as the commands you would have typed. It never approves a plan, stops a
+run, or does anything that needs your call. It shows the plan first and runs nothing without `--yes` (or an
+interactive yes). Engine resumes start detached, so the command returns while the run continues; their output goes to
+`.pipeline/doctor-fix.out`.
+
+For autonomous runs the supervisor does the one repair that is safe to automate on its own: it restarts a run whose
+engine process is gone, after a grace period and within a budget, and hands the run back to guided (with one alert)
+when the budget is spent. A crashed supervisor raises a `supervisor-dead` attention item.
+
 ## Authentication and safety
 
 - Every `/api/v1` request needs `Authorization: Bearer <token>`. EventSource
