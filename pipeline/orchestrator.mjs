@@ -701,6 +701,7 @@ function requestChatHandoff(stageName, chatResume) {
   bindHandoff(repoRoot, args.runId, status.handoffId, stageName);
   try { const h = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')); h.handoffId = status.handoffId; h.runId = status.runId; fs.writeFileSync(paths.stageHandoff, JSON.stringify(h, null, 2)); } catch {}
   status.chatResume = chatResume;
+  status.completionBlocked = null; // a new handoff is a new situation
   status.overall = 'awaiting_chat';
   status.awaitingStage = stageName;
   if (dashboardUrl) {

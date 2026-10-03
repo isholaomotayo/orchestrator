@@ -264,6 +264,9 @@ pub struct RunSummary {
     pub halt_reason: Option<String>,
     #[serde(default)]
     pub halt_class: Option<String>,
+    /// Why a host agent's last completion did not commit (only while parked).
+    #[serde(default)]
+    pub completion_blocked: Option<String>,
     #[serde(default)]
     pub dismissed: bool,
     #[serde(default)]

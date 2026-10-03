@@ -119,3 +119,12 @@ test('a project id is stable for the same directory', () => {
   assert.equal(projectIdOf(dir), projectIdOf(path.join(dir, '.')));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('a parked run whose completion was blocked says so, instead of looking idle', () => {
+  const parked = { overall: 'awaiting_chat', awaitingStage: 'coder', completionBlocked: 'lease expired for handoff h1', stages: [] };
+  assert.equal(runSummary({ runId: 'r1', status: parked, dir: null, now }).completionBlocked, 'lease expired for handoff h1');
+  // A leftover message on a run that moved on must not be reported.
+  const moved = { ...parked, overall: 'running' };
+  assert.equal(runSummary({ runId: 'r1', status: moved, dir: null, now }).completionBlocked, null);
+  assert.equal(runSummary({ runId: 'r1', status: { overall: 'awaiting_chat', stages: [] }, dir: null, now }).completionBlocked, null);
+});

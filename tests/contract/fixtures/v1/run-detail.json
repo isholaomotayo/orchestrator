@@ -32,6 +32,7 @@
     "waitingSince": null,
     "handoffId": null,
     "haltReason": "MISSING_ARTIFACT",
+    "completionBlocked": null,
     "haltClass": "recoverable",
     "dismissed": false,
     "startedAt": null,

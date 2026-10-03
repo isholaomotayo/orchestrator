@@ -108,3 +108,20 @@ fn unknown_values_degrade_instead_of_failing() {
         ServerEvent::Unknown { .. }
     ));
 }
+
+#[test]
+fn a_blocked_completion_is_carried_and_absent_is_none() {
+    let with: orch_contract::RunSummary = serde_json::from_value(serde_json::json!({
+        "runId": "a", "title": "t", "autonomy": "guided", "bucket": "awaiting_agent",
+        "driver": { "kind": "none", "presence": "absent" }, "actions": [], "dismissed": false,
+        "completionBlocked": "lease expired for handoff h1",
+    }))
+    .unwrap();
+    assert_eq!(with.completion_blocked.as_deref(), Some("lease expired for handoff h1"));
+    let without: orch_contract::RunSummary = serde_json::from_value(serde_json::json!({
+        "runId": "a", "title": "t", "autonomy": "guided", "bucket": "working",
+        "driver": { "kind": "none", "presence": "absent" }, "actions": [], "dismissed": false,
+    }))
+    .unwrap();
+    assert!(without.completion_blocked.is_none());
+}

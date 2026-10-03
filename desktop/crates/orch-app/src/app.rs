@@ -728,6 +728,14 @@ impl OrchestratorApp {
                         .unwrap_or_default()
                 ))
             }))
+            .children(run.completion_blocked.as_ref().map(|why| {
+                div()
+                    .p_3()
+                    .rounded_md()
+                    .bg(theme::raised())
+                    .text_color(theme::bucket(Bucket::Blocked))
+                    .child(format!("The chat agent's last completion did not commit: {why}"))
+            }))
             .children(run.halt_reason.as_ref().map(|h| {
                 div()
                     .p_3()

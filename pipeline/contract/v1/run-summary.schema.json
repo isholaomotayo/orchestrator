@@ -51,6 +51,7 @@
     "handoffId": { "type": ["string", "null"] },
     "haltReason": { "type": ["string", "null"] },
     "haltClass": { "enum": ["recoverable", "terminal", null] },
+    "completionBlocked": { "type": ["string", "null"] },
     "dismissed": { "type": "boolean" },
     "startedAt": { "type": ["string", "null"] },
     "endedAt": { "type": ["string", "null"] },

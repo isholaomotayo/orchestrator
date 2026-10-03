@@ -132,6 +132,8 @@ export function runSummary({ runId = null, status, dir, config = {}, engineAlive
     waitingSince: status?.overall === 'awaiting_chat' ? waitingSince(status) : null,
     handoffId: status?.handoffId ?? null,
     haltReason: status?.haltReason ?? null,
+    // Why a host agent's last completion did not commit; only meaningful while still parked.
+    completionBlocked: status?.overall === 'awaiting_chat' ? (status.completionBlocked ?? null) : null,
     haltClass: status?.overall === 'halted' ? (recovery.resume || recovery.extend ? 'recoverable' : 'terminal') : null,
     dismissed: !!status?.dismissed,
     startedAt: status?.startedAt ?? null,
