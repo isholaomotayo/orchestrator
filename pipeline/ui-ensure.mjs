@@ -7,6 +7,7 @@
 // Usage: node pipeline/ui-ensure.mjs [--repo <dir>] [--json]
 import fs from 'node:fs';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -39,10 +40,18 @@ function portFree(port) {
   });
 }
 
-async function register(port) {
+// The server publishes its token only in an owner-only registry file; reading
+// it is what proves this caller is the same user.
+function serverToken(instanceId) {
+  if (!instanceId) return '';
+  const home = process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator');
+  try { return JSON.parse(fs.readFileSync(path.join(home, 'servers', `${instanceId}.json`), 'utf8')).token || ''; } catch { return ''; }
+}
+
+async function register(port, instanceId) {
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/register`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ repoRoot }),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${serverToken(instanceId)}` }, body: JSON.stringify({ repoRoot }),
       signal: AbortSignal.timeout(2000),
     });
     return (await res.json())?.ok === true;
@@ -64,7 +73,7 @@ async function main() {
   for (let port = base; port <= base + 20; port++) {
     const h = await health(port);
     if (h) {
-      if (await register(port)) { report({ url: `http://127.0.0.1:${port}`, port, instanceId: h.instanceId || null, apiVersions: h.apiVersions || [], started: false }); return 0; }
+      if (await register(port, h.instanceId)) { report({ url: `http://127.0.0.1:${port}`, port, instanceId: h.instanceId || null, apiVersions: h.apiVersions || [], started: false }); return 0; }
       continue;
     }
     if (!(await portFree(port))) continue;

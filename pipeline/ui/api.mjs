@@ -17,10 +17,14 @@ export function createApi(projectRef) {
     return res.json();
   }
 
+  // The server embeds its API token in the page it serves; every state-changing
+  // call presents it.
+  const token = () => globalThis.document?.querySelector?.('meta[name="pipeline-api-token"]')?.content || '';
+
   async function post(path, body = {}) {
     const res = await fetch(`${path}?${q()}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));

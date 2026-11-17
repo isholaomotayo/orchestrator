@@ -1125,6 +1125,12 @@ function handleRequest(req, res) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
   }
   if (url.pathname.startsWith('/api/v1/')) return handleV1(req, res, url);
+  // The legacy routes start, cancel and merge runs just like /api/v1, so they
+  // take the same token: a stray local process can no longer drive them with a
+  // bare curl. The dashboard page carries the token in a meta tag.
+  if (req.method === 'POST' && isGuardedPost(url.pathname) && !v1Authorized(req, url)) {
+    return json(res, { error: 'unauthorized: bearer token required (see ~/.orchestrator/servers/<instanceId>.json)' }, 401);
+  }
   if (url.pathname === '/api/bridge' && req.method === 'GET') {
     const project = getProjectForRequest(req,url);
     if (!project) return json(res,{error:'invalid project'},400);
@@ -1417,7 +1423,9 @@ function handleRequest(req, res) {
     req.on('close', () => project.sseClients.delete(res));
   } else if (url.pathname === '/healthz') {
     json(res, {
-      ok: true, service: 'pipeline-ui', repoRoot: defaultRepoRoot,
+      // A project id, not a path: /healthz is unauthenticated, and discovery only
+      // needs to tell "is this the server for my repo" (compare projectIdOf).
+      ok: true, service: 'pipeline-ui', projectId: projectIdOf(defaultRepoRoot),
       instanceId: INSTANCE_ID, pid: process.pid, port: PORT, startedAt: STARTED_AT,
       serverVersion: HOST_ENGINE.version, apiVersions: [API_VERSION], contract: CONTRACT, capabilities: CAPABILITIES,
     });

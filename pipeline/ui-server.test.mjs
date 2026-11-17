@@ -77,8 +77,10 @@ function withServer(fn, { env = {} } = {}) {
     const child = await startServer(root, port, env);
     const base = `http://127.0.0.1:${port}`;
     const get = (p) => fetch(`${base}${p}${p.includes('?') ? '&' : '?'}project=${encodeURIComponent(root)}`);
+    // Legacy POSTs take the server's token, read from its owner-only record.
+    const token = () => serverRecord(root).record.token;
     const post = (p, body, headers = {}) => fetch(`${base}${p}?project=${encodeURIComponent(root)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Host: `127.0.0.1:${port}`, ...headers }, body: JSON.stringify(body),
+      method: 'POST', headers: { 'Content-Type': 'application/json', Host: `127.0.0.1:${port}`, Authorization: `Bearer ${token()}`, ...headers }, body: JSON.stringify(body),
     });
     t.after(() => { child.kill(); fs.rmSync(root, { recursive: true, force: true }); });
     await fn({ base, get, post, root, paths, port });
@@ -88,7 +90,14 @@ function withServer(fn, { env = {} } = {}) {
 test('healthz answers the discovery contract orchestrate.sh depends on', withServer(async ({ base }) => {
   const body = await (await fetch(`${base}/healthz`)).json();
   assert.equal(body.service, 'pipeline-ui');
-  assert.ok(body.repoRoot);
+  assert.match(body.projectId, /^[0-9a-f]{16}$/);
+  assert.equal(body.repoRoot, undefined, 'the unauthenticated probe does not reveal paths');
+}));
+
+test('legacy POST routes refuse a request without the server token', withServer(async ({ post }) => {
+  const res = await post('/api/pool/pause', {}, { Authorization: '' });
+  assert.equal(res.status, 401);
+  assert.equal((await post('/api/pool/pause', {})).status, 200);
 }));
 
 test('the pool endpoint reports the roadmap and what needs a decision', withServer(async ({ get }) => {
