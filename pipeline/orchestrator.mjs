@@ -866,9 +866,14 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   const maxAttempts = config.agentRetries + 1;
   let res;
   const handoffId = runner === 'host' ? crypto.randomUUID() : null;
+  // Coder fix cycles resume the session that wrote the code (claude only). A
+  // fresh or retried attempt, or any other stage, starts cold as before.
+  let resumeSession = runner === 'claude' && name === 'coder' && cycle > 1 && !artifactRetry
+    ? status.agentSessions?.[name] || null
+    : null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     res = await runAgent({
-      runner, stage: name, cycle, attempt, task, handoffId, runIdForHandoff: status.runId, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+      runner, stage: name, cycle, attempt, task, handoffId, runIdForHandoff: status.runId, resumeSession, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
       model: stageModel,
       effort: stageEffort,
       modelSelection: models?.selection,
@@ -879,7 +884,17 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
       if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
       requestChatHandoff(name, chatResume, handoffId);
     }
+    if (res.sessionId) (status.agentSessions ||= {})[name] = res.sessionId;
+    if (res.observedModel) setStage(name, { actualModel: res.observedModel, modelSource: 'cli-observed' });
     if (res.ok) break;
+    if (resumeSession) {
+      // The saved session may be gone (expired, another machine). Not a stage
+      // failure: run the same attempt again from a cold start.
+      appendEvent(paths, { stage: name, cycle, type: 'session_resume_failed', sessionId: resumeSession });
+      resumeSession = null;
+      attempt--;
+      continue;
+    }
 
     const logTail = tailFile(path.join(paths.logs, `${name}.log`), 40);
     // classifyFailure prefers res.stderrTail/outputTail; logTail is only the

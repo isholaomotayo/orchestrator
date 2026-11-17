@@ -333,3 +333,46 @@ test('a low-effort host stage carries a delegate hint naming its suggested model
   assert.equal((await brief('reporter', 'low', 'current-chat')).delegate, undefined);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a coder fix cycle resumes the claude session it was given', () => {
+  const { args } = buildInvocation({ runner: 'claude', stage: 'coder', systemPrompt: 'p', task: 't', readOnly: false, config: {}, model: 'sonnet-5', effort: 'medium', resumeSession: 'sess-1' });
+  assert.equal(args[args.indexOf('--resume') + 1], 'sess-1');
+  const cold = buildInvocation({ runner: 'claude', stage: 'coder', systemPrompt: 'p', task: 't', readOnly: false, config: {}, model: 'sonnet-5' });
+  assert.equal(cold.args.includes('--resume'), false);
+});
+
+test('runAgent reports the session and model claude actually used, and an error result is a failure', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observe-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin);
+  const fake = (isError) => fs.writeFileSync(path.join(bin, 'claude'), [
+    '#!/bin/sh',
+    `echo '${JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-9', model: 'claude-haiku-4-5' })}'`,
+    `echo '${JSON.stringify({ type: 'result', subtype: isError ? 'error_max_turns' : 'success', is_error: isError, session_id: 'sess-9' })}'`,
+    'exit 0', '',
+  ].join('\n'), { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
+  try {
+    const call = () => runAgent({ runner: 'claude', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config: { agentTimeoutMs: 10000 }, model: 'sonnet-5' });
+    fake(false);
+    const good = await call();
+    assert.equal(good.ok, true);
+    assert.equal(good.sessionId, 'sess-9');
+    assert.equal(good.observedModel, 'claude-haiku-4-5');
+    fake(true);
+    const bad = await call();
+    assert.equal(bad.exitCode, 0);
+    assert.equal(bad.ok, false, 'exit 0 with an error result did not do the work');
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

@@ -222,7 +222,7 @@ export function reconcileChatRunner({ runner, statusInvocationMode, statusExecut
 // hard-guarantee read-only at the process level. When it cannot, we drop the
 // auto-approve/write flags (--force / --full-auto / --dangerously-skip-permissions) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
-export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null }) {
+export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null, resumeSession = null }) {
   // Verified skill instructions sit AFTER the stage prompt (so the trust
   // boundary is read first) and are still system prompt, never task input.
   const promptWithSkills = skills?.promptSection
@@ -242,6 +242,9 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         '--verbose',
         '--output-format', 'stream-json',
       ];
+      // A fix cycle continues the conversation that wrote the code, so the agent
+      // keeps what it already read instead of re-exploring the repo cold.
+      if (resumeSession) args.push('--resume', resumeSession);
       if (modelId) args.push('--model', modelId);
       if (level) args.push('--effort', level);
       // Capacity/entitlement failures degrade a tier instead of halting the run.
@@ -351,7 +354,7 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
-export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = null, runIdForHandoff = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
+export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = null, runIdForHandoff = null, resumeSession = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -365,7 +368,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills });
+  const { bin, args, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills, resumeSession });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
@@ -402,6 +405,19 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
 
     let buffer = '';
     const parser = createStreamParser();
+    // What the CLI itself reports, as opposed to what was requested: the session
+    // to resume next cycle, the model that actually ran (a --fallback-model
+    // switch shows here), and whether its final result was an error.
+    const observed = { sessionId: null, model: null, resultError: false };
+    const observe = (line) => {
+      if (!line.startsWith('{') || !/"type":\s*"(system|result)"/.test(line)) return;
+      try {
+        const ev = JSON.parse(line);
+        if (ev.session_id) observed.sessionId = ev.session_id;
+        if (ev.type === 'system' && ev.subtype === 'init' && ev.model) observed.model = ev.model;
+        if (ev.type === 'result' && ev.is_error === true) observed.resultError = true;
+      } catch { /* not a complete event */ }
+    };
     const emit = (b) => {
       appendEvent(paths, { stage, cycle, type: 'agent_output', ...b });
     };
@@ -418,6 +434,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
           if (line.trim()) emit({ kind: 'err', text: line });
           continue;
         }
+        observe(line.trim());
         parser.pushLine(line).forEach(emit);
       }
     };
@@ -438,13 +455,18 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       liveAgents.delete(child);
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
+        observe(buffer.trim());
         parser.pushLine(buffer).forEach(emit);
       }
       parser.flush().forEach(emit);
       if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
-      appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code, timedOut: timedOut || undefined });
+      // Exit 0 with an error result (e.g. max turns, a refused permission) did
+      // not do the work; treating it as success sent an empty stage downstream.
+      const ok = code === 0 && !observed.resultError;
+      if (code === 0 && observed.resultError) log.write('[error] agent exited 0 but reported an error result\n');
+      appendEvent(paths, { stage, cycle, type: 'agent_end', ok, exitCode: code, timedOut: timedOut || undefined, resultError: observed.resultError || undefined, model: observed.model || undefined });
       log.end();
-      resolve({ ok: code === 0, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n') });
+      resolve({ ok, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n'), sessionId: observed.sessionId, observedModel: observed.model, resultError: observed.resultError });
     });
   });
 }
