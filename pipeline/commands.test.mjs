@@ -180,3 +180,13 @@ test('the journal is compacted once it grows large, keeping state and recent rec
   assert.equal(again.i, 199);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('commandState hands out a copy, so a caller mutating it cannot poison later reads', () => {
+  const dir = tmpDir();
+  transact(dir, 'seed', {}, (state) => { state.runs.n = 1; return {}; });
+  const first = commandState(dir);
+  first.runs.n = 99;
+  assert.equal(commandState(dir).runs.n, 1);
+  transact(dir, 'bump', {}, (state) => { state.runs.n = 2; return {}; });
+  assert.equal(commandState(dir).runs.n, 2, 'a new record is seen immediately');
+});

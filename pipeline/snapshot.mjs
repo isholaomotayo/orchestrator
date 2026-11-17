@@ -12,6 +12,23 @@ export const POOL_SNAPSHOT_CONTRACT = 'orchestrator-pool-snapshot.v1';
 
 const LANDED_LIMIT = 5;
 
+/** What a run is for: its roadmap feature, and what comes after it. */
+export function goalFor(feature, features = []) {
+  const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(feature.id))
+    || features.find((f) => f.status === 'queued');
+  return {
+    featureId: feature.id,
+    title: feature.title,
+    status: feature.status,
+    dependsOn: feature.dependsOn || [],
+    acceptance: feature.acceptance || null,
+    specRunId: feature.specRunId ?? null,
+    integrationRunId: feature.integrationRunId ?? null,
+    nextFeatureId: next?.id ?? null,
+    nextTitle: next?.title ?? null,
+  };
+}
+
 export function buildSnapshot({
   roadmap = null, runs = [], decisions = [], attention = [],
   supervisor = null, skills = [], repoRoot = null, now = new Date(),
@@ -169,8 +186,6 @@ export function buildSnapshot({
 
   const inProgress = runs.filter(r => !r.dismissed && !['done','halted'].includes(r.overall)).map((r) => {
     const feature = byFeature.get(r.featureId);
-    const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(r.featureId))
-      || features.find((f) => f.status === 'queued');
     return {
       runId: r.runId,
       featureId: r.featureId ?? null,
@@ -190,19 +205,7 @@ export function buildSnapshot({
       runner: r.runner ?? null,
       hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
       spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null, reportError: r.reportError ?? null,
-      goal: feature
-        ? {
-          featureId: feature.id,
-          title: feature.title,
-          status: feature.status,
-          dependsOn: feature.dependsOn || [],
-          acceptance: feature.acceptance || null,
-          specRunId: feature.specRunId ?? null,
-          integrationRunId: feature.integrationRunId ?? null,
-          nextFeatureId: next?.id ?? null,
-          nextTitle: next?.title ?? null,
-        }
-        : null,
+      goal: feature ? goalFor(feature, features) : null,
     };
   });
 

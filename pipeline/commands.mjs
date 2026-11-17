@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { acquireLockFile } from './state.mjs';
+import { memoByStat } from './file-cache.mjs';
 
 function syncDirectory(dir) {
   const fd = fs.openSync(dir, 'r');
@@ -40,11 +41,19 @@ function projectRecord(dir, name, row) {
   appendRecord(dir, name, { at: new Date().toISOString(), command: 'projection.applied', commandId: row.commandId, state: row.state });
 }
 export function recoverCommands(dir, name = 'bridge') {
-  if (!readJournal(path.join(dir, `${name}.journal.jsonl`)).at(-1)?.writes?.length) return;
+  if (!lastJournalRecord(path.join(dir, `${name}.journal.jsonl`))?.writes?.length) return;
   const lock = path.join(dir, `${name}.lock`);
   if (!acquireLockFile(lock, { pid: process.pid })) throw new Error('Command busy; retry with the same commandId.');
   try { projectRecord(dir, name, readJournal(path.join(dir, `${name}.journal.jsonl`)).at(-1)); }
   finally { fs.unlinkSync(lock); }
+}
+
+// Every record carries the full state, so readers only need the last one. The
+// whole file is still parsed (a corrupt row stays a hard error), but only once
+// per change instead of on every read: the dashboard and the supervisor read
+// it once per run per request/tick.
+function lastJournalRecord(file) {
+  return memoByStat(file, () => readJournal(file).at(-1) ?? null);
 }
 
 export function readJournal(file) {
@@ -60,8 +69,9 @@ export function readJournal(file) {
   return out;
 }
 export function commandState(dir, name = 'bridge') {
-  const rows = readJournal(path.join(dir, `${name}.journal.jsonl`));
-  return rows.at(-1)?.state ?? { version: 2, revision: 0, sessions: {}, runs: {}, messages: [], receipts: {} };
+  const state = lastJournalRecord(path.join(dir, `${name}.journal.jsonl`))?.state;
+  // A copy: callers mutate the state they are handed, the cache must not see it.
+  return state ? structuredClone(state) : { version: 2, revision: 0, sessions: {}, runs: {}, messages: [], receipts: {} };
 }
 // Each record carries the full state, so the journal grew without bound (14.7MB
 // for 375 commands in the field) and every read parsed all of it. Once the

@@ -10,6 +10,7 @@ import { isValidRunId } from './run-registry.mjs';
 import { recordIntervention } from './interventions.mjs';
 import { readRunSummary } from './run-reader.mjs';
 import { readUsage } from './usage.mjs';
+import { goalFor } from './snapshot.mjs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -298,28 +299,9 @@ function runDir(project, runId) {
   return fs.existsSync(dir) ? dir : null;
 }
 
-// Cost must be summed over the WHOLE log: reading only the trailing window (as
-// the feed does) silently under-reports every run long enough to need it. The
-// log is truncated per run, so a full scan stays bounded.
-function readTotalCost(file) {
-  let total = 0;
-  let truncated = false;
-  let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { costUsd: 0, truncated }; }
-  for (const line of raw.split('\n')) {
-    if (!line.includes('costUsd')) continue; // cheap prefilter; most lines have none
-    try {
-      const ev = JSON.parse(line);
-      if (typeof ev.costUsd === 'number') total += ev.costUsd;
-    } catch { truncated = true; }
-  }
-  return { costUsd: total, truncated };
-}
-
 function readEventsByStage(dir) {
   const byStage = Object.fromEntries(AGENT_STAGES.map((s) => [s, []]));
   const file = path.join(dir, 'events.jsonl');
-  const { costUsd: totalCost, truncated: costPartial } = readTotalCost(file);
   let raw = '';
   try {
     const size = fs.statSync(file).size;
@@ -330,7 +312,7 @@ function readEventsByStage(dir) {
     fs.closeSync(fd);
     raw = buf.toString('utf8');
     if (start > 0) raw = raw.slice(raw.indexOf('\n') + 1);
-  } catch { return { byStage, totalCost, costPartial }; }
+  } catch { return { byStage }; }
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let ev;
@@ -344,7 +326,7 @@ function readEventsByStage(dir) {
   for (const s of AGENT_STAGES) {
     if (byStage[s].length > EVENTS_PER_STAGE) byStage[s] = byStage[s].slice(-EVENTS_PER_STAGE);
   }
-  return { byStage, totalCost, costPartial };
+  return { byStage };
 }
 
 function readFollowups(dir) {
@@ -427,7 +409,7 @@ function readState(project, runId) {
   const artifacts = ARTIFACTS.filter((n) => {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
-  const { byStage, totalCost, costPartial } = readEventsByStage(dir);
+  const { byStage } = readEventsByStage(dir);
   // Same table the engine's --resume guard and the supervisor read, so a
   // button is only offered when the engine will actually accept it.
   const recovery = status ? recoveryFor(status, { engineAlive: alive }) : null;
@@ -444,22 +426,31 @@ function readState(project, runId) {
       : { ok: true, reason: null };
   }
   const live = canCancel || canExtend || canResume || canContinue || canApprovePlan;
+  // Only the roadmap is needed here; building a whole pool snapshot for it made
+  // every /api/state pay the cost of /api/pool as well.
   const goal = (() => {
     try {
-      const snap = pool.snapshot(project.paths, { config: project.config });
-      const row = (snap.inProgress || []).find((r) => r.runId === (runId || snap.pool?.primaryRunId));
-      if (row?.goal) return row.goal;
-      const feature = snap.roadmap?.features?.find((f) => f.id === status?.featureId);
-      return feature
-        ? { featureId: feature.id, title: feature.title, dependsOn: feature.dependsOn, acceptance: feature.acceptance, specRunId: feature.specRunId, integrationRunId: feature.integrationRunId }
-        : null;
+      const features = pool.readRoadmap(project.paths)?.features || [];
+      let featureId = status?.featureId;
+      if (!runId && status?.pool) {
+        const primary = status.pool.primaryRunId && runDir(project, status.pool.primaryRunId);
+        featureId = (primary && loadRunStatus(primary)?.featureId) || status.pool.featureId;
+      }
+      const feature = features.find((f) => f.id === featureId);
+      return feature ? goalFor(feature, features) : null;
     } catch { return null; }
   })();
+  const usage = readUsage(path.join(dir, 'events.jsonl'));
+  // A corrupt or busy bridge journal must cost this panel its bridge section,
+  // not take the whole server down.
+  let bridge;
+  try { bridge = inspectBridge(project.repoRoot, runId || null); }
+  catch (err) { bridge = { error: err.message }; }
   return {
-    status, artifacts, events: byStage, bridge: inspectBridge(project.repoRoot, runId || null),
+    status, artifacts, events: byStage, bridge,
     followups: readFollowups(dir),
     live, stale, runId: runId || null, isRoot, goal,
-    totals: { ...readUsage(path.join(dir,'events.jsonl')), costPartial: readUsage(path.join(dir,'events.jsonl')).partial },
+    totals: { ...usage, costPartial: usage.partial },
     canCancel, canExtend, canResume, canApprovePlan, canContinue,
     policy: status ? policyOf(status, project.config, readPolicyOverride(dir)) : null,
     stageReady,
