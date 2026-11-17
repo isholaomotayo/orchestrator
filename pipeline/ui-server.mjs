@@ -6,6 +6,7 @@
 // Binds to 127.0.0.1 only — the dashboard exposes code, diffs, and controls.
 import fs from 'node:fs';
 import { bridgeCommand, inspectBridge } from './bridge.mjs';
+import { commandState } from './commands.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { recordIntervention } from './interventions.mjs';
 import { readRunSummary } from './run-reader.mjs';
@@ -240,17 +241,29 @@ function computeSummary(project, runId) {
   return read.summary;
 }
 
+// Runs the bridge holds an owner record for now, plus those it held last time:
+// a claim, a release or a lease renewal changes only the bridge journal, never
+// the run's own files, yet it changes who is driving the run.
+function bridgeOwnedRuns(project) {
+  let owned = [];
+  try { owned = Object.keys(commandState(project.paths.control).runs || {}); } catch { /* unreadable journal */ }
+  const ids = new Set([...(project.bridgeOwned || []), ...owned]);
+  project.bridgeOwned = owned;
+  return [...ids].map((key) => (key === 'legacy-root' ? null : key)).filter((id) => id === null || isValidRunId(id));
+}
+
 // Turn file changes into typed v1 events: run.upserted when a run's summary
 // changes, run.event for each new events.jsonl line, and control-plane updates.
 function publishProjectChanges(project, files) {
   const projectId = project.projectId;
   const runIds = new Set();
   let control = false;
+  let bridge = false;
   for (const f of files) {
     const rel = String(f || '').replaceAll('\\', '/');
     const m = /^runs\/([^/]+)\//.exec(rel);
     if (m && isValidRunId(m[1])) runIds.add(m[1]);
-    else if (/^control\//.test(rel)) control = true;
+    else if (/^control\//.test(rel)) { control = true; if (/^control\/bridge\./.test(rel)) bridge = true; }
     else if (rel === '*') { for (const id of listRunIds(project)) runIds.add(id); control = true; }
     else runIds.add(null);
   }
@@ -263,6 +276,7 @@ function publishProjectChanges(project, files) {
       for (const id of listRunIds(project)) runIds.add(id);
     }
   }
+  if (bridge) for (const id of bridgeOwnedRuns(project)) runIds.add(id);
   for (const runId of runIds) {
     const runPaths = runPathsFor(project, runId);
     for (const { seq, event } of tailEvents(runPaths.events)) hub.publish('run.event', { projectId, runId: runId || 'root', seq, event });
@@ -1460,6 +1474,19 @@ function anyRunActive() {
   return false;
 }
 setInterval(() => hub.heartbeat(), 15000).unref?.();
+
+// Some of a summary depends only on the clock: a lease expiring, an agent going
+// quiet or stalled, a parked run becoming unattended. No file changes when that
+// happens, so recompute every run's summary on a timer while a v1 client is
+// listening. Only summaries that changed are sent.
+const CLOCK_REFRESH_MS = Number(process.env.PIPELINE_CLOCK_REFRESH_MS) || 30_000;
+function refreshClockStates() {
+  if (hub.size === 0) return;
+  for (const project of projects.values()) {
+    try { publishProjectChanges(project, ['*', 'status.json']); } catch (err) { console.error(`[ui-server] clock refresh failed for ${project.repoRoot}: ${err.message}`); }
+  }
+}
+setInterval(refreshClockStates, CLOCK_REFRESH_MS).unref?.();
 
 // The supervisor cannot report its own death, so the dashboard server (which is
 // usually awake when someone is looking) does. Writing the attention file is

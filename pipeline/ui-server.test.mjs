@@ -10,6 +10,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
+import { bridgeCommand } from './bridge.mjs';
 import { loadSchema, validate } from './contract-schema.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -718,6 +719,63 @@ test('v1: starting the supervisor republishes the diagnosis of pool runs that we
   assert.ok(states().includes('halted-recoverable'), `top-level diagnosis states seen: ${states()}\n${text.slice(-1500)}`);
   ctrl.abort();
 }));
+
+// A v1 event stream reader for one run's run.upserted frames.
+async function streamRun(base, root, runId) {
+  const { record } = serverRecord(root);
+  const headers = { Authorization: `Bearer ${record.token}`, Host: new URL(base).host };
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers })).json()).projects;
+  const ctrl = new AbortController();
+  const stream = await fetch(`${base}/api/v1/events?projects=${project.projectId}`, { headers, signal: ctrl.signal });
+  const reader = stream.body.getReader();
+  let text = '';
+  let pending = null;
+  const pump = async (ms) => {
+    pending ??= reader.read();
+    const r = await Promise.race([pending, new Promise((res) => setTimeout(() => res(null), ms))]);
+    if (r?.value) { text += new TextDecoder().decode(r.value); pending = null; }
+  };
+  const runs = () => [...text.matchAll(/event: run\.upserted\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]).run).filter((r) => r.runId === runId);
+  const waitFor = async (pred, ms = 8000) => {
+    const deadline = Date.now() + ms;
+    while (!runs().some(pred) && Date.now() < deadline) await pump(200);
+    return runs().some(pred);
+  };
+  while (!/event: hello/.test(text)) await pump(200);
+  return { runs, waitFor, close: () => ctrl.abort() };
+}
+
+test('v1: a bridge claim changes the driver clients see, though no run file changed', withServer(async ({ base, root }) => {
+  const run = pipelinePaths(root, { runId: 'r7' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'awaiting_chat', handoffId: 'h7', awaitingStage: 'coder', executionSurface: 'host-handoff', stages: [] }));
+  fs.writeFileSync(run.stageHandoff, JSON.stringify({ stage: 'coder', runId: 'r7' }));
+  fs.writeFileSync(run.events, '');
+  const s = await streamRun(base, root, 'r7');
+  try {
+    fs.appendFileSync(run.events, JSON.stringify({ ts: new Date().toISOString(), stage: 'orchestrator', type: 'note' }) + '\n');
+    assert.ok(await s.waitFor((r) => r.driver.kind === 'none'), 'first: nobody drives it');
+    const { sessionId } = bridgeCommand('session.register', { project: root, host: 'claude', conversationId: 'conv-7', capabilities: { hooks: true } });
+    bridgeCommand('run.claim', { project: root, runId: 'r7', sessionId });
+    assert.ok(await s.waitFor((r) => r.driver.kind === 'host-session'), `driver kinds seen: ${s.runs().map((r) => r.driver.kind)}`);
+  } finally { s.close(); }
+}));
+
+test('v1: a driver going quiet with no file change still reaches clients', withServer(async ({ base, root }) => {
+  // A CLI engine (this test process) whose last output is just under the quiet
+  // threshold: within seconds it turns quiet, and only the clock says so.
+  const run = pipelinePaths(root, { runId: 'r8' });
+  fs.mkdirSync(run.dir, { recursive: true });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'running', executionSurface: 'cli', runner: 'claude', stages: [{ name: 'coder', status: 'running' }] }));
+  fs.writeFileSync(run.lock, JSON.stringify({ pid: process.pid }));
+  fs.writeFileSync(run.events, '');
+  const almostQuiet = new Date(Date.now() - 2 * 60_000 + 2500);
+  fs.utimesSync(run.events, almostQuiet, almostQuiet);
+  const s = await streamRun(base, root, 'r8');
+  try {
+    assert.ok(await s.waitFor((r) => r.driver.presence === 'quiet', 10000), `presences seen: ${s.runs().map((r) => r.driver.presence)}`);
+  } finally { s.close(); }
+}, { env: { PIPELINE_CLOCK_REFRESH_MS: '300' } }));
 
 test('a supervisor that crashed is reported once, and the alert clears when it is back', withServer(async ({ base, root }) => {
   const { record } = serverRecord(root);
