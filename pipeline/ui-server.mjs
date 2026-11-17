@@ -11,6 +11,7 @@ import { recordIntervention } from './interventions.mjs';
 import { readRunSummary } from './run-reader.mjs';
 import { readUsage } from './usage.mjs';
 import { goalFor } from './snapshot.mjs';
+import { activeStageOf } from './ui/stages.mjs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
@@ -311,8 +312,8 @@ function runDir(project, runId) {
   return fs.existsSync(dir) ? dir : null;
 }
 
-function readEventsByStage(dir) {
-  const byStage = Object.fromEntries(AGENT_STAGES.map((s) => [s, []]));
+function readEventsByStage(dir, only = null) {
+  const byStage = Object.fromEntries((only ? [only] : AGENT_STAGES).map((s) => [s, []]));
   const file = path.join(dir, 'events.jsonl');
   let raw = '';
   try {
@@ -335,7 +336,7 @@ function readEventsByStage(dir) {
       byStage[stage].push({ ...ev, stage });
     }
   }
-  for (const s of AGENT_STAGES) {
+  for (const s of Object.keys(byStage)) {
     if (byStage[s].length > EVENTS_PER_STAGE) byStage[s] = byStage[s].slice(-EVENTS_PER_STAGE);
   }
   return { byStage };
@@ -409,7 +410,7 @@ function engineInfo(project) {
   };
 }
 
-function readState(project, runId) {
+function readState(project, runId, stage = null) {
   const dir = runDir(project, runId);
   if (!dir) return { error: 'unknown run' };
   let status = loadRunStatus(dir);
@@ -421,7 +422,10 @@ function readState(project, runId) {
   const artifacts = ARTIFACTS.filter((n) => {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
-  const { byStage } = readEventsByStage(dir);
+  // The run view renders one stage's conversation; sending all of them made
+  // every refresh carry up to 7×250 events the page discards.
+  const eventsStage = AGENT_STAGES.includes(stage) ? stage : activeStageOf({ ...status, stages: status?.stages || [] });
+  const { byStage } = readEventsByStage(dir, AGENT_STAGES.includes(eventsStage) ? eventsStage : null);
   // Same table the engine's --resume guard and the supervisor read, so a
   // button is only offered when the engine will actually accept it.
   const recovery = status ? recoveryFor(status, { engineAlive: alive }) : null;
@@ -1283,7 +1287,7 @@ function handleRequest(req, res) {
   } else if (url.pathname === '/api/state') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    const state = readState(project, url.searchParams.get('run'));
+    const state = readState(project, url.searchParams.get('run'), url.searchParams.get('stage'));
     json(res, state, state.error ? 404 : 200);
   } else if (url.pathname === '/api/runs') {
     const project = getProjectForRequest(req, url);

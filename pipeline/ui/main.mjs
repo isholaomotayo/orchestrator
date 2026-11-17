@@ -17,7 +17,7 @@ import { renderDiff } from './diff.mjs';
 import { createTabStore } from './tabs.mjs';
 import { buildTree, attentionByRun, featureLabel } from './pool-tree.mjs';
 import { createApi } from './api.mjs';
-import { stageIcon, agentMeta, skipReason, STAGE_ORDER } from './stages.mjs';
+import { stageIcon, agentMeta, skipReason, STAGE_ORDER, activeStageOf } from './stages.mjs';
 import {
   describeEvent, isStaleRefresh, conversationItems, estimateItemHeight,
   visibleRange, isNearBottom, itemKey, feedSignature, FEED_GAP,
@@ -948,7 +948,7 @@ async function viewRun(wrap, tab) {
   const gen = tab._fetchGen;
 
   let data;
-  try { data = await api.state(tab.subject); }
+  try { data = await api.state(tab.subject, tab.stage); }
   catch (err) {
     if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: err.message }));
     return;
@@ -958,11 +958,7 @@ async function viewRun(wrap, tab) {
   const status = data.status || {};
   const byName = new Map((status.stages || []).map((s) => [s.name, s]));
   const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
-  const active = tab.stage
-    || status.awaitingStage
-    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
-    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
-    || 'planner';
+  const active = activeStageOf({ ...status, stages }, tab.stage);
   const meta = agentMeta(active);
   const remount = wrap.dataset.stage !== active || wrap.dataset.subject !== String(tab.subject || '');
 

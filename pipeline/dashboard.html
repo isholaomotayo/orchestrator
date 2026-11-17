@@ -1088,7 +1088,8 @@ function createApi(projectRef) {
 
   return {
     projects: () => get('/api/projects'),
-    state: (run) => get('/api/state', run ? { run } : {}),
+    // `stage` narrows the events to that stage (the server picks the active one otherwise).
+    state: (run, stage) => get('/api/state', { ...(run ? { run } : {}), ...(stage ? { stage } : {}) }),
     runs: () => get('/api/runs'),
     pool: () => get('/api/pool'),
     decisions: (status) => get('/api/decisions', status ? { status } : {}),
@@ -1172,6 +1173,20 @@ function skipReason(stage, status) {
   const reasonFn = SKIP_REASONS[stage.name];
   if (reasonFn) return reasonFn(status) ?? 'Skipped for this run (reason not recorded).';
   return 'Skipped for this run (see status.json for details).';
+}
+
+/**
+ * The stage a run view opens on: the one the person picked, else the one the
+ * run is waiting on or running, else the last one that finished. The server
+ * uses the same rule to send only that stage's events.
+ */
+function activeStageOf(status, picked = null) {
+  const stages = status?.stages || [];
+  return picked
+    || status?.awaitingStage
+    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
+    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
+    || 'planner';
 }
 
 
@@ -2474,7 +2489,7 @@ async function viewRun(wrap, tab) {
   const gen = tab._fetchGen;
 
   let data;
-  try { data = await api.state(tab.subject); }
+  try { data = await api.state(tab.subject, tab.stage); }
   catch (err) {
     if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: err.message }));
     return;
@@ -2484,11 +2499,7 @@ async function viewRun(wrap, tab) {
   const status = data.status || {};
   const byName = new Map((status.stages || []).map((s) => [s.name, s]));
   const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
-  const active = tab.stage
-    || status.awaitingStage
-    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
-    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
-    || 'planner';
+  const active = activeStageOf({ ...status, stages }, tab.stage);
   const meta = agentMeta(active);
   const remount = wrap.dataset.stage !== active || wrap.dataset.subject !== String(tab.subject || '');
 

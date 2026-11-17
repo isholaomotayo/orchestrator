@@ -34,7 +34,8 @@ export function createApi(projectRef) {
 
   return {
     projects: () => get('/api/projects'),
-    state: (run) => get('/api/state', run ? { run } : {}),
+    // `stage` narrows the events to that stage (the server picks the active one otherwise).
+    state: (run, stage) => get('/api/state', { ...(run ? { run } : {}), ...(stage ? { stage } : {}) }),
     runs: () => get('/api/runs'),
     pool: () => get('/api/pool'),
     decisions: (status) => get('/api/decisions', status ? { status } : {}),

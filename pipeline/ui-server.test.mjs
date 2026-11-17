@@ -723,3 +723,17 @@ test('/api/register only accepts installed pipeline projects', withServer(async 
   assert.equal((await post('/api/register', { repoRoot: root })).status, 200);
   fs.rmSync(bare, { recursive: true, force: true });
 }));
+
+test('/api/state sends only the requested or active stage\'s events', withServer(async ({ get, paths }) => {
+  const run = pipelinePaths(paths.root, { runId: 'r1' });
+  fs.writeFileSync(run.status, JSON.stringify({ overall: 'running', stages: [{ name: 'planner', status: 'passed' }, { name: 'coder', status: 'running' }] }));
+  fs.appendFileSync(run.events, [
+    { stage: 'planner', type: 'agent_output', kind: 'text', text: 'planned' },
+    { stage: 'coder', type: 'agent_output', kind: 'text', text: 'coding' },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const active = await (await get('/api/state?run=r1')).json();
+  assert.deepEqual(Object.keys(active.events), ['coder']);
+  const picked = await (await get('/api/state?run=r1&stage=planner')).json();
+  assert.deepEqual(Object.keys(picked.events), ['planner']);
+  assert.equal(picked.events.planner.at(-1).text, 'planned');
+}));

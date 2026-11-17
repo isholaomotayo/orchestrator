@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { readUsage } from './usage.mjs';
-import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
+import { inspectBridge, bridgeCommand, readBridge, ownerView } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
@@ -29,6 +29,7 @@ import { queueStageNote } from './events.mjs';
 import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
 import { writePolicyOverride } from './mode.mjs';
 import { recordIntervention } from './interventions.mjs';
+import { memoByStat } from './file-cache.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -131,21 +132,28 @@ function parseRunSpawnTime(runId) {
 // ---- run inventory ---------------------------------------------------------
 
 /** Every run directory, newest first, with enough state to classify it. */
+const cloneOrNull = (v) => (v == null ? null : structuredClone(v));
+
 export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date.now()) {
   let ids = [];
   try { ids = fs.readdirSync(paths.runs).filter((d) => isValidRunId(d)); } catch { /* no runs dir */ }
-  let dismissedMap = {};
-  try { dismissedMap = readBridge(paths.root)?.dismissedRuns || {}; } catch {}
+  // One bridge read for every run, instead of one (plus a status parse) per run.
+  // A corrupt journal still throws, as the per-run reads did: the supervisor
+  // must see it and raise an alert rather than list runs with no owners.
+  const bridgeState = ids.length ? readBridge(paths.root) : null;
+  const dismissedMap = bridgeState?.dismissedRuns || {};
   const runs = [];
   for (const runId of ids.sort().reverse()) {
     const runPaths = pipelinePaths(paths.root, { runId });
-    let status = null;
-    try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* unreadable stays unknown */ }
-    const meta = readRunMeta(runPaths);
+    // Parsed once per change of each file: the supervisor lists every run
+    // several times a tick and the dashboard on every request. Copies, because
+    // callers annotate the rows they are handed.
+    const status = cloneOrNull(memoByStat(runPaths.status, () => { try { return JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { return null; } }));
+    const meta = cloneOrNull(memoByStat(runPaths.runMeta, () => readRunMeta(runPaths)));
     const isDismissed = !!(status?.dismissed || meta?.dismissed || dismissedMap[runId]);
     if (isDismissed && status) status.dismissed = true;
     const lock = readLock(runPaths);
-    const verbs = readStatusLog(runPaths);
+    const verbs = memoByStat(runPaths.runStatusLog, () => readStatusLog(runPaths));
     // `note` is informational by definition. Letting it become the current verb
     // would make every recorded aside look like a state change and re-raise
     // events that were already handled.
@@ -183,7 +191,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
         now,
       }, thresholds),
       ...readUsage(runPaths.events),
-      owner: inspectBridge(paths.root, runId).owner,
+      owner: bridgeState ? ownerView(bridgeState, runId, now).owner : null,
       handoffId: status?.handoffId ?? null,
       runner: meta?.runner ?? status?.runner ?? null,
       hostClient: status?.hostClient ?? null,
@@ -252,7 +260,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
             state: ['done', 'halted'].includes(entry.overall) ? 'idle' : 'unknown',
             costUsd: null,
             tokens: null,
-            owner: inspectBridge(paths.root, entry.runId).owner,
+            owner: bridgeState ? ownerView(bridgeState, entry.runId, now).owner : null,
             handoffId: null,
             runner: entry.runner ?? null,
             hostClient: entry.hostClient ?? null,
@@ -321,7 +329,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
           state: isDone ? 'idle' : 'unknown',
           costUsd: null,
           tokens: null,
-          owner: inspectBridge(paths.root, item.runId).owner,
+          owner: bridgeState ? ownerView(bridgeState, item.runId, now).owner : null,
           handoffId: null,
           runner: feature.runner ?? 'host',
           hostClient: null,

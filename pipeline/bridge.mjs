@@ -42,14 +42,19 @@ function owned(state, args, status, now) {
 }
 function relevant(m, args, status) { return m.runId === (args.runId || null) && m.handoffId === status.handoffId; }
 function messageView(m) { return { ...m }; }
-export function inspectBridge(project, runId = null, { now = Date.now() } = {}) {
-  const state = readBridge(project), p = bridgePaths(project, runId);
-  let status = null; try { status = loadStatus(p); } catch {}
+/** Who holds a run's lease, from an already-read bridge state. */
+export function ownerView(state, runId = null, now = Date.now()) {
   const owner = state.runs[keyOf(runId)];
   const session = owner && state.sessions[owner.sessionId];
   const capability = !owner ? 'disconnected' : Date.parse(owner.expiresAt) <= now ? 'disconnected'
     : session?.capabilities?.hooks ? 'connected' : 'checkpoint-only';
-  return { revision: state.revision, status, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null,
+  return { capability, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null };
+}
+export function inspectBridge(project, runId = null, { now = Date.now() } = {}) {
+  const state = readBridge(project), p = bridgePaths(project, runId);
+  let status = null; try { status = loadStatus(p); } catch {}
+  const { owner, capability } = ownerView(state, runId, now);
+  return { revision: state.revision, status, owner,
     capability, ownershipRequired: !!(owner || state.managedRuns?.[keyOf(runId)]), messages: state.messages.filter(m => m.runId === (runId || null)).map(messageView) };
 }
 /** The stable id a host conversation registers under (no write needed). */
