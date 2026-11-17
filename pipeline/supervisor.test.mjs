@@ -731,3 +731,29 @@ test('a feature report marks earlier attempts as superseded, with what replaced 
   assert.match(fs.readFileSync(path.join(paths.controlReports, 'F1', 'work-done.html'), 'utf8'), /superseded by run-new/);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a tick that changes nothing rewrites neither the snapshot nor the status mirror', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  let clock = Date.now();
+  const sup = createSupervisor({
+    repoRoot: root, now: () => clock,
+    spawn: () => ({ pid: 1, unref() {} }),
+    spawnSync: (bin, args) => {
+      const runId = args[args.indexOf('--run-id') + 1];
+      const runPaths = pipelinePaths(root, { runId });
+      fs.mkdirSync(runPaths.dir, { recursive: true });
+      writeStatus(runPaths, { ...newStatus('plan'), overall: 'awaiting_chat', awaitingStage: 'planner', runner: 'host', invocationMode: 'chat', executionSurface: 'host-handoff' });
+      writeRunMeta(runPaths, { runId, runner: 'host', phase: 'awaiting_chat', pid: null });
+      return { status: 0 };
+    },
+  });
+  sup.tick();
+  sup.tick();
+  const before = [fs.statSync(paths.snapshot).mtimeMs, fs.statSync(paths.status).mtimeMs, fs.readFileSync(paths.status, 'utf8')];
+  clock += 2000;
+  sup.tick();
+  const after = [fs.statSync(paths.snapshot).mtimeMs, fs.statSync(paths.status).mtimeMs, fs.readFileSync(paths.status, 'utf8')];
+  assert.deepEqual(after, before);
+  fs.rmSync(root, { recursive: true, force: true });
+});

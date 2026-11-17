@@ -252,6 +252,32 @@ export function atomicWrite(file, contents) {
 }
 
 /**
+ * Atomically write `value` as JSON only when it differs from what is on disk,
+ * ignoring the dotted `ignore` paths (timestamps that change on every write).
+ * Watchers on .pipeline/ treat every write as news, so an unchanged rewrite is
+ * not free: it makes every dashboard tab refetch. Returns true when written.
+ */
+export function writeJsonIfChanged(file, value, ignore = []) {
+  const strip = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj;
+    const copy = structuredClone(obj);
+    for (const dotted of ignore) {
+      const keys = dotted.split('.');
+      let node = copy;
+      for (const k of keys.slice(0, -1)) node = node?.[k];
+      if (node && typeof node === 'object') delete node[keys.at(-1)];
+    }
+    return copy;
+  };
+  try {
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (JSON.stringify(strip(current)) === JSON.stringify(strip(value))) return false;
+  } catch { /* missing or unreadable: write it */ }
+  atomicWrite(file, JSON.stringify(value, null, 2));
+  return true;
+}
+
+/**
  * Take a lock file atomically, or report that someone live already holds it.
  *
  * The 'wx' flag is the whole point: two processes starting in the same tick

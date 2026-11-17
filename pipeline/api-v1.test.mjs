@@ -152,3 +152,20 @@ test('an unchanged diagnosis leaves the summary signature alone, so nothing is r
   const b = runSummary({ runId: 'r1', status: parked, dir: null, now: now + 120_000 });
   assert.equal(summarySignature(a), summarySignature(b));
 });
+
+test('the event hub bounds its replay buffer by bytes and drops a client that stops reading', () => {
+  const hub = createEventHub({ instanceId: 'i9', maxBytes: 2000, maxClientBuffer: 100 });
+  const big = 'x'.repeat(600);
+  for (let i = 0; i < 10; i++) hub.publish('pool.updated', { projectId: 'p', blob: big, i });
+  const late = sink();
+  hub.attach(late, { lastEventId: 'i9.1' });
+  assert.match(late.text(), /cursor_expired/, 'old frames aged out by size, not only by count');
+
+  let destroyed = false;
+  const stalled = { write: () => false, writableLength: 500, destroy: () => { destroyed = true; } };
+  hub.attach(stalled);
+  assert.equal(hub.size, 2);
+  hub.publish('run.upserted', { projectId: 'p' });
+  assert.equal(destroyed, true);
+  assert.equal(hub.size, 1);
+});

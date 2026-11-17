@@ -161,21 +161,33 @@ export function summarySignature(summary) {
  * (re-snapshot) when the id belongs to another server instance or has aged out
  * of the replay buffer.
  */
-export function createEventHub({ instanceId = crypto.randomUUID(), capacity = 5000 } = {}) {
+export function createEventHub({ instanceId = crypto.randomUUID(), capacity = 5000, maxBytes = 8 * 1024 * 1024, maxClientBuffer = 1024 * 1024 } = {}) {
   let seq = 0;
+  let ringBytes = 0;
   const ring = [];
   const clients = new Set();
   const encode = (frame) => `id: ${instanceId}.${frame.seq}\nevent: ${frame.type}\ndata: ${JSON.stringify(frame.data)}\n\n`;
   const wants = (client, frame) => !client.projects || !frame.data?.projectId || client.projects.has(frame.data.projectId);
+  // A client that stops reading must not make the server buffer for it without
+  // bound: past maxClientBuffer it is dropped and reconnects with Last-Event-ID.
+  const send = (client, text) => {
+    try {
+      if (!client.res.write(text) && (client.res.writableLength || 0) > maxClientBuffer) {
+        clients.delete(client);
+        client.res.destroy?.();
+      }
+    } catch { clients.delete(client); }
+  };
 
   function publish(type, data) {
     const frame = { seq: ++seq, type, data };
+    frame.text = encode(frame);
     ring.push(frame);
-    if (ring.length > capacity) ring.shift();
-    for (const client of clients) {
-      if (!wants(client, frame)) continue;
-      try { client.res.write(encode(frame)); } catch { clients.delete(client); }
-    }
+    ringBytes += frame.text.length;
+    // Bounded by count and by size: one large frame type (a pool snapshot) must
+    // not be able to grow the replay buffer to hundreds of megabytes.
+    while (ring.length > capacity || (ringBytes > maxBytes && ring.length > 1)) ringBytes -= ring.shift().text.length;
+    for (const client of clients) if (wants(client, frame)) send(client, frame.text);
     return frame;
   }
 
@@ -192,7 +204,7 @@ export function createEventHub({ instanceId = crypto.randomUUID(), capacity = 50
       } else if (from < oldest - 1) {
         res.write(`event: reset\ndata: ${JSON.stringify({ reason: 'cursor_expired' })}\n\n`);
       } else {
-        for (const frame of ring) if (frame.seq > from && wants(client, frame)) res.write(encode(frame));
+        for (const frame of ring) if (frame.seq > from && wants(client, frame)) res.write(frame.text);
       }
     }
     clients.add(client);
@@ -200,9 +212,7 @@ export function createEventHub({ instanceId = crypto.randomUUID(), capacity = 50
   }
 
   function heartbeat() {
-    for (const client of clients) {
-      try { client.res.write(': ping\n\n'); } catch { clients.delete(client); }
-    }
+    for (const client of clients) send(client, ': ping\n\n');
   }
 
   return { publish, attach, heartbeat, get size() { return clients.size; }, get cursor() { return `${instanceId}.${seq}`; }, instanceId };

@@ -45,6 +45,21 @@ function selfGuardError(project) {
   return null;
 }
 
+// Writes under .pipeline/ that are not state a client renders: agent worktrees
+// and installs, raw logs (tailed by offset), atomic-write temporaries, lock and
+// heartbeat files, and process stdout captures (including this server's own,
+// which would otherwise feed back into the watcher).
+const IGNORED_CHANGE = /^(worktrees|\.pipeline_sandbox)[\\/]|node_modules|(^|[\\/])logs[\\/]|\.(tmp|candidate|consumed|lock)$|(^|[\\/])\.lock$|(^|[\\/])(orchestrator|ui-server)\.out$/;
+const CHANGE_DEBOUNCE_MS = 150;
+const CHANGE_MAX_WAIT_MS = 500;
+// Legacy /events clients get the same bound as v1: a tab that stops reading is
+// dropped once 1 MB is queued for it, instead of growing the server's memory.
+function writeOrDrop(set, res, msg) {
+  try {
+    if (!res.write(msg) && (res.writableLength || 0) > 1024 * 1024) { set.delete(res); res.destroy(); }
+  } catch { set.delete(res); }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // One dashboard serves many projects, so "which engine runs this?" is a real
@@ -155,17 +170,22 @@ function getOrCreateProject(projectPath) {
   const onFsChange = (file) => {
     // Agent edits and installs inside worktrees are not pipeline state; they
     // used to trigger a dashboard refresh on every keystroke.
-    if (file && /^(worktrees|\.pipeline_sandbox)[\\/]|node_modules/.test(String(file))) return;
+    if (file && IGNORED_CHANGE.test(String(file))) return;
     project.changedSet.add(file || '*');
     clearTimeout(project.debounceTimer);
+    // Trailing debounce, but never longer than CHANGE_MAX_WAIT_MS after the first
+    // change: a stage that streams continuously would otherwise starve every client.
+    project.firstChangeAt ??= Date.now();
+    const wait = Math.max(0, Math.min(CHANGE_DEBOUNCE_MS, project.firstChangeAt + CHANGE_MAX_WAIT_MS - Date.now()));
     project.debounceTimer = setTimeout(() => {
+      project.firstChangeAt = null;
       const msg = `data: ${JSON.stringify({ type: 'change', changed: [...project.changedSet] })}\n\n`;
       for (const res of project.sseClients) {
-        try { res.write(msg); } catch { project.sseClients.delete(res); }
+        writeOrDrop(project.sseClients, res, msg);
       }
       try { publishProjectChanges(project, [...project.changedSet]); } catch (err) { console.warn(`[UI] v1 publish failed: ${err.message}`); }
       project.changedSet.clear();
-    }, 150);
+    }, wait);
   };
 
   try {
@@ -242,12 +262,25 @@ function publishProjectChanges(project, files) {
     hub.publish('run.upserted', { projectId, run: summary });
   }
   if (control) {
+    // Publish only what changed: control/ is touched by every supervisor tick,
+    // and an unchanged frame still costs every client a re-render.
     let attention = [];
     try { attention = pool.pendingAttention(project.paths); } catch { /* none */ }
-    hub.publish('attention.updated', { projectId, items: attention });
+    const attentionSig = JSON.stringify(attention);
+    if (project.lastSigs.get('@attention') !== attentionSig) {
+      project.lastSigs.set('@attention', attentionSig);
+      hub.publish('attention.updated', { projectId, items: attention });
+    }
     let snapshot = null;
     try { snapshot = JSON.parse(fs.readFileSync(project.paths.snapshot, 'utf8')); } catch { /* no pool */ }
-    if (snapshot) hub.publish('pool.updated', { projectId, snapshot });
+    if (snapshot) {
+      const { generatedAt, ...rest } = snapshot;
+      const snapSig = JSON.stringify({ ...rest, supervisor: { ...rest.supervisor, heartbeatAt: null } });
+      if (project.lastSigs.get('@pool') !== snapSig) {
+        project.lastSigs.set('@pool', snapSig);
+        hub.publish('pool.updated', { projectId, snapshot });
+      }
+    }
   }
 }
 
@@ -1398,7 +1431,7 @@ setInterval(() => {
   for (const project of projects.values()) {
     const msg = `data: ${JSON.stringify({ type: 'ping' })}\n\n`;
     for (const res of project.sseClients) {
-      try { res.write(msg); } catch { project.sseClients.delete(res); }
+      writeOrDrop(project.sseClients, res, msg);
     }
   }
 

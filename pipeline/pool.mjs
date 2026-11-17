@@ -12,7 +12,7 @@ import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock, withFileLock,
+  pipelinePaths, loadConfig, atomicWrite, writeJsonIfChanged, pidAlive, readLock, withFileLock,
   newStatus, ensureStageEntries, appendLine, appendEvent,
 } from './state.mjs';
 import { readRunMeta, updateRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
@@ -393,7 +393,7 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
 
 export function writeSnapshot(paths, snap) {
   fs.mkdirSync(paths.control, { recursive: true });
-  atomicWrite(paths.snapshot, JSON.stringify(snap, null, 2));
+  writeJsonIfChanged(paths.snapshot, snap, ['generatedAt', 'supervisor.heartbeatAt']);
   return snap;
 }
 
@@ -457,7 +457,13 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
       st.detail = 'Pool mirror: stage state lives in each run under .pipeline/runs/<runId>/.';
     }
   }
-  if (['done', 'halted'].includes(status.overall)) status.endedAt = status.endedAt || new Date().toISOString();
+  if (['done', 'halted'].includes(status.overall)) {
+    // Keep the first end time: a fresh stamp every tick would make the mirror
+    // look changed forever after the pool settles.
+    let previous = null;
+    try { previous = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch { /* first write */ }
+    status.endedAt = (previous?.overall === status.overall && previous?.endedAt) || new Date().toISOString();
+  }
 
   status.pool = {
     snapshot: path.relative(paths.root, paths.snapshot),
@@ -467,7 +473,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
     decisions: snap.needsDecision.length,
     gate: awaitingFinal ? 'roadmap-merge' : awaitingPlan ? 'plan-approval' : null,
   };
-  atomicWrite(paths.status, JSON.stringify(status, null, 2));
+  writeJsonIfChanged(paths.status, status, ['startedAt']);
   return status;
 }
 
