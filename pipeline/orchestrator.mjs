@@ -808,6 +808,8 @@ function consumeFollowups(name) {
   } catch { return ''; }
 }
 
+const RESUMABLE_RUNNERS = new Set(['claude', 'codex']);
+
 async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResume = null, soft = false, artifactRetry = false } = {}) {
   commitPendingCompletion();
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
@@ -866,9 +868,9 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   const maxAttempts = config.agentRetries + 1;
   let res;
   const handoffId = runner === 'host' ? crypto.randomUUID() : null;
-  // Coder fix cycles resume the session that wrote the code (claude only). A
+  // Coder fix cycles resume the session that wrote the code (claude, codex). A
   // fresh or retried attempt, or any other stage, starts cold as before.
-  let resumeSession = runner === 'claude' && name === 'coder' && cycle > 1 && !artifactRetry
+  let resumeSession = RESUMABLE_RUNNERS.has(runner) && name === 'coder' && cycle > 1 && !artifactRetry
     ? status.agentSessions?.[name] || null
     : null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {

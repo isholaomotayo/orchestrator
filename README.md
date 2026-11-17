@@ -363,7 +363,7 @@ The pipeline auto-detects whichever **CLI** runner is authenticated on your `PAT
 | `host`   | _(none — IDE chat)_                                                                   | —                                          | **Chat mode only.** Hands each stage to the IDE session via `stage-handoff.json`. Dashboard labels the run with `status.hostClient` when set.                                                                                 |
 | `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code)                            | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
 | `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`)                                 | see Cursor docs                            | Headless `-p` mode with `--output-format stream-json`.                                                                                                                                                                        |
-| `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --full-auto`.                                                                                                                                                                                     |
+| `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --sandbox workspace-write` (read-only stages: `--sandbox read-only`).                                                                                                                                                                                     |
 | `antigravity` | [Antigravity CLI](https://antigravity.google/docs/cli/headless/) (`agy`) | Install Antigravity, then authenticate with an interactive `agy` session | Headless `agy -p` with `--dangerously-skip-permissions` when writing. `gemini` is a deprecated alias for this runner. |
 
 You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, an internal tool, a stub for testing) via `customRunners` in `.pipeline/config.json` — see [Configuration reference](#configuration-reference).
@@ -547,6 +547,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   },
   "checkTimeoutMs": 300000, // kill a check command after this long
   "agentTimeoutMs": 1800000, // kill an agent invocation after this long
+  "agentIdleTimeoutMs": 1200000, // stop an agent that has printed nothing for this long (0 disables)
   "repoScanDepth": 4, // how deep to look for nested repos when scoping the review diff
   "maxDiffBytes": 2000000, // total diff.patch budget across all repos in scope
   "modelProfiles": {

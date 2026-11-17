@@ -43,10 +43,18 @@ test('codex read-only uses a hard read-only sandbox', () => {
   assert.ok(ro.args.includes('read-only'));
   assert.ok(!ro.args.includes('--full-auto'));
 
+  // Current codex rejects --full-auto (exit 2); writing stages use workspace-write.
   const rw = buildInvocation({ ...base, runner: 'codex', readOnly: false });
   assert.equal(rw.readOnlyEnforced, false);
-  assert.ok(rw.args.includes('--full-auto'));
-  assert.ok(!rw.args.includes('--sandbox'));
+  assert.ok(!rw.args.includes('--full-auto'));
+  assert.equal(rw.args[rw.args.indexOf('--sandbox') + 1], 'workspace-write');
+});
+
+test('a codex fix cycle resumes its thread with the sandbox passed as config', () => {
+  const { args } = buildInvocation({ ...base, runner: 'codex', readOnly: false, task: 'fix it', resumeSession: 'thread-1' });
+  assert.deepEqual(args.slice(0, 4), ['exec', 'resume', '-c', 'sandbox_mode="workspace-write"']);
+  assert.ok(!args.includes('--sandbox'), 'exec resume has no --sandbox flag');
+  assert.deepEqual(args.slice(-2), ['thread-1', 'fix it']);
 });
 
 test('cursor withholds --force during a read-only audit', () => {
@@ -378,4 +386,23 @@ test('runAgent reports the session and model claude actually used, and an error 
     process.env.PATH = oldPath;
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('an agent that goes silent past agentIdleTimeoutMs is stopped as a timeout', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'idle-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const config = { agentTimeoutMs: 20000, agentIdleTimeoutMs: 300, customRunners: { hang: { command: process.execPath, args: ['-e', 'console.log("hi"); setTimeout(() => {}, 60000)'] } } };
+  const started = Date.now();
+  const res = await runAgent({ runner: 'hang', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config });
+  assert.equal(res.ok, false);
+  assert.equal(res.timedOut, true);
+  assert.ok(Date.now() - started < 10000, 'stopped long before the wall-clock budget');
+  assert.match(fs.readFileSync(path.join(paths.logs, 'coder.log'), 'utf8'), /no output for agentIdleTimeoutMs/);
+  fs.rmSync(root, { recursive: true, force: true });
 });

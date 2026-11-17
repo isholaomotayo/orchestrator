@@ -192,3 +192,12 @@ test('hostEventCommand includes the run id when the handoff is pooled', () => {
   assert.match(hostEventCommand({ runId: 'r1', stage: 'coder' }), /--run-id r1/);
   assert.match(hostEventCommand({ stage: 'coder' }), /--stage coder/);
 });
+
+test('codex command, file-change and message items become tool and text blocks', () => {
+  const cmd = { type: 'command_execution', command: 'npm test', exit_code: 1 };
+  assert.deepEqual(parseAgentEvent(JSON.stringify({ type: 'item.started', item: { ...cmd, exit_code: null } })), [{ kind: 'tool', tool: 'shell', status: 'started', cmd: 'npm test' }]);
+  assert.equal(parseAgentEvent(JSON.stringify({ type: 'item.completed', item: cmd }))[0].status, 'failed');
+  assert.deepEqual(parseAgentEvent(JSON.stringify({ type: 'item.completed', item: { type: 'file_change', changes: [{ path: 'a.js', kind: 'update' }, { path: 'b.js', kind: 'add' }] } })).map((b) => [b.tool, b.file]), [['edit', 'a.js'], ['write', 'b.js']]);
+  assert.deepEqual(parseAgentEvent(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: ' done ' } })), [{ kind: 'text', role: 'assistant', text: 'done' }]);
+  assert.deepEqual(parseAgentEvent(JSON.stringify({ type: 'item.completed', item: { type: 'reasoning', text: 'hmm' } })), []);
+});

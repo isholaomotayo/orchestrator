@@ -142,6 +142,7 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 1200000, // no agent output for 20 min = hung; 0 disables
     repoScanDepth: 4,     // how deep to look for nested repos when scoping the diff
     maxDiffBytes: 2000000, // total .pipeline/diff.patch budget across all repos
     agentRetries: 2, // bounded retries for TRANSIENT agent failures only

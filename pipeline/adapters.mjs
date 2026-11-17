@@ -220,7 +220,7 @@ export function reconcileChatRunner({ runner, statusInvocationMode, statusExecut
 // just claude — otherwise the "read-only" review stage could mutate the repo or
 // weaken tests. Each branch sets `readOnlyEnforced` to signal whether the CLI can
 // hard-guarantee read-only at the process level. When it cannot, we drop the
-// auto-approve/write flags (--force / --full-auto / --dangerously-skip-permissions) so the agent cannot
+// auto-approve/write flags (--force / --dangerously-skip-permissions; codex instead gets a read-only sandbox) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
 export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null, resumeSession = null }) {
   // Verified skill instructions sit AFTER the stage prompt (so the trust
@@ -277,15 +277,20 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       return { bin: 'cursor-agent', args, parse: 'stream-json', readOnlyEnforced: false };
     }
     case 'codex': {
-      // codex exec supports a hard read-only sandbox.
-      const args = ['exec'];
-      if (readOnly) args.push('--sandbox', 'read-only');
-      else args.push('--full-auto');
+      // codex exec supports a hard read-only sandbox. Writing stages use the
+      // workspace-write sandbox (current codex rejects the old --full-auto).
+      const sandbox = readOnly ? 'read-only' : 'workspace-write';
+      // `exec resume` takes no --sandbox flag; the same policy goes in as config.
+      const args = resumeSession
+        ? ['exec', 'resume', '-c', `sandbox_mode="${sandbox}"`]
+        : ['exec', '--sandbox', sandbox];
       args.push('--json');
       if (modelId) args.push('--model', modelId);
       // Effort is a config override rather than a flag on `codex exec`.
       if (level) args.push('-c', `model_reasoning_effort="${level}"`);
-      args.push(combined);
+      // A resumed thread already holds the stage prompt; send only the new task.
+      if (resumeSession) args.push(resumeSession, task);
+      else args.push(combined);
       return { bin: 'codex', args, parse: 'stream-json', readOnlyEnforced: !!readOnly };
     }
     case 'antigravity':
@@ -401,6 +406,20 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
     }, config.agentTimeoutMs);
     let killTimer = null;
+    // No output at all for agentIdleTimeoutMs means a hung CLI, not a slow one:
+    // its own tool calls time out well before that. Stop it then instead of
+    // waiting out the whole wall-clock budget.
+    let lastOutputAt = Date.now();
+    let idledOut = false;
+    const idleMs = Number(config.agentIdleTimeoutMs) || 0;
+    const idleTimer = idleMs > 0 ? setInterval(() => {
+      if (timedOut || Date.now() - lastOutputAt < idleMs) return;
+      timedOut = true;
+      idledOut = true;
+      appendEvent(paths, { stage, cycle, type: 'agent_timeout', idle: true, idleTimeoutMs: idleMs });
+      killAgentTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
+    }, Math.min(15_000, idleMs)) : null;
 
     let buffer = '';
     const parser = createStreamParser();
@@ -409,10 +428,11 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
     // switch shows here), and whether its final result was an error.
     const observed = { sessionId: null, model: null, resultError: false };
     const observe = (line) => {
-      if (!line.startsWith('{') || !/"type":\s*"(system|result)"/.test(line)) return;
+      if (!line.startsWith('{') || !/"type":\s*"(system|result|thread\.started)"/.test(line)) return;
       try {
         const ev = JSON.parse(line);
         if (ev.session_id) observed.sessionId = ev.session_id;
+        if (ev.type === 'thread.started' && ev.thread_id) observed.sessionId = ev.thread_id; // codex
         if (ev.type === 'system' && ev.subtype === 'init' && ev.model) observed.model = ev.model;
         if (ev.type === 'result' && ev.is_error === true) observed.resultError = true;
       } catch { /* not a complete event */ }
@@ -421,6 +441,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       appendEvent(paths, { stage, cycle, type: 'agent_output', ...b });
     };
     const handleChunk = (chunk, isErr) => {
+      lastOutputAt = Date.now();
       buffer += chunk.toString();
       let idx;
       while ((idx = buffer.indexOf('\n')) >= 0) {
@@ -442,6 +463,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      clearInterval(idleTimer);
       liveAgents.delete(child);
       log.write(`[error] failed to spawn ${bin}: ${err.message}\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, error: err.message });
@@ -451,6 +473,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
     child.on('close', (code) => {
       clearTimeout(timer);
       clearTimeout(killTimer);
+      clearInterval(idleTimer);
       liveAgents.delete(child);
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
@@ -458,7 +481,8 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
         parser.pushLine(buffer).forEach(emit);
       }
       parser.flush().forEach(emit);
-      if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
+      if (idledOut) log.write(`[error] agent produced no output for agentIdleTimeoutMs (${idleMs}ms) and was stopped\n`);
+      else if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
       // Exit 0 with an error result (e.g. max turns, a refused permission) did
       // not do the work; treating it as success sent an empty stage downstream.
       const ok = code === 0 && !observed.resultError;
