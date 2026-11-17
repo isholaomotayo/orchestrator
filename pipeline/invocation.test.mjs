@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { detectInvocationMode, detectHostClient, normalizeHostClient, probeRunnerAuth, firstAuthenticatedRunner } from './invocation.mjs';
 
 test('detectInvocationMode honors an explicit --mode flag', () => {
   assert.deepEqual(detectInvocationMode({ env: {}, argv: ['--mode', 'chat'] }), { mode: 'chat', source: 'flag' });
@@ -72,4 +75,32 @@ test('detectHostClient precedence: flag > env var > env signals', () => {
   assert.equal(detectHostClient({ env: { GEMINI_CLI_IDE: '1' }, argv: [] }), 'antigravity');
   assert.equal(detectHostClient({ env: { VSCODE_PID: '123' }, argv: [] }), 'vscode');
   assert.equal(detectHostClient({ env: {}, argv: [] }), null);
+});
+
+test('a passed login check is remembered; a failed one is asked again', () => {
+  // A fake `claude` that counts its `auth status` calls and is logged in only
+  // once logged-in exists.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-cache-'));
+  const calls = path.join(dir, 'calls');
+  const loggedIn = path.join(dir, 'logged-in');
+  fs.writeFileSync(path.join(dir, 'claude'), `#!/bin/sh
+echo x >> "${calls}"
+if [ -f "${loggedIn}" ]; then echo '{"loggedIn":true}'; else echo '{"loggedIn":false}'; fi
+`, { mode: 0o755 });
+  const count = () => (fs.existsSync(calls) ? fs.readFileSync(calls, 'utf8').trim().split('\n').length : 0);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${oldPath}`;
+  try {
+    assert.equal(probeRunnerAuth('claude'), false);
+    assert.equal(probeRunnerAuth('claude'), false);
+    assert.equal(count(), 2, 'a failed check is never remembered');
+    fs.writeFileSync(loggedIn, '1');
+    assert.equal(probeRunnerAuth('claude'), true, 'logging in takes effect on the next ask');
+    assert.equal(probeRunnerAuth('claude'), true);
+    assert.equal(firstAuthenticatedRunner(['claude']), 'claude');
+    assert.equal(count(), 3, 'a passed check is not run again');
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

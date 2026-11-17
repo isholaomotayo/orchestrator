@@ -157,15 +157,28 @@ const AUTH_PROBES = {
   gemini: probeAntigravityAuth,
 };
 
+// A login check spawns the CLI and can block for seconds, and the supervisor
+// asks before every worker it starts. A passed check is remembered for a while;
+// a failed one is never remembered, so logging in takes effect on the next ask.
+const AUTH_TTL_MS = 10 * 60_000;
+const authPassedUntil = new Map();
+
+function checkAuth(runner) {
+  if ((authPassedUntil.get(runner) ?? 0) > Date.now()) return true;
+  const ok = AUTH_PROBES[runner]?.() ?? false;
+  if (ok) authPassedUntil.set(runner, Date.now() + AUTH_TTL_MS);
+  else authPassedUntil.delete(runner);
+  return ok;
+}
+
 /** First CLI runner on PATH that passes an auth probe (CLI mode only). */
 export function firstAuthenticatedRunner(order = ['claude', 'cursor', 'codex', 'antigravity']) {
   for (const name of order) {
-    const probe = AUTH_PROBES[name];
-    if (probe?.()) return name;
+    if (checkAuth(name)) return name;
   }
   return null;
 }
 
 export function probeRunnerAuth(runner) {
-  return AUTH_PROBES[runner]?.() ?? false;
+  return checkAuth(runner);
 }
