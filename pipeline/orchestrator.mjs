@@ -695,11 +695,12 @@ function requireArtifact(stageName, file) {
   }
 }
 
-function requestChatHandoff(stageName, chatResume) {
+function requestChatHandoff(stageName, chatResume, handoffId) {
   commitPendingCompletion();
-  status.handoffId = crypto.randomUUID();
+  // The id was minted before the brief was written, so stage-handoff.json is
+  // written once, complete, instead of written and then patched.
+  status.handoffId = handoffId || crypto.randomUUID();
   bindHandoff(repoRoot, args.runId, status.handoffId, stageName);
-  try { const h = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')); h.handoffId = status.handoffId; h.runId = status.runId; fs.writeFileSync(paths.stageHandoff, JSON.stringify(h, null, 2)); } catch {}
   status.chatResume = chatResume;
   status.completionBlocked = null; // a new handoff is a new situation
   status.overall = 'awaiting_chat';
@@ -864,9 +865,10 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
 
   const maxAttempts = config.agentRetries + 1;
   let res;
+  const handoffId = runner === 'host' ? crypto.randomUUID() : null;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     res = await runAgent({
-      runner, stage: name, cycle, attempt, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+      runner, stage: name, cycle, attempt, task, handoffId, runIdForHandoff: status.runId, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
       model: stageModel,
       effort: stageEffort,
       modelSelection: models?.selection,
@@ -875,7 +877,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     });
     if (res.hostHandoff) {
       if (!chatResume?.step) halt(name, 'AGENT_ERROR', 'Internal error: missing chatResume step for host handoff.');
-      requestChatHandoff(name, chatResume);
+      requestChatHandoff(name, chatResume, handoffId);
     }
     if (res.ok) break;
 
@@ -1547,7 +1549,7 @@ const CONTINUE_REQUIRES = {
 // the whole run (MISSING_ARTIFACT, 5 of 7 field halts) while it was still
 // fixing it. Reject the continuation instead: the run stays awaiting_chat and
 // the host gets the exact file and section to fix.
-function rejectIncompleteContinuation(resume) {
+function rejectIncompleteContinuation(resume, handoff = readStageHandoff()) {
   // A driver that names the handoff it completed can never advance a newer one.
   if (args.handoffId && status.handoffId && args.handoffId !== status.handoffId) {
     appendEvent(paths, { stage: String(resume?.step || 'orchestrator').replace(/^after_/, ''), type: 'continue_rejected', reason: 'stale handoff id', handoffId: args.handoffId, current: status.handoffId });
@@ -1563,8 +1565,7 @@ function rejectIncompleteContinuation(resume) {
   // dashboard's Continue racing the host's own, 0.3s apart in the field) or a
   // file left over from an earlier run would otherwise be accepted or halt.
   if (check.ok) {
-    let handedOffAt = null;
-    try { handedOffAt = Date.parse(JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')).createdAt); } catch {}
+    let handedOffAt = Date.parse(handoff?.createdAt || '');
     if (!Number.isFinite(handedOffAt)) handedOffAt = Date.parse(stage(stageName)?.startedAt || '');
     const writtenAt = fs.statSync(file).mtimeMs;
     if (Number.isFinite(handedOffAt) && writtenAt < handedOffAt) {
@@ -1583,23 +1584,24 @@ function rejectIncompleteContinuation(resume) {
 const HOST_CLIENT_NAMES = new Set(['antigravity', 'agy', 'cursor', 'claude', 'claude-code', 'codex', 'gemini', 'host', 'chat', 'ide']);
 function isClientName(value) { return HOST_CLIENT_NAMES.has(String(value).trim().toLowerCase()); }
 
+// stage-handoff.json, parsed once per --continue and shared by every check.
+function readStageHandoff() {
+  try { return JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8')); } catch { return null; }
+}
+
 async function chatContinueRun() {
   const resume = status.chatResume;
-  rejectIncompleteContinuation(resume);
+  const parsedHandoff = readStageHandoff();
+  rejectIncompleteContinuation(resume, parsedHandoff);
   status.chatResume = null;
   // If this continuation halts (e.g. the host's artifact is missing a
   // section), --resume must re-enter right here — not re-hand the stage that
   // was already done, which is what the pre-handoff resumePoint would do.
   status.resumePoint = resume;
 
-  let actualModel = null;
-  let parsedHandoff = null;
-  try {
-    parsedHandoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
-    // Hosts sometimes report their own client name ("antigravity") as the
-    // model; that says nothing about which model ran, so record it as unknown.
-    if (parsedHandoff.actualModel && !isClientName(parsedHandoff.actualModel)) actualModel = parsedHandoff.actualModel;
-  } catch {}
+  // Hosts sometimes report their own client name ("antigravity") as the
+  // model; that says nothing about which model ran, so record it as unknown.
+  const actualModel = parsedHandoff?.actualModel && !isClientName(parsedHandoff.actualModel) ? parsedHandoff.actualModel : null;
 
   if (!pendingCompletion) { try { fs.unlinkSync(paths.stageHandoff); } catch {} }
 

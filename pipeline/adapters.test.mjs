@@ -311,3 +311,25 @@ test('a host runner is always a host-handoff, even when the CLI flag said cli', 
   assert.equal(isHostSurface({ runner: 'host' }), true);
   assert.equal(isHostSurface({ executionSurface: 'cli-subprocess', runner: 'host' }), false);
 });
+
+test('a low-effort host stage carries a delegate hint naming its suggested model', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { pipelinePaths } = await import('./state.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delegate-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'reporter_prompt.txt');
+  fs.writeFileSync(prompt, 'report');
+  const brief = async (stage, effort, model) => {
+    await runAgent({ runner: 'host', stage, task: 't', systemPromptFile: prompt, cwd: root, paths, config: {}, model, effort, handoffId: 'h1' });
+    return JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+  };
+  const reporter = await brief('reporter', 'low', 'haiku-4.5');
+  assert.equal(reporter.delegate.model, 'haiku-4.5');
+  assert.equal(reporter.handoffId, 'h1');
+  assert.equal((await brief('coder', 'medium', 'sonnet-5')).delegate, undefined);
+  assert.equal((await brief('reporter', 'low', 'current-chat')).delegate, undefined);
+  fs.rmSync(root, { recursive: true, force: true });
+});

@@ -31,9 +31,16 @@ export function handleHostHook(host, project, input, forcedEvent = null) {
   // run, and registering on every one appended an fsynced journal record per
   // tool call for nothing.
   const sessionId = sessionIdFor(project, host, identity.conversationId);
-  if (!Object.values(readBridge(project).runs).some((r) => r.sessionId === sessionId)) return {};
-  const registration = bridgeCommand('session.register', {project,host,conversationId:identity.conversationId,actualModel:identity.actualModel,capabilities:{hooks:true,version:2}});
-  const state = readBridge(project);
+  let state = readBridge(project);
+  if (!Object.values(state.runs).some((r) => r.sessionId === sessionId)) return {};
+  // Register once: a known hook-capable session only needs the checkpoint below,
+  // which already renews the lease and records the observed model. Registering
+  // on every tool call was a second fsynced journal transaction per call.
+  if (!state.sessions[sessionId]?.capabilities?.hooks) {
+    bridgeCommand('session.register', {project,host,conversationId:identity.conversationId,actualModel:identity.actualModel,capabilities:{hooks:true,version:2}});
+    state = readBridge(project);
+  }
+  const registration = { sessionId };
   const entry = Object.entries(state.runs).find(([,r]) => r.sessionId === registration.sessionId);
   if (!entry) return {};
   const [key, owner] = entry, runId = key === 'legacy-root' ? null : key;

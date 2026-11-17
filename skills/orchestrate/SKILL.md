@@ -90,7 +90,7 @@ Example message: *"Pipeline started! Open the live dashboard (URL in `.pipeline/
 When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 
 1. Read the handoff file and its referenced prompt.
-2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model.
+2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model. When the handoff has a `delegate` block (low-effort stages such as handoff and reporter) and your host can start a subagent on a chosen model (for example Claude Code's Agent tool with `model`), run the stage in that subagent on `delegate.model` and record it as `actualModel`; the subagent writes the artifact, you still run `--continue`.
 3. Work on the assigned pipeline stage in this session (specs, design, code, tests, review, handoff, or reporter — Handoff and Reporter are mandatory stages that always run after an `APPROVED` review, same as any other stage in this loop). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set).
 
    **Progressive Incremental Streaming (Mandatory for Live Dashboard)**:
@@ -105,7 +105,7 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
      bun pipeline/host-event.mjs --stage <stage> --kind tool --tool edit --file <file_path>
      bun pipeline/host-event.mjs --stage <stage> --kind text --text "<concise_action_summary>"
      ```
-   - **Check Followups**: Periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file.
+   - **Check Followups**: Periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file. (On a claimed bridge run with hooks installed, notes arrive as operator messages in your context instead, and this file stays empty.)
    - **Stage Completion Summary**: Emit your final summary event right before invoking `--continue`.
 4. Set `"actualModel"` in `stage-handoff.json` to the **model** that did the work (e.g. `gemini-3.1-pro`), never your client's name (`antigravity`, `cursor`) — a client name is recorded as unknown.
 5. Resume:

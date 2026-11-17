@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
-import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
+import { modelNote, resolveModelId, normalizeEffort, fallbackModelId, CURRENT_CHAT_MODEL } from './models.mjs';
 import { createStreamParser, hostEventCommand } from './events.mjs';
 
 export const RUNNER_BINS = {
@@ -302,8 +302,9 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null }) {
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null, handoffId = null, runId = null }) {
   const handoff = {
+    ...(handoffId ? { handoffId, runId } : {}),
     stage,
     cycle: cycle || 1,
     task,
@@ -320,6 +321,15 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     handoff.modelNote = modelNote(model, normalizeEffort(effort));
   }
   if (normalizeEffort(effort)) handoff.effort = normalizeEffort(effort);
+  // A chat session cannot switch its own model mid-conversation, so every stage
+  // used to run on the (usually frontier) chat model. Low-effort stages are
+  // summarisation work: a host with model-scoped subagents can run them there.
+  if (model && model !== CURRENT_CHAT_MODEL && normalizeEffort(effort) === 'low') {
+    handoff.delegate = {
+      model,
+      note: `Low-effort ${stage} stage. If this host can run a subagent on a chosen model, do this stage in one on ${model} (it writes ${STAGE_ARTIFACT_FILES[stage]}), then record ${model} as actualModel. Otherwise do it here.`,
+    };
+  }
   if (skills?.active?.length) {
     // A chat host reads the same verified instructions a CLI runner would.
     handoff.skills = skills.active.map((a) => ({ name: a.skill.name, dir: a.dir, entry: a.skill.entry }));
@@ -341,7 +351,7 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
-export function runAgent({ runner, stage, cycle = 0, attempt = 1, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
+export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = null, runIdForHandoff = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -349,7 +359,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, task, systemPr
     const hostLabel = hostClient ? ` (IDE chat: ${hostClient})` : ' (IDE chat)';
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
     appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, effort: normalizeEffort(effort) || undefined, hostClient: hostClient || undefined });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills, handoffId, runId: runIdForHandoff });
     appendEvent(paths, { stage, cycle, type: 'agent_parked', ok: true, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }

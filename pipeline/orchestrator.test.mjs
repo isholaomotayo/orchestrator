@@ -386,3 +386,15 @@ test('--continue naming an older handoff never advances a newer one', () => {
     assert.equal(readStatus(paths).awaitingStage, 'plan_reviewer');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('the chat brief is written once and already names the handoff the run is waiting on', () => {
+  const { root, paths } = tmpRepo({ config: { bridge: { required: false } } });
+  try {
+    const started = run(root, ['--task', 'add a module', '--runner', 'host', '--mode', 'chat', '--plan-only', '--no-ui']);
+    assert.equal(started.status, 0, started.stderr);
+    const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+    assert.equal(handoff.stage, 'planner');
+    assert.ok(handoff.handoffId);
+    assert.equal(handoff.handoffId, readStatus(paths).handoffId);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
