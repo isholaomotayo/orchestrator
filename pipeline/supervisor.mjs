@@ -25,9 +25,9 @@ import path from 'node:path';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
-  writeStatus, newStatus, appendEvent, withFileLock,
+  writeStatus as writeStatusFile, newStatus, appendEvent, withFileLock,
 } from './state.mjs';
-import { newRunId, writeRunMeta, readRunMeta, updateRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { newRunId, writeRunMeta as writeRunMetaFile, readRunMeta, updateRunMeta as updateRunMetaFile, appendRunVerb as appendRunVerbFile, renderBrief } from './run-registry.mjs';
 import { recordRecovery } from './interventions.mjs';
 import { planHeal } from './self-heal.mjs';
 import { readRunSummary } from './run-reader.mjs';
@@ -58,6 +58,21 @@ export function createSupervisor({
   const paths = pipelinePaths(repoRoot);
   const config = loadConfig(paths);
   const poolCfg = pool.poolConfig(config);
+
+  // The run list, built once per tick: building it copies every run's status,
+  // and a tick consults it many times. Any write to a run forgets it, so a run
+  // spawned mid-tick still counts against the free slots. Outside a tick
+  // (undefined) every call builds a fresh list.
+  let tickRuns;
+  function runStates() {
+    if (tickRuns === undefined) return pool.listRunStates(paths, poolCfg, now());
+    return (tickRuns ??= pool.listRunStates(paths, poolCfg, now()));
+  }
+  function forgetRuns() { if (tickRuns !== undefined) tickRuns = null; }
+  const writeStatus = (...args) => { forgetRuns(); return writeStatusFile(...args); };
+  const writeRunMeta = (...args) => { forgetRuns(); return writeRunMetaFile(...args); };
+  const updateRunMeta = (...args) => { forgetRuns(); return updateRunMetaFile(...args); };
+  const appendRunVerb = (...args) => { forgetRuns(); return appendRunVerbFile(...args); };
   const mergeCfg = pool.mergeConfig(config);
   // Per-run memory of what we last saw, so an unchanged state does not
   // re-escalate on every tick.
@@ -264,12 +279,12 @@ export function createSupervisor({
 
   // ---- feature lifecycle ---------------------------------------------------
 
-  function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).length); }
+  function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(runStates()).length); }
 
   function canStartRunner(runner) {
     if (!availableSlots()) return false;
     if (runner !== 'host') return true;
-    const occupied = pool.activeRuns(pool.listRunStates(paths, poolCfg, now()))
+    const occupied = pool.activeRuns(runStates())
       .filter((run) => run.runner === 'host').length;
     return occupied < poolCfg.hostConcurrency;
   }
@@ -340,7 +355,7 @@ export function createSupervisor({
     for (const ticket of wave) {
       const runner = resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner));
       if (!canStartRunner(runner)) continue;
-      const foreign = pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
+      const foreign = pool.activeRuns(runStates()).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
       if (poolCfg.serializeOnFileOverlap && foreign.some(r => !ticket.files.length || !r.meta?.files?.length || ticket.files.some(f => r.meta.files.some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
       const runId = newRunId({ featureId: feature.id, ticketId: ticket.id, kind: 'ticket' });
       const sliceFile = path.join(paths.briefs, `${runId}.specs.md`);
@@ -675,7 +690,7 @@ export function createSupervisor({
   function revalidateRoadmap(rm) {
     const previous = rm.finalValidation;
     if (previous?.state === 'running') {
-      const run = pool.listRunStates(paths, poolCfg, now()).find(r => r.runId === previous.runId);
+      const run = runStates().find(r => r.runId === previous.runId);
       if (!run || run.status?.overall !== 'done' || run.status?.verdict !== 'APPROVED') return;
       const p = pipelinePaths(repoRoot, { runId: previous.runId });
       try {
@@ -850,7 +865,7 @@ export function createSupervisor({
   function archiveFeatureReport(feature, landedSha) {
     const controlReportsDir = path.join(paths.control, 'reports', feature.id);
     fs.mkdirSync(controlReportsDir, { recursive: true });
-    const related = pool.listRunStates(paths, poolCfg, now())
+    const related = runStates()
       .filter((r) => r.featureId === feature.id)
       .sort((a, b) => String(a.spawnedAt || '').localeCompare(String(b.spawnedAt || '')));
     // Lineage: a run the feature no longer points at was an earlier attempt.
@@ -980,10 +995,15 @@ export function createSupervisor({
   // ---- one pass ------------------------------------------------------------
 
   function tick() {
+    tickRuns = null;
+    try { return tickOnce(); } finally { tickRuns = undefined; }
+  }
+
+  function tickOnce() {
     const rm = roadmap();
     if (!rm) return { ok: false, reason: 'no compiled roadmap' };
 
-    const runs = pool.listRunStates(paths, poolCfg, now());
+    const runs = runStates();
     const paused = fs.existsSync(paths.paused);
     resumingThisTick = new Set();
 
@@ -1127,7 +1147,7 @@ export function createSupervisor({
     if (!paused) advanceFeatures();
 
     // 4. Publish state for the dashboard and the coordinator.
-    const snap = pool.snapshot(paths, { config, now: new Date(now()) });
+    const snap = pool.snapshot(paths, { config, now: new Date(now()), runs: runStates() });
     pool.writeSnapshot(paths, snap);
     pool.writePrimaryMirror(paths, { snap, runs, config });
     touchHeartbeat();
@@ -1142,7 +1162,7 @@ export function createSupervisor({
     const active = rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status));
     const ordered = active.slice(schedulingOffset % Math.max(1,active.length)).concat(active.slice(0,schedulingOffset % Math.max(1,active.length)));
     schedulingOffset++;
-    for (const feature of ordered) advanceFeature({...roadmap(),currentFeatureId:feature.id},pool.listRunStates(paths,poolCfg,now()));
+    for (const feature of ordered) advanceFeature({...roadmap(),currentFeatureId:feature.id},runStates());
     rm = roadmap();
     let slots = poolCfg.maxActiveFeatures - rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status)).length;
     for (const feature of rm.features) {
@@ -1462,7 +1482,7 @@ export function createSupervisor({
     if (timer) clearInterval(timer);
     // Workers are asked to stop, never killed outright: the engine's own signal
     // handler marks them INTERRUPTED so they can be resumed rather than lost.
-    for (const run of pool.listRunStates(paths, poolCfg, now())) {
+    for (const run of runStates()) {
       if (run.pidAlive && run.pid) {
         // Queue the resume first: the worker halts as INTERRUPTED, and the next
         // supervisor picks it back up instead of failing its ticket.

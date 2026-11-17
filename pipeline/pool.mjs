@@ -373,10 +373,10 @@ export function supervisorState(paths) {
 
 // ---- snapshot --------------------------------------------------------------
 
-export function snapshot(paths, { config = null, now = new Date() } = {}) {
+export function snapshot(paths, { config = null, now = new Date(), runs = null } = {}) {
   const cfg = config || loadConfig(paths);
   const pool = poolConfig(cfg);
-  const runs = listRunStates(paths, pool, now.getTime());
+  runs ??= listRunStates(paths, pool, now.getTime());
   const roadmap = readRoadmap(paths);
   const snap = buildSnapshot({
     roadmap,

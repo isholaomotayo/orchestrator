@@ -95,6 +95,37 @@ test('independent features share one host slot across supervisor restarts', () =
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('a tick builds the run list once unless it changes a run, and still counts a run it spawned', () => {
+  const { root, paths } = tmpRepo();
+  fs.appendFileSync(paths.roadmapMd, '\n## F2: Second\n\n- depends_on: none\n\n### Description\n\nDo another thing.\n\n### Acceptance\n\n- it works\n');
+  fs.appendFileSync(paths.roadmapMd, '\n## F3: Third\n\n- depends_on: none\n\n### Description\n\nAnd another.\n\n### Acceptance\n\n- it works\n');
+  compile(paths);
+  let spawns = 0;
+  const spawnHost = (_bin, args) => {
+    spawns++;
+    const runPaths = pipelinePaths(root, { runId: args[args.indexOf('--run-id') + 1] });
+    const status = newStatus('plan');
+    Object.assign(status, { overall: 'awaiting_chat', awaitingStage: 'planner', runner: 'host', executionSurface: 'host-handoff' });
+    writeStatus(runPaths, status);
+    return { status: 0 };
+  };
+  // Every build of the run list reads the runs directory once.
+  const builds = () => {
+    let n = 0;
+    const real = fs.readdirSync;
+    fs.readdirSync = function (dir, ...rest) { if (dir === paths.runs) n++; return real.call(this, dir, ...rest); };
+    return { count: () => n, restore: () => { fs.readdirSync = real; } };
+  };
+  const sup = createSupervisor({ repoRoot: root, spawnSync: spawnHost });
+  sup.tick();
+  assert.equal(spawns, 1, 'one host slot: the run spawned this tick filled it');
+  const quiet = builds();
+  try { sup.tick(); } finally { quiet.restore(); }
+  assert.equal(spawns, 1, 'the slot is still taken');
+  assert.equal(quiet.count(), 1, 'a tick that changes no run builds the list once');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('a host ticket override waits for the global host slot while an opted-in CLI ticket starts', () => {
   const { root, paths } = tmpRepo();
   fs.appendFileSync(paths.roadmapMd, '\n## F2: Second\n\n- depends_on: none\n\n### Description\n\nDo another thing.\n\n### Acceptance\n\n- it works\n');
