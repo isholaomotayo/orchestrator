@@ -35,6 +35,7 @@
     "pipeline/bridge.test.mjs": "6fcc9d3f1927c60ecaeaab9fa3606929eba3e3d785da59735b36bcb2b2545575",
     "pipeline/checker.mjs": "fdb245e09e47d4bb7596f479269dc33c2e743f6653785e0c9f25be3ec8bc4a15",
     "pipeline/checker.test.mjs": "afbb4cea4f87ce2c40d8b6721dcfef9751b36975d7d8a16b98b047e6d6e49ef5",
+    "pipeline/cli-session.e2e.test.mjs": "4e07688213036aa3a7b6eba6b90992b45fbcfa78a3792c93e3d7187f700f55f1",
     "pipeline/commands.mjs": "504b2eec536e18ba1c049533fcafa7d8f4f1ad14c5858364568e3a243bcfe301",
     "pipeline/commands.test.mjs": "3e15bab93690ca7318870260df24c2ed0339a3b7b6f7ba94f214890611831e43",
     "pipeline/contract.test.mjs": "5a6c14cfba66cbe0030d06ebc192aa91d0c026c4295061e81faa359cc01c61a3",
