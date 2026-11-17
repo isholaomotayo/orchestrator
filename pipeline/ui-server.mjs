@@ -15,7 +15,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pipelinePaths, loadConfig, pidAlive, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, loadConfig, pidAlive, withFileLock, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { recoveryFor } from './recoverability.mjs';
 import { policyOf, readPolicyOverride } from './mode.mjs';
@@ -104,10 +104,17 @@ function readKnownProjects() {
 }
 function rememberProject(repoRoot) {
   try {
-    const known = readKnownProjects();
-    if (known.includes(repoRoot)) return;
+    if (readKnownProjects().includes(repoRoot)) return;
     fs.mkdirSync(ORCH_HOME, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(PROJECTS_FILE, JSON.stringify([...known, repoRoot], null, 2), { mode: 0o600 });
+    // Several servers (and the desktop app) share this file: re-read under the
+    // lock and replace it atomically, so concurrent registrations both survive.
+    withFileLock(`${PROJECTS_FILE}.lock`, () => {
+      const known = readKnownProjects();
+      if (known.includes(repoRoot)) return;
+      const tmp = `${PROJECTS_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify([...known, repoRoot], null, 2), { mode: 0o600 });
+      fs.renameSync(tmp, PROJECTS_FILE);
+    }, { timeoutMs: 2000 });
   } catch { /* the registry is a convenience; serving continues without it */ }
 }
 function writeServerRecord() {
@@ -287,9 +294,14 @@ function publishProjectChanges(project, files) {
 
 // Register the default project at startup, then every project a previous
 // session knew about, so their dashboard links keep working after a restart.
-getOrCreateProject(defaultRepoRoot);
-for (const known of readKnownProjects()) {
-  if (known !== defaultRepoRoot && fs.existsSync(path.join(known, '.pipeline'))) getOrCreateProject(known);
+// Called once the port is ours. A server that loses the race for its port must
+// not have watched (and, on exit, cleaned up after) projects another live
+// server is serving.
+function registerKnownProjects() {
+  getOrCreateProject(defaultRepoRoot);
+  for (const known of readKnownProjects()) {
+    if (known !== defaultRepoRoot && fs.existsSync(path.join(known, '.pipeline'))) getOrCreateProject(known);
+  }
 }
 
 function runDir(project, runId) {
@@ -902,12 +914,36 @@ function json(res, body, code = 200) {
   res.end(JSON.stringify(body));
 }
 
+const MAX_BODY_BYTES = 64 * 1024;
 function readBody(req, cb) {
-  let body = '';
-  req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
-  req.on('end', () => {
-    try { cb(JSON.parse(body || '{}')); } catch { cb(null); }
+  const res = req.res;
+  const chunks = [];
+  let size = 0;
+  let tooBig = false;
+  req.on('data', (c) => {
+    if (tooBig) return;
+    size += c.length;
+    if (size > MAX_BODY_BYTES) {
+      tooBig = true;
+      if (res && !res.headersSent) json(res, { error: `request body over ${MAX_BODY_BYTES} bytes` }, 413);
+      req.destroy();
+      return;
+    }
+    chunks.push(c);
   });
+  req.on('end', () => {
+    if (tooBig) return;
+    let body = null;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = null; }
+    // A throw in a handler runs outside the request handler's try, so it gets its own.
+    try { cb(body); } catch (err) { failRequest(res, err); }
+  });
+}
+
+function failRequest(res, err) {
+  console.error(`[UI] request failed: ${err?.stack || err}`);
+  if (res && !res.headersSent) json(res, { error: 'internal error', detail: String(err?.message || err) }, 500);
+  else try { res?.end(); } catch { /* socket gone */ }
 }
 
 // ---- /api/v1 ----------------------------------------------------------------
@@ -1077,6 +1113,11 @@ function isGuardedPost(pathname) {
 }
 
 const server = http.createServer((req, res) => {
+  req.res = res;
+  try { handleRequest(req, res); } catch (err) { failRequest(res, err); }
+});
+
+function handleRequest(req, res) {
   lastActivityAt = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   if (!isLoopbackHost(req.headers, PORT)) return json(res, { error: 'forbidden: unexpected Host header' }, 421);
@@ -1120,9 +1161,11 @@ const server = http.createServer((req, res) => {
       if (!body || typeof body.repoRoot !== 'string') {
         return json(res, { error: 'expected { repoRoot }' }, 400);
       }
-      const project = getOrCreateProject(body.repoRoot);
+      // Same rule as POST /api/v1/projects: only an installed pipeline project.
+      // An arbitrary path used to get a .pipeline/ created and watched recursively.
+      const project = fs.existsSync(path.join(path.resolve(body.repoRoot), '.pipeline')) ? getOrCreateProject(body.repoRoot) : null;
       if (!project) {
-        return json(res, { error: 'invalid repository path' }, 400);
+        return json(res, { error: 'not a pipeline project (no .pipeline/ directory)' }, 400);
       }
       json(res, { ok: true, repoRoot: project.repoRoot });
     });
@@ -1381,7 +1424,7 @@ const server = http.createServer((req, res) => {
   } else {
     res.writeHead(404); res.end('not found');
   }
-});
+}
 
 function anySseClientsConnected() {
   if (hub.size > 0) return true;
@@ -1415,8 +1458,10 @@ function watchSupervisors() {
     } catch { /* unreadable pool state: nothing to report */ }
   }
 }
-setInterval(watchSupervisors, SUPERVISOR_WATCH_MS).unref?.();
-watchSupervisors();
+function startSupervisorWatch() {
+  setInterval(watchSupervisors, SUPERVISOR_WATCH_MS).unref?.();
+  watchSupervisors();
+}
 
 setInterval(() => {
   for (const project of projects.values()) {
@@ -1441,6 +1486,9 @@ process.on('exit', () => {
   // Only clear the records this process actually wrote. A second dashboard on
   // another port, or a restarted one, must not have its pid and url deleted by
   // an unrelated exit — the next orchestrate.sh would then fail to find it.
+  // A server that never bound its port wrote no ui.url, so any it finds belong to
+  // the live server on that port.
+  if (!listening) return;
   for (const project of new Set([defaultPaths, ...[...projects.values()].map((p) => p.paths)])) {
     try {
       if (Number(fs.readFileSync(path.join(project.dir, 'ui-server.pid'), 'utf8').trim()) === process.pid) {
@@ -1464,7 +1512,19 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+let listening = false;
+// kill (SIGTERM) and Ctrl-C would otherwise skip the exit cleanup and leave a
+// stale server record, pid and url behind.
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => process.exit(0));
+// The dashboard holds no state of its own (it is all on disk), so one bad
+// callback is logged rather than taking every open tab down with it.
+process.on('uncaughtException', (err) => console.error(`[UI] uncaught: ${err?.stack || err}`));
+process.on('unhandledRejection', (err) => console.error(`[UI] unhandled rejection: ${err?.stack || err}`));
+
 server.listen(PORT, HOST, () => {
+  listening = true;
+  registerKnownProjects();
+  startSupervisorWatch();
   writeServerRecord();
   console.log(`[UI] Pipeline dashboard running at http://${HOST}:${PORT} (repo: ${defaultRepoRoot})`);
 });

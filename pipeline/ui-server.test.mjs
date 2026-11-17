@@ -670,3 +670,47 @@ test('an unregistered ?project= path is refused instead of being watched', withS
   assert.equal(fs.existsSync(path.join(elsewhere, '.pipeline')), false);
   fs.rmSync(elsewhere, { recursive: true, force: true });
 }));
+
+test('a server that loses the race for its port leaves the live server\'s ui.url alone', withServer(async ({ root, paths, port }) => {
+  fs.writeFileSync(path.join(paths.dir, 'ui.url'), `http://127.0.0.1:${port}/?project=x\n`);
+  const loser = spawn(process.execPath, [path.join(HERE, 'ui-server.mjs')], {
+    cwd: root, env: { ...process.env, PIPELINE_UI_PORT: String(port), PIPELINE_UI_IDLE_TIMEOUT_MS: '0', ORCHESTRATOR_HOME: path.join(root, '.orch-home') },
+    stdio: 'ignore',
+  });
+  const code = await new Promise((resolve) => loser.on('exit', resolve));
+  assert.equal(code, 1);
+  assert.ok(fs.existsSync(path.join(paths.dir, 'ui.url')), 'the winner\'s url survives');
+}));
+
+test('SIGTERM runs the same cleanup as a normal exit', async () => {
+  const { root, paths } = makeProject();
+  const port = await freePort();
+  const child = await startServer(root, port);
+  fs.writeFileSync(path.join(paths.dir, 'ui.url'), `http://127.0.0.1:${port}/\n`);
+  const servers = path.join(root, '.orch-home', 'servers');
+  assert.equal(fs.readdirSync(servers).length, 1);
+  child.kill('SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+  assert.equal(fs.readdirSync(servers).length, 0, 'server record removed');
+  assert.equal(fs.existsSync(path.join(paths.dir, 'ui.url')), false);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('/api/state survives a corrupt bridge journal and an oversized body gets 413', withServer(async ({ get, post, paths }) => {
+  fs.writeFileSync(path.join(paths.control, 'bridge.journal.jsonl'), 'not json\n{}\n');
+  const res = await get('/api/state?run=r1');
+  assert.equal(res.status, 200);
+  assert.match((await res.json()).bridge.error, /Corrupt journal/);
+  const big = await post('/api/followup', { stage: 'coder', text: 'x'.repeat(70 * 1024) });
+  assert.equal(big.status, 413);
+  assert.equal((await get('/healthz')).status, 200, 'still serving');
+}));
+
+test('/api/register only accepts installed pipeline projects', withServer(async ({ post, root }) => {
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'bare-'));
+  const res = await post('/api/register', { repoRoot: bare });
+  assert.equal(res.status, 400);
+  assert.equal(fs.existsSync(path.join(bare, '.pipeline')), false, 'no .pipeline created for an arbitrary path');
+  assert.equal((await post('/api/register', { repoRoot: root })).status, 200);
+  fs.rmSync(bare, { recursive: true, force: true });
+}));

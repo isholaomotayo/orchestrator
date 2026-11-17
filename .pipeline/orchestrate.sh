@@ -201,97 +201,24 @@ if [ "$NOTIFY_UPDATE" = "1" ] && [ -f "$REPO_ROOT/pipeline/installer.mjs" ]; the
   fi
 fi
 
-# Find a dashboard for THIS repo: reuse any healthy pipeline-ui server on ports.
+# Find a dashboard for THIS repo, or start one. ui-ensure.mjs is the one launch
+# path (also used by the desktop app and `ui --ensure`): it reuses a healthy
+# pipeline-ui on the port range, registers this repo, and writes ui.url.
 UI_PORT="$BASE_PORT"
 if [ "$NO_UI" -eq 1 ]; then
   UI_PORT="disabled"
   rm -f "$PIPELINE_DIR/ui.url"
 else
-  FOUND=0
-  for PORT in $(seq "$BASE_PORT" $((BASE_PORT + 20))); do
-    HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
-    if [ -n "$HEALTH" ]; then
-      IS_PIPELINE_UI="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).service||'')}catch{console.log('')}" "$HEALTH")"
-      if [ "$IS_PIPELINE_UI" = "pipeline-ui" ]; then
-        # Register this repoRoot with the running server
-        REG_RESPONSE="$(curl -sf -H "Content-Type: application/json" -d "{\"repoRoot\":\"$REPO_ROOT\"}" "http://127.0.0.1:$PORT/api/register" 2>/dev/null || true)"
-        IS_OK="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).ok?1:0)}catch{console.log(0)}" "$REG_RESPONSE")"
-        if [ "$IS_OK" -eq 1 ]; then
-          UI_PORT="$PORT"
-          FOUND=1
-          break
-        fi
-      fi
-      continue
-    fi
-
-    # Port health check returned empty. Verify if the port is physically in use (zombie/other app).
-    PORT_FREE="$("$JS_RUNNER" -e "
-      const net = require('net');
-      const server = net.createServer();
-      server.once('error', () => process.exit(1));
-      server.once('listening', () => { server.close(); process.exit(0); });
-      server.listen($PORT, '127.0.0.1');
-    " 2>/dev/null && echo "1" || echo "0")"
-
-    if [ "$PORT_FREE" = "1" ]; then
-      UI_PORT="$PORT"
-      echo "[orchestrate] Starting dashboard at http://localhost:$UI_PORT ..."
-      (cd "$REPO_ROOT" && PIPELINE_UI_PORT="$UI_PORT" nohup "$JS_RUNNER" pipeline/ui-server.mjs > "$PIPELINE_DIR/ui-server.out" 2>&1 & echo $! > "$PIPELINE_DIR/ui-server.pid")
-      
-      # Poll /healthz to make sure it started successfully and is responsive
-      START_OK=0
-      for RETRY in $(seq 1 15); do
-        sleep 0.2
-        # Check if the process is still running
-        PID_FILE="$PIPELINE_DIR/ui-server.pid"
-        if [ -f "$PID_FILE" ]; then
-          PID="$(cat "$PID_FILE")"
-          if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
-            # Process died immediately
-            break
-          fi
-        fi
-
-        NEW_HEALTH="$(curl -sf --max-time 1 "http://127.0.0.1:$UI_PORT/healthz" 2>/dev/null || true)"
-        if [ -n "$NEW_HEALTH" ]; then
-          NEW_SERVICE="$("$JS_RUNNER" -e "try{console.log(JSON.parse(process.argv[1]).service||'')}catch{console.log('')}" "$NEW_HEALTH")"
-          if [ "$NEW_SERVICE" = "pipeline-ui" ]; then
-            # Register this repoRoot with the newly started server
-            curl -sf -H "Content-Type: application/json" -d "{\"repoRoot\":\"$REPO_ROOT\"}" "http://127.0.0.1:$UI_PORT/api/register" >/dev/null 2>&1 || true
-            START_OK=1
-            break
-          fi
-        fi
-      done
-
-      if [ "$START_OK" -eq 1 ]; then
-        FOUND=1
-        break
-      else
-        echo "[orchestrate] Warning: Dashboard failed to start on port $UI_PORT. Cleaning up and trying next port." >&2
-        # Clean up failed process
-        PID_FILE="$PIPELINE_DIR/ui-server.pid"
-        if [ -f "$PID_FILE" ]; then
-          PID="$(cat "$PID_FILE")"
-          if [ -n "$PID" ]; then
-            kill "$PID" 2>/dev/null || true
-          fi
-          rm -f "$PID_FILE"
-        fi
-      fi
-    fi
-  done
-
-  if [ "$FOUND" -eq 0 ]; then
-    echo "[orchestrate] No free port in $BASE_PORT-$((BASE_PORT + 20)); continuing without dashboard." >&2
+  ENSURE_JSON="$("$JS_RUNNER" "$REPO_ROOT/pipeline/ui-ensure.mjs" --repo "$REPO_ROOT" --json 2>/dev/null || true)"
+  ENSURED_PORT="$(printf '%s' "$ENSURE_JSON" | sed -n 's/.*"port":\([0-9][0-9]*\).*/\1/p')"
+  if [ -z "$ENSURED_PORT" ]; then
+    echo "[orchestrate] No dashboard could be found or started on ports $BASE_PORT-$((BASE_PORT + 20)); continuing without it." >&2
     NO_UI=1
     rm -f "$PIPELINE_DIR/ui.url"
     UI_PORT="disabled"
   else
-    ENCODED_ROOT="$("$JS_RUNNER" -e "console.log(encodeURIComponent(process.argv[1]))" "$REPO_ROOT")"
-    echo "[orchestrate] Live dashboard: http://localhost:$UI_PORT/?project=$ENCODED_ROOT"
-    echo "http://localhost:$UI_PORT/?project=$ENCODED_ROOT" > "$PIPELINE_DIR/ui.url"
+    UI_PORT="$ENSURED_PORT"
+    echo "[orchestrate] Live dashboard: $(cat "$PIPELINE_DIR/ui.url" 2>/dev/null || echo "http://127.0.0.1:$UI_PORT")"
   fi
 fi
 
@@ -313,7 +240,7 @@ is_chat_invocation() {
 
 print_dashboard_banner() {
   [ "$NO_UI" -eq 0 ] || return 0
-  local url="http://localhost:$UI_PORT"
+  local url="http://127.0.0.1:$UI_PORT"
   echo ""
   echo "================================================================"
   echo "  LIVE DASHBOARD (open in your browser to follow progress)"
@@ -372,7 +299,7 @@ elif [ -f "$PIPELINE_DIR/stage-handoff.json" ]; then
   if [ -f "$PIPELINE_DIR/ui.url" ]; then
     echo "[orchestrate] Dashboard: $(cat "$PIPELINE_DIR/ui.url")"
   elif [ "$NO_UI" -eq 0 ]; then
-    echo "[orchestrate] Dashboard: http://localhost:$UI_PORT"
+    echo "[orchestrate] Dashboard: http://127.0.0.1:$UI_PORT"
   fi
   echo "[orchestrate] ────────────────────────────────────────────────────────"
 elif [ -f "$PIPELINE_DIR/checker_report.md" ]; then
