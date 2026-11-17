@@ -283,6 +283,8 @@ mismatch aborts. See [Supply-chain integrity](skills/orchestrate/REFERENCE.md#su
 
 The dashboard (URL in `.pipeline/ui.url`, usually starting at **http://localhost:4600**) is the control room for every run — and, when you use roadmap mode, for a whole pool of workers. Start work from `/orchestrate` in your agent or from the CLI; open the dashboard to watch stages, open artifacts, and answer decisions.
 
+Open the dashboard with the link in `.pipeline/ui.url`. That file is readable by you alone, and the link signs your browser in. A bare `http://localhost:4600` shows only a page saying where the link is, so other users on the same machine can't read or drive your runs.
+
 ### Step 1 — Open the workspace
 
 From your project root, start the UI (optional) or let `orchestrate.sh` boot it on first run:
@@ -465,7 +467,7 @@ The dashboard has no client-side polling loop driving the common case — update
 3. The browser's `EventSource.onmessage` handler reacts to any `change` event by re-fetching `GET /api/state` (and re-fetching the currently open artifact) — a full, cheap re-render rather than a diff, since the state payload is small.
 4. A 25-second heartbeat `ping` event keeps the connection alive through proxies/load balancers; a 3-second `setInterval` fallback poll covers the rare case where SSE drops and hasn't reconnected yet (the connection indicator in the footer shows `● live` vs. `● reconnecting…`).
 
-This means: start the orchestrator from a completely different terminal (or let the dashboard itself spawn it via **New run**), and every stage transition, every tool call, every checker result appears in the browser within ~150ms–3s with no manual refresh. You can verify this yourself with `curl -N http://localhost:4600/events` in one terminal while a run is active in another — you'll see a `data: {"type":"change",...}` line every time a `.pipeline/` file changes.
+This means: start the orchestrator from a completely different terminal (or let the dashboard itself spawn it via **New run**), and every stage transition, every tool call, every checker result appears in the browser within ~150ms–3s with no manual refresh. You can verify this yourself with `curl -N -H "Authorization: Bearer $(jq -r .token ~/.orchestrator/servers/*.json | head -1)" "http://localhost:4600/events?project=$PWD"` in one terminal while a run is active in another — you'll see a `data: {"type":"change",...}` line every time a `.pipeline/` file changes.
 
 Archived run views (selected from the run-history dropdown) intentionally **stop** listening to live change events — they're a static snapshot, and the follow-up composer is disabled for them.
 

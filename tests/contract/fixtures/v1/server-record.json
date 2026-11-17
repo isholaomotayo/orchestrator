@@ -4,6 +4,7 @@
   "pid": 0,
   "startedAt": "<time>",
   "token": "<token>",
+  "browserKey": "<browserKey>",
   "apiVersions": [
     "v1"
   ],

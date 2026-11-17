@@ -1,7 +1,7 @@
 {
   "ok": true,
   "service": "pipeline-ui",
-  "repoRoot": "<repo>",
+  "projectId": "<project>",
   "instanceId": "<instance>",
   "pid": 0,
   "port": 0,

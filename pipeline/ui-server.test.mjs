@@ -76,9 +76,9 @@ function withServer(fn, { env = {} } = {}) {
     const port = await freePort();
     const child = await startServer(root, port, env);
     const base = `http://127.0.0.1:${port}`;
-    const get = (p) => fetch(`${base}${p}${p.includes('?') ? '&' : '?'}project=${encodeURIComponent(root)}`);
-    // Legacy POSTs take the server's token, read from its owner-only record.
+    // Every legacy route takes the server's token, read from its owner-only record.
     const token = () => serverRecord(root).record.token;
+    const get = (p) => fetch(`${base}${p}${p.includes('?') ? '&' : '?'}project=${encodeURIComponent(root)}`, { headers: { Authorization: `Bearer ${token()}` } });
     const post = (p, body, headers = {}) => fetch(`${base}${p}?project=${encodeURIComponent(root)}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', Host: `127.0.0.1:${port}`, Authorization: `Bearer ${token()}`, ...headers }, body: JSON.stringify(body),
     });
@@ -98,6 +98,51 @@ test('legacy POST routes refuse a request without the server token', withServer(
   const res = await post('/api/pool/pause', {}, { Authorization: '' });
   assert.equal(res.status, 401);
   assert.equal((await post('/api/pool/pause', {})).status, 200);
+}));
+
+test('legacy reads need a credential too: another local user gets nothing past /healthz', withServer(async ({ base, root }) => {
+  const q = `?project=${encodeURIComponent(root)}`;
+  for (const route of ['/api/state', '/api/runs', '/api/pool', '/api/projects', '/api/decisions', '/api/log', '/events']) {
+    const res = await fetch(`${base}${route}${q}`);
+    assert.equal(res.status, 401, `${route} answered without a credential`);
+    await res.body?.cancel();
+  }
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+}));
+
+test('a browser signs in through the ui.url key and the page carries no secret', withServer(async ({ base, root, port }) => {
+  const { record } = serverRecord(root);
+  assert.match(record.browserKey, /^[0-9a-f]{48}$/);
+  const q = `?project=${encodeURIComponent(root)}`;
+
+  const bare = await fetch(`${base}/${q}`);
+  assert.equal(bare.status, 401, 'no cookie: the sign-in instructions, not the dashboard');
+  const bareHtml = await bare.text();
+  assert.match(bareHtml, /\.pipeline\/ui\.url/);
+  assert.ok(!bareHtml.includes(record.token) && !bareHtml.includes(record.browserKey));
+
+  assert.equal((await fetch(`${base}/${q}&key=${'0'.repeat(48)}`, { redirect: 'manual' })).status, 401, 'a wrong key signs nobody in');
+
+  const signIn = await fetch(`${base}/${q}&key=${record.browserKey}`, { redirect: 'manual' });
+  assert.equal(signIn.status, 303);
+  assert.equal(signIn.headers.get('location'), `/${q}`, 'the key is stripped from the address bar');
+  const setCookie = signIn.headers.get('set-cookie');
+  assert.match(setCookie, new RegExp(`^pipeline_session_${port}=[0-9a-f]{48}; HttpOnly; SameSite=Strict; Path=/$`));
+  const cookie = setCookie.split(';')[0];
+
+  const page = await fetch(`${base}/${q}`, { headers: { cookie } });
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.ok(!html.includes(record.token), 'the API token is not in the page');
+  assert.ok(!html.includes(record.browserKey), 'the browser key is not in the page');
+  assert.ok(!html.includes('pipeline-api-token'));
+
+  assert.equal((await fetch(`${base}/api/runs${q}`, { headers: { cookie } })).status, 200, 'the cookie reads');
+  const pause = await fetch(`${base}/api/pool/pause${q}`, {
+    method: 'POST', headers: { cookie, 'Content-Type': 'application/json', Origin: base }, body: '{}',
+  });
+  assert.equal(pause.status, 200, 'the cookie acts, from the dashboard\'s own origin');
+  assert.equal((await fetch(`${base}/api/runs${q}`, { headers: { cookie: `pipeline_session_${port}=${'0'.repeat(48)}` } })).status, 401);
 }));
 
 test('the pool endpoint reports the roadmap and what needs a decision', withServer(async ({ get }) => {
@@ -138,7 +183,7 @@ test('a project with no pool reports it plainly rather than erroring', async (t)
   const port = await freePort();
   const child = await startServer(root, port);
   t.after(() => { child.kill(); fs.rmSync(root, { recursive: true, force: true }); });
-  const body = await (await fetch(`http://127.0.0.1:${port}/api/pool?project=${encodeURIComponent(root)}`)).json();
+  const body = await (await fetch(`http://127.0.0.1:${port}/api/pool?project=${encodeURIComponent(root)}`, { headers: { Authorization: `Bearer ${serverRecord(root).record.token}` } })).json();
   assert.equal(body.enabled, false);
 });
 
@@ -672,9 +717,9 @@ test('a supervisor that crashed is reported once, and the alert clears when it i
   assert.equal((await until((v) => v.length === 0)).length, 0, 'the alert clears itself');
 }, { env: { PIPELINE_SUPERVISOR_WATCH_MS: '200' } }));
 
-test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base }) => {
+test('an unregistered ?project= path is refused instead of being watched', withServer(async ({ base, root }) => {
   const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'not-registered-'));
-  const res = await fetch(`${base}/api/state?project=${encodeURIComponent(elsewhere)}`);
+  const res = await fetch(`${base}/api/state?project=${encodeURIComponent(elsewhere)}`, { headers: { Authorization: `Bearer ${serverRecord(root).record.token}` } });
   assert.equal(res.status, 400);
   assert.equal(fs.existsSync(path.join(elsewhere, '.pipeline')), false);
   fs.rmSync(elsewhere, { recursive: true, force: true });

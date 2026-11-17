@@ -85,6 +85,8 @@ cat .pipeline/ui.url
 
 Example message: *"Pipeline started! Open the live dashboard (URL in `.pipeline/ui.url`) to watch stage progress, checker results, and artifacts."*
 
+The URL in that file is a sign-in link: its `key=` signs the browser in, and the dashboard shows only instructions to a browser without it. Give the user the whole link from the file, not a shortened `http://localhost:<port>` form.
+
 ### 6. Chat Handoff Loop
 
 When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:

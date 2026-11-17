@@ -41,6 +41,10 @@ pub struct ServerRecord {
     pub port: u16,
     pub pid: u32,
     pub token: String,
+    /// Signs a browser in: `GET /?key=<browserKey>` sets the dashboard's session
+    /// cookie. Absent on servers older than the sign-in link.
+    #[serde(default)]
+    pub browser_key: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]

@@ -67,14 +67,14 @@ async function waitForServer() {
         );
       }
       // Ensure this repo is registered even if the server was already up.
-      let token = '';
-      try { token = JSON.parse(fs.readFileSync(path.join(process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator'), 'servers', `${health.instanceId}.json`), 'utf8')).token || ''; } catch { /* no record: the register is refused */ }
+      let token = '', browserKey = '';
+      try { ({ token = '', browserKey = '' } = JSON.parse(fs.readFileSync(path.join(process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator'), 'servers', `${health.instanceId}.json`), 'utf8'))); } catch { /* no record: the register is refused */ }
       spawnSync('curl', [
         '-sf', '-H', 'Content-Type: application/json', '-H', `Authorization: Bearer ${token}`,
         '-d', JSON.stringify({ repoRoot }),
         `${url}/api/register`,
       ], { encoding: 'utf8' });
-      return;
+      return browserKey;
     }
     await new Promise((r) => setTimeout(r, 150));
   }
@@ -94,11 +94,13 @@ function seed(mode) {
 async function main() {
   fs.mkdirSync(outDir, { recursive: true });
   startUi();
-  await waitForServer();
+  const browserKey = await waitForServer();
 
   const { chromium } = await import('playwright');
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  // Sign in once; the session cookie carries every page load after it.
+  await page.goto(`${url}/?${projectQ}&key=${browserKey}`, { waitUntil: 'domcontentloaded' });
 
   for (const shot of shots) {
     seed(shot.mode);

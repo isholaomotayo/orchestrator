@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { signInUrl, writeUiUrl } from './dashboard-link.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -59,7 +60,8 @@ async function register(port, instanceId) {
 }
 
 function report(result) {
-  try { fs.writeFileSync(path.join(pipelineDir, 'ui.url'), `${result.url}/?project=${encodeURIComponent(repoRoot)}\n`); } catch { /* not fatal */ }
+  // ui.url holds the sign-in link (owner-only); a server too old to have a key gets the plain URL.
+  try { writeUiUrl(pipelineDir, signInUrl(result.port, repoRoot) || `${result.url}/?project=${encodeURIComponent(repoRoot)}`); } catch { /* not fatal */ }
   if (json) console.log(JSON.stringify(result));
   else console.log(`${result.started ? 'Started' : 'Using'} dashboard at ${result.url} (instance ${result.instanceId})`);
 }

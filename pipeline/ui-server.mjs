@@ -86,13 +86,20 @@ const defaultConfig = loadConfig(defaultPaths);
 const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600);
 const HOST = '127.0.0.1';
 
-// ---- identity for /api/v1 clients (the desktop app, scripts) ---------------
-// The token gates every /api/v1 route. It is published only in a per-user,
-// owner-only registry file and embedded in the dashboard page this server
-// serves to its own (Host-checked) origin.
+// ---- identity ---------------------------------------------------------------
+// Every route but /healthz needs a credential. Programs (the desktop app,
+// ui-ensure, scripts) send the bearer token from this server's owner-only
+// record. A browser opens the sign-in link in .pipeline/ui.url (also
+// owner-only): its key buys an HttpOnly session cookie, and the page itself
+// never carries a secret. Another OS user on the machine can reach the port,
+// but can read neither file, so it gets nothing past /healthz.
 const ORCH_HOME = process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator');
 const INSTANCE_ID = crypto.randomUUID();
 const API_TOKEN = crypto.randomBytes(24).toString('hex');
+const BROWSER_KEY = crypto.randomBytes(24).toString('hex');
+const SESSION = crypto.randomBytes(24).toString('hex');
+// Cookies are per host, not per port: two dashboards on 127.0.0.1 each need their own name.
+const SESSION_COOKIE = `pipeline_session_${PORT}`;
 const STARTED_AT = new Date().toISOString();
 const SERVER_RECORD = path.join(ORCH_HOME, 'servers', `${INSTANCE_ID}.json`);
 const PROJECTS_FILE = path.join(ORCH_HOME, 'projects.json');
@@ -122,7 +129,7 @@ function writeServerRecord() {
   try {
     fs.mkdirSync(path.dirname(SERVER_RECORD), { recursive: true, mode: 0o700 });
     fs.writeFileSync(SERVER_RECORD, JSON.stringify({
-      instanceId: INSTANCE_ID, port: PORT, pid: process.pid, startedAt: STARTED_AT, token: API_TOKEN,
+      instanceId: INSTANCE_ID, port: PORT, pid: process.pid, startedAt: STARTED_AT, token: API_TOKEN, browserKey: BROWSER_KEY,
       apiVersions: [API_VERSION], serverVersion: HOST_ENGINE.version, url: `http://127.0.0.1:${PORT}`,
     }, null, 2), { mode: 0o600 });
   } catch (err) { console.warn(`[UI] Could not write server registry ${SERVER_RECORD}: ${err.message}`); }
@@ -952,13 +959,57 @@ function failRequest(res, err) {
 
 // ---- /api/v1 ----------------------------------------------------------------
 
+function sameSecret(given, secret) {
+  const a = Buffer.from(given || ''), b = Buffer.from(secret);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function cookie(req, name) {
+  for (const part of (req.headers.cookie || '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return null;
+}
+
 function v1Authorized(req, url) {
   const header = req.headers.authorization || '';
   const bearer = header.startsWith('Bearer ') ? header.slice(7) : null;
-  // EventSource cannot set headers, so the dashboard passes ?access_token=.
-  const given = bearer || url.searchParams.get('access_token') || '';
-  const a = Buffer.from(given), b = Buffer.from(API_TOKEN);
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
+  // A header-less EventSource client may pass ?access_token= instead.
+  if (sameSecret(bearer || url.searchParams.get('access_token'), API_TOKEN)) return true;
+  return sameSecret(cookie(req, SESSION_COOKIE), SESSION);
+}
+
+const SIGN_IN_PAGE = `<!doctype html><meta charset="utf-8"><title>Pipeline dashboard</title>
+<body style="font:15px system-ui;max-width:36em;margin:15vh auto;padding:0 16px;line-height:1.5">
+<h1 style="font-size:20px">Open the dashboard from its link</h1>
+<p>This dashboard only opens from the sign-in link it writes to <code>.pipeline/ui.url</code> in your project.
+That file is readable by you alone, so other users on this machine cannot open the dashboard.</p>
+<p>Open the link in that file, or run <code>bash .pipeline/orchestrate.sh ui</code> to print a fresh one.</p>`;
+
+// GET / : ?key= signs the browser in and redirects to the same URL without
+// the key; a signed-in browser gets the page; anyone else gets instructions.
+function servePage(req, res, url) {
+  const key = url.searchParams.get('key');
+  if (key !== null) {
+    if (!sameSecret(key, BROWSER_KEY)) {
+      res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+      return res.end(SIGN_IN_PAGE.replace('<p>Open', '<p>That link is from an earlier server. Open'));
+    }
+    url.searchParams.delete('key');
+    res.writeHead(303, {
+      'Set-Cookie': `${SESSION_COOKIE}=${SESSION}; HttpOnly; SameSite=Strict; Path=/`,
+      Location: `/${url.search}`, 'Cache-Control': 'no-store',
+    });
+    return res.end();
+  }
+  if (!v1Authorized(req, url)) {
+    res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(SIGN_IN_PAGE);
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
+    .replace('<head>', `<head><meta name="pipeline-instance" content="${INSTANCE_ID}">`));
 }
 
 function projectInfo(project) {
@@ -1116,6 +1167,16 @@ function isGuardedPost(pathname) {
   return pathname.startsWith('/api/');
 }
 
+function serveHealth(res) {
+  json(res, {
+    // A project id, not a path: /healthz is unauthenticated, and discovery only
+    // needs to tell "is this the server for my repo" (compare projectIdOf).
+    ok: true, service: 'pipeline-ui', projectId: projectIdOf(defaultRepoRoot),
+    instanceId: INSTANCE_ID, pid: process.pid, port: PORT, startedAt: STARTED_AT,
+    serverVersion: HOST_ENGINE.version, apiVersions: [API_VERSION], contract: CONTRACT, capabilities: CAPABILITIES,
+  });
+}
+
 const server = http.createServer((req, res) => {
   req.res = res;
   try { handleRequest(req, res); } catch (err) { failRequest(res, err); }
@@ -1128,12 +1189,13 @@ function handleRequest(req, res) {
   if (req.method === 'POST' && isGuardedPost(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
   }
+  if (url.pathname === '/healthz') return serveHealth(res);
+  if (url.pathname === '/') return servePage(req, res, url);
   if (url.pathname.startsWith('/api/v1/')) return handleV1(req, res, url);
-  // The legacy routes start, cancel and merge runs just like /api/v1, so they
-  // take the same token: a stray local process can no longer drive them with a
-  // bare curl. The dashboard page carries the token in a meta tag.
-  if (req.method === 'POST' && isGuardedPost(url.pathname) && !v1Authorized(req, url)) {
-    return json(res, { error: 'unauthorized: bearer token required (see ~/.orchestrator/servers/<instanceId>.json)' }, 401);
+  // Reads leak task text and diffs, and the POSTs start, cancel and merge runs,
+  // so every legacy route takes the same credential as /api/v1.
+  if (!v1Authorized(req, url)) {
+    return json(res, { error: 'unauthorized: sign in through .pipeline/ui.url, or send the bearer token from ~/.orchestrator/servers/<instanceId>.json' }, 401);
   }
   if (url.pathname === '/api/bridge' && req.method === 'GET') {
     const project = getProjectForRequest(req,url);
@@ -1280,10 +1342,6 @@ function handleRequest(req, res) {
         json(res, { error: err.message }, 409);
       }
     });
-  } else if (url.pathname === '/') {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
-      .replace('<head>', `<head><meta name="pipeline-api-token" content="${API_TOKEN}"><meta name="pipeline-instance" content="${INSTANCE_ID}">`));
   } else if (url.pathname === '/api/state') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
@@ -1425,14 +1483,6 @@ function handleRequest(req, res) {
     res.write('retry: 2000\n\n');
     project.sseClients.add(res);
     req.on('close', () => project.sseClients.delete(res));
-  } else if (url.pathname === '/healthz') {
-    json(res, {
-      // A project id, not a path: /healthz is unauthenticated, and discovery only
-      // needs to tell "is this the server for my repo" (compare projectIdOf).
-      ok: true, service: 'pipeline-ui', projectId: projectIdOf(defaultRepoRoot),
-      instanceId: INSTANCE_ID, pid: process.pid, port: PORT, startedAt: STARTED_AT,
-      serverVersion: HOST_ENGINE.version, apiVersions: [API_VERSION], contract: CONTRACT, capabilities: CAPABILITIES,
-    });
   } else {
     res.writeHead(404); res.end('not found');
   }
@@ -1539,4 +1589,6 @@ server.listen(PORT, HOST, () => {
   startSupervisorWatch();
   writeServerRecord();
   console.log(`[UI] Pipeline dashboard running at http://${HOST}:${PORT} (repo: ${defaultRepoRoot})`);
+  // The sign-in link goes to a terminal only, never to a log file other users might read.
+  if (process.stdout.isTTY) console.log(`[UI] Sign in: http://${HOST}:${PORT}/?project=${encodeURIComponent(defaultRepoRoot)}&key=${BROWSER_KEY}`);
 });

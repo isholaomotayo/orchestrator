@@ -29,7 +29,15 @@ test('ui --ensure starts a dashboard once, then reuses it, printing JSON', async
     const second = JSON.parse(spawnSync(process.execPath, [ENSURE, '--repo', root, '--json'], { encoding: 'utf8', env, timeout: 20000 }).stdout.trim());
     assert.equal(second.started, false);
     assert.equal(second.instanceId, a.instanceId);
-    assert.match(fs.readFileSync(path.join(root, '.pipeline', 'ui.url'), 'utf8'), new RegExp(`:${port}/`));
+    // ui.url is the sign-in link, readable by its owner only, and it works.
+    const uiUrl = path.join(root, '.pipeline', 'ui.url');
+    const link = fs.readFileSync(uiUrl, 'utf8').trim();
+    assert.match(link, new RegExp(`^http://127\\.0\\.0\\.1:${port}/\\?project=.+&key=[0-9a-f]{48}$`));
+    assert.equal(fs.statSync(uiUrl).mode & 0o777, 0o600);
+    const signIn = await fetch(link, { redirect: 'manual' });
+    assert.equal(signIn.status, 303);
+    const page = await fetch(new URL(signIn.headers.get('location'), link), { headers: { cookie: signIn.headers.get('set-cookie').split(';')[0] } });
+    assert.equal(page.status, 200);
   } finally {
     if (pid) try { process.kill(pid); } catch { /* gone */ }
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
