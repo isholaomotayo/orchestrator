@@ -10,6 +10,7 @@ import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
+import { loadSchema, validate } from './contract-schema.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -571,6 +572,55 @@ test('v1: snapshot and run detail carry server-computed bucket and actions', wit
   const detail = await (await fetch(`${base}/api/v1/projects/${project.projectId}/runs/r1`, { headers: auth })).json();
   assert.equal(detail.run.runId, 'r1');
   assert.ok(detail.artifacts.some((a) => a.name === 'specs.md'));
+}));
+
+test('v1: what a live server sends matches the published contract schemas', withServer(async ({ base, root }) => {
+  const auth = { Authorization: `Bearer ${serverRecord(root).record.token}` };
+  const runSchema = loadSchema('run-summary'), commandSchema = loadSchema('command'), eventDefs = loadSchema('events').$defs;
+  const [project] = (await (await fetch(`${base}/api/v1/projects`, { headers: auth })).json()).projects;
+  const v1 = `${base}/api/v1/projects/${project.projectId}`;
+
+  const snap = await (await fetch(`${v1}/snapshot`, { headers: auth })).json();
+  assert.ok(snap.runs.length > 0);
+  for (const run of snap.runs) assert.deepEqual(validate(runSchema, run), [], `snapshot run ${run.runId}`);
+  const detail = await (await fetch(`${v1}/runs/r1`, { headers: auth })).json();
+  assert.deepEqual(validate(runSchema, detail.run), [], 'run detail');
+
+  const send = async (body) => (await fetch(`${v1}/commands`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+  const results = [
+    await send({ commandId: 'c1', type: 'pool.pause', args: { reason: 'contract' } }),
+    await send({ commandId: 'c1', type: 'pool.pause', args: { reason: 'contract' } }),
+    await send({ commandId: 'c2', type: 'no.such.command' }),
+  ];
+  assert.deepEqual(results.map((r) => r.status), ['applied', 'duplicate', 'rejected']);
+  for (const r of results) assert.deepEqual(validate(commandSchema, r), [], `command ${r.commandId} ${r.status}`);
+
+  // Every SSE frame whose type the contract defines must match its definition.
+  const ctrl = new AbortController();
+  const reader = (await fetch(`${base}/api/v1/events?projects=${project.projectId}`, { headers: auth, signal: ctrl.signal })).body.getReader();
+  let text = '';
+  const frames = () => text.split('\n\n').map((block) => ({
+    type: /^event: (.+)$/m.exec(block)?.[1], data: /^data: (.+)$/m.exec(block)?.[1],
+  })).filter((f) => f.type && f.data);
+  const until = async (pred) => {
+    const deadline = Date.now() + 5000;
+    while (!pred() && Date.now() < deadline) {
+      const { value, done } = await Promise.race([reader.read(), new Promise((r) => setTimeout(() => r({ value: null }), 500))]);
+      if (done) break;
+      if (value) text += new TextDecoder().decode(value);
+    }
+  };
+  await until(() => frames().some((f) => f.type === 'hello'));
+  fs.writeFileSync(pipelinePaths(root, { runId: 'r1' }).status, JSON.stringify({ overall: 'halted', haltReason: 'INTERRUPTED', featureId: 'F1', stages: [] }));
+  await until(() => frames().some((f) => f.type === 'run.upserted'));
+  ctrl.abort();
+  const checked = frames().filter((f) => eventDefs[f.type]);
+  assert.ok(['hello', 'run.upserted'].every((t) => checked.some((f) => f.type === t)), `saw ${frames().map((f) => f.type)}`);
+  for (const f of checked) {
+    const data = JSON.parse(f.data);
+    assert.deepEqual(validate(eventDefs[f.type], data), [], f.type);
+    if (f.type === 'run.upserted') assert.deepEqual(validate(runSchema, data.run), [], 'run.upserted run');
+  }
 }));
 
 test('v1: the event stream pushes typed run updates and backfill uses the same seq', withServer(async ({ base, root }) => {
