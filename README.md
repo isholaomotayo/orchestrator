@@ -621,12 +621,13 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
     "my-agent": {
       "command": "bash",
       "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{model}", "{effort}", "{readOnly}"],
+      "parse": "text", // optional: the agent prints plain text, so never read its lines as agent JSON events
     },
   },
 }
 ```
 
-`customRunners` placeholders: `{task}` (the stage's instructions), `{systemPrompt}` (the role prompt file's contents), `{readOnly}` (`"true"`/`"false"`, set for the Reviewer stage).
+`customRunners` placeholders: `{task}` (the stage's instructions), `{systemPrompt}` (the role prompt file's contents), `{readOnly}` (`"true"`/`"false"`, set for the Reviewer stage). Set `"parse": "text"` when the agent prints plain text. Without it, a line that is a JSON agent event (Claude or Cursor stream-json, Codex `--json`) is read as one, so a plain-text agent that prints a JSON line, for example a result with `is_error`, could be misread.
 
 In **chat/host mode**, auto profiles are selected from the `--host-client` ecosystem (e.g. Antigravity → Gemini-family). When the host client is unknown or absent, every stage suggests the `current-chat` sentinel — "use whatever model this chat session is running" — rather than assuming Claude models exist. Manual `--models` still wins when you set `--model-profile manual`.
 

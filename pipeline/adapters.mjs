@@ -306,7 +306,10 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         .replaceAll('{model}', modelId || '')
         .replaceAll('{effort}', level || '')
         .replaceAll('{readOnly}', String(!!readOnly));
-      return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text', readOnlyEnforced: false };
+      // A custom runner may stream agent JSON events (a wrapper around a real
+      // CLI) or print plain text; it says which with `parse`. Without it,
+      // JSON event lines are read as events and every other line as text.
+      return { bin: custom.command, args: (custom.args || []).map(sub), parse: custom.parse === 'text' ? 'text' : 'stream-json', readOnlyEnforced: false };
     }
   }
 }
@@ -386,7 +389,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills, resumeSession });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills, resumeSession });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
@@ -436,13 +439,14 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
     }, Math.min(15_000, idleMs)) : null;
 
     let buffer = '';
-    const parser = createStreamParser();
+    const parser = createStreamParser({ format: parse });
     // What the CLI itself reports, as opposed to what was requested: the session
     // to resume next cycle, the model that actually ran (a --fallback-model
     // switch shows here), and whether its final result was an error.
     const observed = { sessionId: null, model: null, resultError: false };
+    // A text runner prints no such events: a JSON line it prints is output.
     const observe = (line) => {
-      if (!line.startsWith('{') || !/"type":\s*"(system|result|thread\.started)"/.test(line)) return;
+      if (parse === 'text' || !line.startsWith('{') || !/"type":\s*"(system|result|thread\.started)"/.test(line)) return;
       try {
         const ev = JSON.parse(line);
         if (ev.session_id) observed.sessionId = ev.session_id;

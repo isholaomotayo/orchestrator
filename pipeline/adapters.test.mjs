@@ -431,3 +431,29 @@ test('an agent that goes silent past agentIdleTimeoutMs is stopped as a timeout'
   assert.match(fs.readFileSync(path.join(paths.logs, 'coder.log'), 'utf8'), /no output for agentIdleTimeoutMs/);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('a text runner (parse: "text")\'s output is shown as written, and a JSON line it prints is not read as an agent event', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'text-runner-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  // Prints a package.json line and a line shaped like a failed result event.
+  const script = [
+    'console.log(\'{"name":"demo","version":"1.0.0"}\')',
+    'console.log(\'{"type":"result","is_error":true,"session_id":"not-a-session"}\')',
+    'console.log("all done")',
+  ].join(';');
+  const config = { agentTimeoutMs: 20000, customRunners: { plain: { command: process.execPath, args: ['-e', script], parse: 'text' } } };
+  const res = await runAgent({ runner: 'plain', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config });
+  assert.equal(res.ok, true, 'exit 0 from a text runner is success');
+  assert.equal(res.resultError, false);
+  assert.equal(res.sessionId, null, 'a text runner has no session to resume');
+  const shown = fs.readFileSync(paths.events, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    .filter((e) => e.type === 'agent_output').map((e) => e.text);
+  assert.deepEqual(shown, ['{"name":"demo","version":"1.0.0"}', '{"type":"result","is_error":true,"session_id":"not-a-session"}', 'all done']);
+  fs.rmSync(root, { recursive: true, force: true });
+});

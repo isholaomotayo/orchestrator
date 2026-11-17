@@ -187,8 +187,21 @@ export function parseAgentEvent(line) {
   return [];
 }
 
-/** Line-oriented parser that coalesces token-sized assistant fragments. */
-export function createStreamParser() {
+/**
+ * Line-oriented parser that coalesces token-sized assistant fragments.
+ * `format` is the runner's `parse` field: a 'text' runner's lines are its
+ * output as written, never agent events, even when one happens to be JSON.
+ */
+export function createStreamParser({ format = 'stream-json' } = {}) {
+  if (format === 'text') {
+    return {
+      pushLine(line) {
+        const text = String(line || '').trim();
+        return text && !isPromptEcho(text) ? [{ kind: 'text', role: 'assistant', text }] : [];
+      },
+      flush: () => [],
+    };
+  }
   let pending = '';
   const flushPending = () => {
     const text = pending.trim();
