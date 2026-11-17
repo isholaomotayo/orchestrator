@@ -41,7 +41,7 @@ const valid = ${JSON.stringify(VALID)};
 const calls = fs.existsSync('calls.jsonl') ? fs.readFileSync('calls.jsonl', 'utf8').trim().split('\\n').filter(Boolean).length : 0;
 const mine = fs.existsSync('calls.jsonl') ? fs.readFileSync('calls.jsonl', 'utf8').split('\\n').filter((l) => l.includes('"stage":"' + stage + '"')).length : 0;
 const message = at('-p') || '';
-fs.appendFileSync('calls.jsonl', JSON.stringify({ stage, resume, n: calls + 1, taskBlock: message.includes('TASK BLOCK'), message: message.slice(0, 300) }) + '\\n');
+fs.appendFileSync('calls.jsonl', JSON.stringify({ stage, resume, n: calls + 1, taskBlock: message.includes('TASK BLOCK'), notes: message.includes('FOLLOW-UP NOTES') && message.includes('rename the helper'), message: message.slice(0, 300) }) + '\\n');
 if (resume && fs.existsSync('refuse-resume')) {
   console.error('Error: No conversation found with session ID: ' + resume);
   process.exit(1);
@@ -50,6 +50,8 @@ const session = resume || ('sess-' + stage + '-' + (calls + 1));
 console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: session, model: 'claude-sonnet-5' }));
 if (files[stage]) fs.writeFileSync('.pipeline/' + files[stage], valid[stage]);
 if (stage === 'coder' && mine >= 1) fs.writeFileSync('pass-marker', '1');
+// A note queued from the dashboard while the first coder cycle runs.
+if (stage === 'coder' && mine === 0) { fs.mkdirSync('.pipeline/followups', { recursive: true }); fs.writeFileSync('.pipeline/followups/coder.txt', 'Please rename the helper.'); }
 console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: session, total_cost_usd: 0.001, num_turns: 1 }));
 `;
 
@@ -95,6 +97,7 @@ test('CLI e2e: the coder fix cycle resumes the session that wrote the code, and 
     assert.equal(coder[0].taskBlock, true, 'a cold start carries the whole task');
     assert.equal(coder[1].taskBlock, false, 'the resumed session already has it: only the new instruction goes');
     assert.match(coder[1].message, /^Fix cycle 2: .*task you have been implementing in this session/);
+    assert.equal(coder[1].notes, true, 'a note queued during cycle 1 reaches the resumed session');
     for (const other of r.calls().filter((c) => c.stage !== 'coder')) assert.equal(other.resume, null, `${other.stage} never resumes`);
     // The model the CLI reported, not the requested family.
     assert.equal(s.stages.find((st) => st.name === 'coder').actualModel, 'claude-sonnet-5');

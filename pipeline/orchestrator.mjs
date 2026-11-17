@@ -14,7 +14,7 @@ import path from 'node:path';
 import { execSync, spawnSync } from 'node:child_process';
 import { pipelinePaths, loadConfig, newStatus, writeStatus, appendEvent, pidAlive, readLock, tailFile, ensureStageEntries, acquireLockFile, atomicWrite } from './state.mjs';
 import { runChecks } from './checker.mjs';
-import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconcileChatRunner, killLiveAgents } from './adapters.mjs';
+import { runAgent, detectRunner, isHostSurface, resolveExecutionSurface, reconcileChatRunner, killLiveAgents, stopLiveAgents } from './adapters.mjs';
 import { detectInvocationMode, detectHostClient, normalizeHostClient } from './invocation.mjs';
 import { resolveModelProfile, parseModelsJson, modelForStage, effortForStage, unknownFamilies } from './models.mjs';
 import { writeHaltHandoff } from './handoff.mjs';
@@ -290,10 +290,16 @@ function haltAndExit(code) {
   releaseLock();
   process.exit(code);
 }
-function interrupted(code) {
+let interrupting = false;
+async function interrupted(code) {
+  // A second signal while stopping: no more grace.
+  if (interrupting) { killLiveAgents('SIGKILL'); haltAndExit(code); }
+  interrupting = true;
   // Take the agent's whole process tree down with the engine: an orphaned CLI
-  // would keep editing the worktree of a run that is now marked stopped.
-  const killed = killLiveAgents('SIGTERM');
+  // would keep editing the worktree of a run that is now marked stopped. The
+  // lock is held until the groups are gone (SIGKILL after the grace period), so
+  // a resume cannot start a new agent beside an old one.
+  const killed = await stopLiveAgents();
   if (killed) console.error(`[Orchestrator] Stopped ${killed} running agent process group(s).`);
   if (status) {
     status.overall = 'halted';
@@ -814,7 +820,12 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   commitPendingCompletion();
   const promptFile = path.join(paths.prompts, `${name === 'coder' ? 'coder' : name}_prompt.txt`);
   const followup = consumeFollowups(name);
-  if (followup) task += `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
+  if (followup) {
+    // Both forms: a resumed session is sent resumeTask, not task.
+    const notes = `\n\nHUMAN FOLLOW-UP NOTES (address these):\n${followup}`;
+    task += notes;
+    if (resumeTask) resumeTask += notes;
+  }
   const stageModel = modelForStage(models, name);
   const stageEffort = effortForStage(models, name);
   if (isHost(status)) {
@@ -877,7 +888,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
     res = await runAgent({
       // A resumed session already holds the task from its first cycle, so it
       // gets only the new instruction; a cold start (or fallback) gets it all.
-      runner, stage: name, cycle, attempt, task: resumeSession && resumeTask ? resumeTask : task, handoffId, runIdForHandoff: status.runId, resumeSession, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+      runner, stage: name, cycle, attempt, appendLog: artifactRetry, task: resumeSession && resumeTask ? resumeTask : task, handoffId, runIdForHandoff: status.runId, resumeSession, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
       model: stageModel,
       effort: stageEffort,
       modelSelection: models?.selection,

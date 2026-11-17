@@ -126,6 +126,7 @@ export function agentEnv(base = process.env) {
 // Agent CLIs currently running for this engine, so a stop or signal can take
 // them down with it instead of leaving orphans editing the worktree.
 const liveAgents = new Set();
+let stopping = false;
 
 /** Time a timed-out agent gets between SIGTERM and SIGKILL. */
 export const KILL_GRACE_MS = 10_000;
@@ -137,11 +138,36 @@ function killAgentTree(child, signal) {
   } catch { try { child.kill(signal); } catch { /* already gone */ } }
 }
 
+/** Whether anything in the agent's process group is still running. */
+function groupAlive(child) {
+  if (!child.pid) return false;
+  try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 0); return true; } catch { return false; }
+}
+
 /** Signal every live agent's whole process group; returns how many were signalled. */
 export function killLiveAgents(signal = 'SIGTERM') {
   let n = 0;
   for (const child of liveAgents) { killAgentTree(child, signal); n += 1; }
   return n;
+}
+
+/**
+ * Stop every live agent's process group: SIGTERM, up to `graceMs` for the
+ * groups to exit, then SIGKILL for whatever is left. Resolves once nothing is
+ * left running, so the caller can release the run lock knowing no old worker
+ * can overlap a resumed one. Returns how many groups were signalled.
+ */
+export async function stopLiveAgents({ graceMs = KILL_GRACE_MS, pollMs = 100 } = {}) {
+  // From here the engine is exiting: an agent that ends now reports nothing
+  // (the stage code must not retry or halt under another reason) and no new
+  // agent starts.
+  stopping = true;
+  const children = [...liveAgents];
+  for (const child of children) killAgentTree(child, 'SIGTERM');
+  const deadline = Date.now() + graceMs;
+  while (children.some(groupAlive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, pollMs));
+  for (const child of children) if (groupAlive(child)) killAgentTree(child, 'SIGKILL');
+  return children.length;
 }
 
 export function binExists(bin) {
@@ -375,7 +401,7 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
-export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = null, runIdForHandoff = null, resumeSession = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
+export function runAgent({ runner, stage, cycle = 0, attempt = 1, appendLog = false, handoffId = null, runIdForHandoff = null, resumeSession = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -394,7 +420,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
   // A retry (attempt > 1) appends, so the failed attempt's output survives for diagnosis.
-  const log = fs.createWriteStream(logFile, { flags: cycle > 1 || attempt > 1 ? 'a' : 'w' });
+  const log = fs.createWriteStream(logFile, { flags: cycle > 1 || attempt > 1 || appendLog ? 'a' : 'w' });
   const level = normalizeEffort(effort);
   const modelLabel = model ? ` · model ${model}${level ? ` · effort ${level}` : ''}` : '';
   log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
@@ -405,6 +431,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
   }
   appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined, effort: level || undefined });
 
+  if (stopping) return new Promise(() => {});
   return new Promise((resolve) => {
     // Own process group, so a stop/timeout reaches everything the agent
     // started (test runners, dev servers), not just the CLI itself. No forge
@@ -420,9 +447,11 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       appendEvent(paths, { stage, cycle, type: 'agent_timeout', timeoutMs: config.agentTimeoutMs });
       // Ask first so the agent's own children (test runners, servers) can shut down.
       killAgentTree(child, 'SIGTERM');
+      killAt = Date.now() + KILL_GRACE_MS;
       killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
     }, config.agentTimeoutMs);
     let killTimer = null;
+    let killAt = 0;
     // No output at all for agentIdleTimeoutMs means a hung CLI, not a slow one:
     // its own tool calls time out well before that. Stop it then instead of
     // waiting out the whole wall-clock budget.
@@ -435,6 +464,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       idledOut = true;
       appendEvent(paths, { stage, cycle, type: 'agent_timeout', idle: true, idleTimeoutMs: idleMs });
       killAgentTree(child, 'SIGTERM');
+      killAt = Date.now() + KILL_GRACE_MS;
       killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
     }, Math.min(15_000, idleMs)) : null;
 
@@ -490,9 +520,22 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
       clearInterval(idleTimer);
+      // The CLI exited, but after a timeout something in its group may still be
+      // ignoring SIGTERM. Let the pending SIGKILL land before reporting the
+      // stage over, so a rerun cannot overlap an old worker.
+      if (killTimer && groupAlive(child)) {
+        clearTimeout(killTimer);
+        const wait = Math.max(0, killAt - Date.now());
+        setTimeout(() => { killAgentTree(child, 'SIGKILL'); finish(code); }, wait);
+        return;
+      }
+      clearTimeout(killTimer);
+      finish(code);
+    });
+    const finish = (code) => {
       liveAgents.delete(child);
+      if (stopping) { log.end(); return; }
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
         observe(buffer.trim());
@@ -503,12 +546,13 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, handoffId = nu
       else if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
       // Exit 0 with an error result (e.g. max turns, a refused permission) did
       // not do the work; treating it as success sent an empty stage downstream.
-      const ok = code === 0 && !observed.resultError;
+      // A stopped agent did not finish, whatever its SIGTERM handler exits with.
+      const ok = code === 0 && !observed.resultError && !timedOut;
       if (code === 0 && observed.resultError) log.write('[error] agent exited 0 but reported an error result\n');
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok, exitCode: code, timedOut: timedOut || undefined, resultError: observed.resultError || undefined, model: observed.model || undefined });
       log.end();
       resolve({ ok, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n'), sessionId: observed.sessionId, observedModel: observed.model, resultError: observed.resultError });
-    });
+    };
   });
 }
 

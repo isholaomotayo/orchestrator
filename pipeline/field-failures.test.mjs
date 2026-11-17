@@ -160,6 +160,8 @@ test('CLI surface, autonomous: an incomplete artifact gets one told-what-was-wro
     assert.equal(res.status, 0, res.stdout + res.stderr);
     assert.equal(status(paths).overall, 'done');
     assert.ok(events(paths).some((e) => e.type === 'artifact_retry' && e.stage === 'coder'));
+    const log = fs.readFileSync(path.join(paths.logs, 'coder.log'), 'utf8');
+    assert.equal(log.match(/===== CODER \(cycle 1\)/g)?.length, 2, 'the rerun appends: the rejected attempt\'s output is kept');
   } finally { cleanup(); }
 });
 

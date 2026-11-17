@@ -457,3 +457,48 @@ test('a text runner (parse: "text")\'s output is shown as written, and a JSON li
   assert.deepEqual(shown, ['{"name":"demo","version":"1.0.0"}', '{"type":"result","is_error":true,"session_id":"not-a-session"}', 'all done']);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+// An agent that answers SIGTERM by exiting 0; with `child`, it first starts a
+// worker in its process group that ignores SIGTERM and writes its pid.
+function stubbornAgent(root, { child = false } = {}) {
+  const worker = "process.on('SIGTERM', () => {}); require('fs').writeFileSync('worker.pid', String(process.pid)); setInterval(() => {}, 1000);";
+  return [
+    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' });` : '',
+    "process.on('SIGTERM', () => process.exit(0));",
+    "console.log('working');",
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+}
+
+function stageRig(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  return { root, paths, prompt, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+test('a timed-out agent is a failure even when its SIGTERM handler exits 0', async () => {
+  const r = stageRig('timeout-ok-');
+  try {
+    const config = { agentTimeoutMs: 400, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root)] } } };
+    const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
+    assert.equal(res.exitCode, 0);
+    assert.equal(res.timedOut, true);
+    assert.equal(res.ok, false, 'stopped work is not finished work');
+  } finally { r.cleanup(); }
+});
+
+test('after a timeout, a worker that ignores SIGTERM is killed before the stage is reported over', async () => {
+  const r = stageRig('timeout-group-');
+  try {
+    const config = { agentTimeoutMs: 400, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root, { child: true })] } } };
+    const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
+    assert.equal(res.ok, false);
+    const pid = Number(fs.readFileSync(path.join(r.root, 'worker.pid'), 'utf8'));
+    assert.equal(alive(pid), false, 'the worker is gone when runAgent returns');
+  } finally { r.cleanup(); }
+});
