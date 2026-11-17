@@ -49,17 +49,13 @@ when the budget is spent. A crashed supervisor raises a `supervisor-dead` attent
 
 ## Authentication and safety
 
-- Every route except `/healthz` needs a credential, the legacy `/api/*` and
-  `/events` routes included. Programs send `Authorization: Bearer <token>`.
-  EventSource clients that cannot set headers pass `?access_token=<token>`
-  instead. The token is in the server's owner-only record,
-  `${ORCHESTRATOR_HOME}/servers/<instanceId>.json`.
-- A browser signs in once through the link in `.pipeline/ui.url`, which is
-  written owner-only (0600). `GET /?key=<browserKey>` sets an HttpOnly,
-  `SameSite=Strict` cookie, `pipeline_session_<port>`, and redirects to the same
-  URL without the key. `GET /` without the cookie returns a 401 page that says
-  where the link is. The page never contains a secret. The browser key is also
-  in the server record, as `browserKey`.
+- Every `/api/v1` request needs `Authorization: Bearer <token>`. EventSource
+  clients that cannot set headers pass `?access_token=<token>` instead. The
+  dashboard page receives the token in a `<meta name="pipeline-api-token">` tag.
+- There is no sign-in. The legacy read routes (`/api/state`, `/api/runs`,
+  `/events` and the rest) need no credential, and `GET /` hands out the token,
+  so every local user and process is trusted. The token and the checks below
+  stop other websites, not other accounts on the same machine.
 - Every request must name a loopback `Host` on the server's own port, or the
   server returns 421. This blocks DNS rebinding.
 - A POST with `Origin: null`, or with an origin other than this server, gets 403.

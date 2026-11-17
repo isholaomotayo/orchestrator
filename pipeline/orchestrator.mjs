@@ -34,7 +34,6 @@ import { writeWorkDoneReport, writeTerminalReport } from './report.mjs';
 import { readDecisions } from './attention.mjs';
 import { validateCompletion, commitCompletion, bindHandoff, inspectBridge, recoverVerification } from './bridge.mjs';
 import { recoverCommands } from './commands.mjs';
-import { signInUrl, writeUiUrl } from './dashboard-link.mjs';
 let pendingCompletion = null;
 
 function parseArgs(argv) {
@@ -708,8 +707,7 @@ function requestChatHandoff(stageName, chatResume, handoffId) {
   status.awaitingStage = stageName;
   if (dashboardUrl) {
     status.dashboardUrl = dashboardUrl;
-    // status.json is world-readable, so it keeps the plain URL; ui.url gets the sign-in link.
-    try { writeUiUrl(paths.rootDir, signInUrl(uiPort, repoRoot) || status.dashboardUrl); } catch {}
+    try { fs.writeFileSync(path.join(paths.rootDir, 'ui.url'), `${status.dashboardUrl}\n`); } catch {}
   } else {
     status.dashboardUrl = null;
     try { fs.unlinkSync(path.join(paths.rootDir, 'ui.url')); } catch {}

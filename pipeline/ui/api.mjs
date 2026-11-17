@@ -11,25 +11,22 @@ export function createApi(projectRef) {
     return search.toString();
   };
 
-  // The browser is signed in by an HttpOnly session cookie, sent with every
-  // same-origin request; the page holds no secret. A 401 means that session
-  // ended (the server restarted): reloading shows the sign-in instructions.
-  const signedOut = (res) => { if (res.status === 401) globalThis.location?.reload(); };
-
   async function get(path, params) {
     const res = await fetch(`${path}?${q(params)}`, { headers: { Accept: 'application/json' } });
-    signedOut(res);
     if (!res.ok) throw new Error(`${path} failed (${res.status})`);
     return res.json();
   }
 
+  // The server embeds its API token in the page it serves; every state-changing
+  // call presents it.
+  const token = () => globalThis.document?.querySelector?.('meta[name="pipeline-api-token"]')?.content || '';
+
   async function post(path, body = {}) {
     const res = await fetch(`${path}?${q()}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
       body: JSON.stringify(body),
     });
-    signedOut(res);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `${path} failed (${res.status})`);
     return data;

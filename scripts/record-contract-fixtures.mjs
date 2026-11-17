@@ -85,7 +85,7 @@ async function main() {
 
     // Volatile values (ids, ports, times, paths) are normalised so the files diff cleanly.
     const scrub = (text) => text
-      .replaceAll(record.token, '<token>').replaceAll(record.browserKey, '<browserKey>').replaceAll(root, '<repo>').replaceAll(health.instanceId, '<instance>').replaceAll(pid, '<project>').replaceAll(path.basename(root), '<repo-name>').replaceAll(base, 'http://127.0.0.1:0')
+      .replaceAll(record.token, '<token>').replaceAll(root, '<repo>').replaceAll(health.instanceId, '<instance>').replaceAll(pid, '<project>').replaceAll(path.basename(root), '<repo-name>').replaceAll(base, 'http://127.0.0.1:0')
       .replace(/"(startedAt|endedAt|generatedAt|at|ts|updatedAt|waitingSince|lastActivityAt|leaseExpiresAt|installedAt|dismissedAt)":(\s*)"[^"]*"/g, '"$1":$2"<time>"')
       .replace(/"(port|pid|revision)":(\s*)\d+/g, '"$1":$20')
       .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '<uuid>');

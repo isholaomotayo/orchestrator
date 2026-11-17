@@ -45,8 +45,6 @@ enum Phase {
     },
     Connected {
         base_url: String,
-        /// The dashboard serves a browser only once it signs in with this key.
-        browser_key: Option<String>,
     },
 }
 
@@ -143,12 +141,11 @@ impl OrchestratorApp {
             return;
         };
         let base_url = record.base_url();
-        let browser_key = record.browser_key.clone();
         match ClientHandle::connect(Client::from_record(&record)) {
             Ok(handle) => {
                 let events = handle.events.clone();
                 self.handle = Some(handle);
-                self.phase = Phase::Connected { base_url, browser_key };
+                self.phase = Phase::Connected { base_url };
                 cx.spawn(async move |this, cx| {
                     while let Ok(event) = events.recv().await {
                         if this.update(cx, |app, cx| app.ingest(event, cx)).is_err() {
@@ -392,7 +389,7 @@ impl OrchestratorApp {
     }
 
     fn open_dashboard(&self, cx: &mut Context<Self>) {
-        if let (Phase::Connected { base_url, browser_key }, Some(sel)) = (&self.phase, &self.selected) {
+        if let (Phase::Connected { base_url }, Some(sel)) = (&self.phase, &self.selected) {
             let repo = self
                 .state
                 .projects
@@ -401,14 +398,8 @@ impl OrchestratorApp {
                 .map(|i| i.repo_root.clone())
                 .unwrap_or_default();
             let tab = format!("run:{}", sel.run_id);
-            // The key signs the browser in; the server strips it from the address
-            // bar with a redirect, and the #fragment survives that redirect.
-            let key = browser_key
-                .as_deref()
-                .map(|k| format!("&key={}", encode(k)))
-                .unwrap_or_default();
             cx.open_url(&format!(
-                "{base_url}/?project={}{key}#tabs={}&active=0",
+                "{base_url}/?project={}#tabs={}&active=0",
                 encode(&repo),
                 encode(&tab)
             ));

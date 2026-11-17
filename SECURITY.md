@@ -77,6 +77,16 @@ These limit what a compromised or merely misbehaving stage can achieve.
 - **Bounded loops** — every fix loop has a cycle budget and halts rather than
   looping indefinitely.
 
+## Dashboard access
+
+The dashboard binds to `127.0.0.1` and has no sign-in, by choice: you never
+log in to watch or message your own runs. That means **anyone with an
+account on the same machine can read your runs and act on them** through it,
+because the page it serves carries the API token. It is protected against other
+*websites*: a foreign `Host` header is refused (DNS rebinding), and a POST from
+another origin is refused (CSRF). On a shared machine, stop the dashboard when
+you are not using it, or run with `--no-ui`.
+
 ## Reporting a vulnerability
 
 Open a GitHub issue, or contact the maintainer through the repository. Please
