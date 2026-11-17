@@ -345,6 +345,31 @@ test('a low-effort host stage carries a delegate hint naming its suggested model
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('the brief says hooks report progress only where installed hooks write tool events', async () => {
+  const { installHooks, configPath } = await import('./hook-install.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hookprogress-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const brief = async (hostClient) => {
+    await runAgent({ runner: 'host', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config: {}, hostClient, handoffId: 'h1' });
+    return JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+  };
+  try {
+    assert.equal((await brief('claude')).hookProgress, undefined, 'no hooks installed: report by hand');
+    installHooks(root, 'claude');
+    assert.equal((await brief('claude')).hookProgress, true);
+    assert.equal((await brief(null)).hookProgress, undefined, 'unknown host');
+    installHooks(root, 'antigravity');
+    assert.equal((await brief('antigravity')).hookProgress, undefined, 'its hook records no tool events');
+    fs.writeFileSync(configPath(root, 'claude'), '{ not json');
+    assert.equal((await brief('claude')).hookProgress, undefined, 'a broken settings file does not break the handoff');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a coder fix cycle resumes the claude session it was given', () => {
   const { args } = buildInvocation({ runner: 'claude', stage: 'coder', systemPrompt: 'p', task: 't', readOnly: false, config: {}, model: 'sonnet-5', effort: 'medium', resumeSession: 'sess-1' });
   assert.equal(args[args.indexOf('--resume') + 1], 'sess-1');

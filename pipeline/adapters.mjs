@@ -8,6 +8,7 @@ import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
 import { modelNote, resolveModelId, normalizeEffort, fallbackModelId, CURRENT_CHAT_MODEL } from './models.mjs';
 import { createStreamParser, hostEventCommand } from './events.mjs';
+import { hookStatus } from './hook-install.mjs';
 
 export const RUNNER_BINS = {
   claude: 'claude',
@@ -313,6 +314,11 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
 /** Shape of stage-handoff.json; SKILL.md documents the matching protocol. */
 export const HANDOFF_VERSION = 3;
 
+// Hosts whose installed hooks write a tool event after every tool call
+// (host-hooks.mjs) and inject queued operator notes. Antigravity's hook runs
+// before an invocation, not after a tool, so it reports no tool events.
+const HOOK_PROGRESS_HOSTS = new Set(['claude', 'codex', 'cursor']);
+
 function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null, handoffId = null, runId = null }) {
   const handoff = {
     version: HANDOFF_VERSION,
@@ -352,6 +358,14 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   // skills/orchestrate/SKILL.md, versioned by HANDOFF_VERSION, instead of being
   // repeated in every brief.
   if (hostClient) handoff.hostClient = hostClient;
+  // With hooks connected, a claimed run's progress and operator notes flow
+  // through the hooks, so the per-tool host-event calls SKILL.md asks for
+  // would only duplicate them (one process and one model turn each).
+  // A host settings file the user broke must not break the handoff: then the
+  // agent just reports progress by hand.
+  let hooked = false;
+  try { hooked = HOOK_PROGRESS_HOSTS.has(hostClient) && hookStatus(paths.root, hostClient) === 'connected'; } catch { /* unreadable settings */ }
+  if (hooked) handoff.hookProgress = true;
   handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
   handoff.eventCommand = hostEventCommand({ runId: paths.runId, stage });
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));

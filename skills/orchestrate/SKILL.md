@@ -93,20 +93,21 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model. When the handoff has a `delegate` block (low-effort stages such as handoff and reporter) and your host can start a subagent on a chosen model (for example Claude Code's Agent tool with `model`), run the stage in that subagent on `delegate.model` and record it as `actualModel`; the subagent writes the artifact, you still run `--continue`.
 3. Work on the assigned pipeline stage in this session (specs, design, code, tests, review, handoff, or reporter — Handoff and Reporter are mandatory stages that always run after an `APPROVED` review, same as any other stage in this loop). Never spawn or delegate to another agent CLI (`handoff.hostClient` names the chat you are in; the `delegate` subagent in step 2 is the only exception, and it is a subagent of this session, not another CLI).
 
-   **Progressive Incremental Streaming (Mandatory for Live Dashboard)**:
-   Because the orchestrator script exits while waiting for your chat session, the dashboard has zero visibility into your work unless you emit events. Never wait until the end of a stage to emit progress. Follow this progressive pattern:
-   - **Stage Start Heartbeat**: Immediately upon picking up the handoff, emit an intent heartbeat:
-     ```bash
-     bun pipeline/host-event.mjs --stage <stage> --kind text --text "Starting <stage>: inspecting specs and requirements..."
-     ```
-     (`handoff.eventCommand` is this exact command for the stage, with `--run-id` already added when pooled; vary `--kind`/`--text`.)
-   - **Tool / Milestone Batches**: Emit a progress event after every 1–2 major tool operations, file edits, or test runs:
-     ```bash
-     bun pipeline/host-event.mjs --stage <stage> --kind tool --tool edit --file <file_path>
-     bun pipeline/host-event.mjs --stage <stage> --kind text --text "<concise_action_summary>"
-     ```
-   - **Check Followups**: Periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file. (On a claimed bridge run with hooks installed, notes arrive as operator messages in your context instead, and this file stays empty.)
-   - **Stage Completion Summary**: Emit your final summary event right before invoking `--continue`.
+   **Progress for the live dashboard (mandatory)**: the orchestrator has exited while you work, so the dashboard sees only what gets reported.
+   - **If `handoff.hookProgress` is `true` and you claimed this run through the bridge**, your host's hooks already record every tool call in the dashboard feed and put operator notes into your context. Send just two events with `handoff.eventCommand`: one when you start and one summary right before you complete the stage. Skip the per-tool events, the `run.checkpoint` after each tool batch, and the followups check below: the hooks do all three.
+   - **Otherwise, report by hand:**
+     - **Stage start**: immediately upon picking up the handoff, emit an intent heartbeat:
+       ```bash
+       node pipeline/host-event.mjs --stage <stage> --kind text --text "Starting <stage>: inspecting specs and requirements..."
+       ```
+       (`handoff.eventCommand` is this exact command for the stage, with `--run-id` already added when pooled; vary `--kind`/`--text`.)
+     - **Tool / milestone batches**: emit a progress event after every 1–2 major tool operations, file edits, or test runs:
+       ```bash
+       node pipeline/host-event.mjs --stage <stage> --kind tool --tool edit --file <file_path>
+       node pipeline/host-event.mjs --stage <stage> --kind text --text "<concise_action_summary>"
+       ```
+     - **Check followups**: periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file.
+     - **Stage completion summary**: emit your final summary event right before invoking `--continue`.
 4. Set `"actualModel"` in `stage-handoff.json` to the **model** that did the work (e.g. `gemini-3.1-pro`), never your client's name (`antigravity`, `cursor`) — a client name is recorded as unknown.
 5. Resume:
    ```bash
@@ -116,7 +117,7 @@ When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
    If the artifact is missing a required section or was not rewritten for this stage, `--continue` exits non-zero, names the file and section, and the run **stays** awaiting this stage. Fix the artifact and run `--continue` again — never edit `status.json` by hand.
 6. Repeat until the pipeline finishes or halts.
 
-**Bridge (managed) runs.** When `stage-handoff.json` has a `bridge` block and you claimed the run (`pool claim <runId>` / `run.claim`), you hold a lease: register your host conversation (`session.register`), `run.claim` the handoff, `run.checkpoint` before work and after each tool batch, `message.ack` then `message.resolve` every operator message, and finish with `stage.complete` — all through `bridge.command`; never edit control state directly. Complete through `bridge.command` instead of a plain `--continue` — a claimed run refuses completion without its credentials. An unclaimed run uses the plain `--continue` above, and operator notes arrive in `.pipeline/followups/<stage>.txt`.
+**Bridge (managed) runs.** When `stage-handoff.json` has a `bridge` block and you claimed the run (`pool claim <runId>` / `run.claim`), you hold a lease: register your host conversation (`session.register`), `run.claim` the handoff, `run.checkpoint` before work and after each tool batch (with `handoff.hookProgress`, the hooks make the per-batch checkpoints), `message.ack` then `message.resolve` every operator message, and finish with `stage.complete` — all through `bridge.command`; never edit control state directly. Complete through `bridge.command` instead of a plain `--continue` — a claimed run refuses completion without its credentials. An unclaimed run uses the plain `--continue` above, and operator notes arrive in `.pipeline/followups/<stage>.txt`.
 
 When status is `awaiting_plan_approval` (an explicit `--approve-plan` gate, a blocked agent verdict, or exhausted revisions): present `.pipeline/specs.md` and `.pipeline/plan_review.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
 

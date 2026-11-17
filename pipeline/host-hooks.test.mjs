@@ -96,6 +96,19 @@ test('handleHostHook delivers a pending priority message as checkpoint context, 
   assert.match(ctx, /message_ack/);
 });
 
+test('on a claimed run, every PostToolUse lands in the dashboard feed with no host-event call', () => {
+  // What handoff.hookProgress promises the agent: it can skip the per-tool events.
+  const root = project();
+  const runId = 'r1';
+  const p = awaitingRun(root, runId, { handoffId: 'h1' });
+  const registration = bridgeCommand('session.register', { project: root, host: 'claude', conversationId: 'conv-1', capabilities: { hooks: true } });
+  bridgeCommand('run.claim', { project: root, runId, sessionId: registration.sessionId });
+  handleHostHook('claude', root, { session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name: 'Edit' });
+  handleHostHook('claude', root, { session_id: 'conv-1', hook_event_name: 'PostToolUse', tool_name: 'Bash', error: 'exit 1' });
+  const feed = fs.readFileSync(p.events, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.type === 'agent_output' && e.host);
+  assert.deepEqual(feed.map((e) => [e.stage, e.kind, e.tool, e.status]), [['coder', 'tool', 'Edit', 'completed'], ['coder', 'err', 'Bash', 'failed']]);
+});
+
 test('handleHostHook says nothing once every message is already settled', () => {
   const root = project();
   const runId = 'r1';
