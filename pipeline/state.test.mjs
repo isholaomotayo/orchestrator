@@ -255,3 +255,27 @@ test('withFileLock is re-entrant in-process and waits for another process', asyn
   }, /Timed out/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('withFileLockAsync waits on timers, so the event loop keeps running while another process holds the lock', async () => {
+  const { withFileLock, withFileLockAsync } = await import('./state.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lock-async-'));
+  const file = path.join(dir, 'roadmap.lock');
+  try {
+    // Another live process (our parent) holds it.
+    fs.writeFileSync(file, JSON.stringify({ pid: process.ppid }));
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 10);
+    const waiting = withFileLockAsync(file, () => withFileLock(file, () => 'nested, without waiting'));
+    await new Promise((r) => setTimeout(r, 150));
+    assert.ok(ticks >= 5, `the event loop ran ${ticks} timer ticks while the lock was held`);
+    fs.unlinkSync(file); // the other process lets go
+    assert.equal(await waiting, 'nested, without waiting', 'the verb\'s own lock re-entered');
+    clearInterval(timer);
+    assert.equal(fs.existsSync(file), false, 'released after the call');
+
+    fs.writeFileSync(file, JSON.stringify({ pid: process.ppid }));
+    await assert.rejects(withFileLockAsync(file, () => {}, { timeoutMs: 100 }), /Timed out/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

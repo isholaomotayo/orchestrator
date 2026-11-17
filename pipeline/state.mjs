@@ -378,3 +378,22 @@ export function withFileLock(file, fn, { timeoutMs = 15_000, pollMs = 25 } = {})
     try { fs.unlinkSync(file); } catch { /* already gone */ }
   }
 }
+
+/**
+ * withFileLock for a server: waits on timers instead of blocking the whole
+ * event loop, then runs the synchronous `fn` holding the lock. A withFileLock
+ * on the same file inside `fn` re-enters instead of waiting. `fn` must not be
+ * async: the re-entry mark is only valid while it runs.
+ */
+export async function withFileLockAsync(file, fn, { timeoutMs = 30_000, pollMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (heldFileLocks.has(file) || !acquireLockFile(file, { pid: process.pid })) {
+    if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs}ms waiting for ${path.basename(file)}; another pipeline process is holding it.`);
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  heldFileLocks.set(file, 1);
+  try { return fn(); } finally {
+    heldFileLocks.delete(file);
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
+  }
+}

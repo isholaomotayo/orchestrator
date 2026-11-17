@@ -16,7 +16,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pipelinePaths, loadConfig, pidAlive, withFileLock, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, loadConfig, pidAlive, withFileLock, withFileLockAsync, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { recoveryFor } from './recoverability.mjs';
 import { policyOf, readPolicyOverride } from './mode.mjs';
@@ -946,8 +946,9 @@ function readBody(req, cb) {
     if (tooBig) return;
     let body = null;
     try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = null; }
-    // A throw in a handler runs outside the request handler's try, so it gets its own.
-    try { cb(body); } catch (err) { failRequest(res, err); }
+    // A throw in a handler runs outside the request handler's try, so it gets
+    // its own; an async handler's rejection is caught the same way.
+    try { Promise.resolve(cb(body)).catch((err) => failRequest(res, err)); } catch (err) { failRequest(res, err); }
   });
 }
 
@@ -1024,6 +1025,15 @@ function projectInfo(project) {
   };
 }
 
+// Pool verbs that edit roadmap.json take the roadmap lock, and a supervisor
+// tick holds it for the whole tick, merges and worktree work included. The
+// verbs' own lock waits synchronously, which would freeze every request and
+// stream on this server until the tick ends, so the server takes the lock on
+// timers first; the verb's own lock then re-enters at once.
+function underRoadmapLock(project, fn) {
+  return withFileLockAsync(project.paths.roadmapLock, fn);
+}
+
 function v1Commands(project) {
   if (!project.executeCommand) {
     const via = (b) => b.client?.kind || 'api';
@@ -1047,14 +1057,14 @@ function v1Commands(project) {
         if (!a(b).stage || !a(b).text?.trim()) return { error: 'stage and text are required', code: 400 };
         return queueStageNote(runPathsFor(project, run(b)), a(b).stage, a(b).text.trim());
       },
-      'decision.answer': (b) => pool.decide(project.paths, a(b).decisionId, a(b).answer, { via: via(b) }),
-      'ticket.retry': (b) => pool.retryTicket(project.paths, a(b).featureId, a(b).ticketId),
+      'decision.answer': (b) => underRoadmapLock(project, () => pool.decide(project.paths, a(b).decisionId, a(b).answer, { via: via(b) })),
+      'ticket.retry': (b) => underRoadmapLock(project, () => pool.retryTicket(project.paths, a(b).featureId, a(b).ticketId)),
       'run.resume_in_pool': (b) => { const r = pool.requestRunResume(project.paths, run(b)); return r.ok ? r : { error: r.reason, code: 409 }; },
-      'merge.approve': (b) => pool.approveMerge(project.paths, a(b).featureId || null, { via: via(b), note: a(b).note ?? null }),
-      'merge.request_changes': (b) => pool.requestChanges(project.paths, a(b).featureId, a(b).text, { via: via(b) }),
-      'feature.hold': (b) => pool.holdFeature(project.paths, a(b).featureId, a(b).reason),
-      'feature.release': (b) => pool.releaseFeature(project.paths, a(b).featureId),
-      'feature.skip': (b) => pool.skipFeature(project.paths, a(b).featureId, a(b).reason),
+      'merge.approve': (b) => underRoadmapLock(project, () => pool.approveMerge(project.paths, a(b).featureId || null, { via: via(b), note: a(b).note ?? null })),
+      'merge.request_changes': (b) => underRoadmapLock(project, () => pool.requestChanges(project.paths, a(b).featureId, a(b).text, { via: via(b) })),
+      'feature.hold': (b) => underRoadmapLock(project, () => pool.holdFeature(project.paths, a(b).featureId, a(b).reason)),
+      'feature.release': (b) => underRoadmapLock(project, () => pool.releaseFeature(project.paths, a(b).featureId)),
+      'feature.skip': (b) => underRoadmapLock(project, () => pool.skipFeature(project.paths, a(b).featureId, a(b).reason)),
       'pool.pause': (b) => pool.pause(project.paths, a(b).reason || ''),
       'pool.resume': () => pool.resume(project.paths),
       'attention.ack': (b) => { pool.ackAttention(project.paths, a(b).id); return { acked: a(b).id }; },
@@ -1215,16 +1225,16 @@ function handleRequest(req, res) {
   if (url.pathname === '/api/pool/action' && req.method === 'POST') {
     const project = getProjectForRequest(req,url);
     if (!project) return json(res,{error:'invalid project'},400);
-    return readBody(req, body => {
+    return readBody(req, async body => {
       try {
         const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature,skip:pool.skipFeature};
-        if (body?.action === 'retry-ticket') return json(res, pool.retryTicket(project.paths, body.featureId, body.ticketId));
+        if (body?.action === 'retry-ticket') return json(res, await underRoadmapLock(project, () => pool.retryTicket(project.paths, body.featureId, body.ticketId)));
         if (body?.action === 'resume-run') {
           const result = pool.requestRunResume(project.paths, body.runId);
           return result.ok ? json(res, result) : json(res, { error: result.reason }, 409);
         }
         if (!actions[body?.action]) throw new Error('Unknown action');
-        return json(res,actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action'));
+        return json(res, await underRoadmapLock(project, () => actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action')));
       } catch (err) { return json(res,{error:err.message},409); }
     });
   }
@@ -1424,7 +1434,7 @@ function handleRequest(req, res) {
   } else if (req.method === 'POST' && url.pathname === '/api/decisions/answer') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    readBody(req, (body) => {
+    readBody(req, async (body) => {
       if (!body?.decisionId || !body.answer) return json(res, { error: 'expected { decisionId, answer }' }, 400);
       try {
         const decision = pool.readDecisions(project.paths).find((row) => row.decisionId === body.decisionId);
@@ -1432,7 +1442,7 @@ function handleRequest(req, res) {
           const guard = selfGuardError(project);
           if (guard) return json(res, { error: guard.error }, guard.code);
         }
-        json(res, { ok: true, decision: pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' }) });
+        json(res, { ok: true, decision: await underRoadmapLock(project, () => pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
@@ -1442,17 +1452,10 @@ function handleRequest(req, res) {
     if (!project) return json(res, { error: 'invalid project' }, 400);
     const guard = selfGuardError(project);
     if (guard) return json(res, { error: guard.error }, guard.code);
-    readBody(req, (body) => {
-      if (!body?.featureId) {
-        try {
-          json(res, { ok: true, ...pool.approveMerge(project.paths, null, { via: 'dashboard', note: body?.note ?? null }) });
-        } catch (err) {
-          json(res, { error: err.message }, 409);
-        }
-        return;
-      }
+    readBody(req, async (body) => {
+      // No featureId approves the roadmap-level merge.
       try {
-        json(res, { ok: true, ...pool.approveMerge(project.paths, body.featureId, { via: 'dashboard', note: body.note ?? null }) });
+        json(res, { ok: true, ...await underRoadmapLock(project, () => pool.approveMerge(project.paths, body?.featureId || null, { via: 'dashboard', note: body?.note ?? null })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
@@ -1460,10 +1463,10 @@ function handleRequest(req, res) {
   } else if (req.method === 'POST' && url.pathname === '/api/merge/request-changes') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    readBody(req, (body) => {
+    readBody(req, async (body) => {
       if (!body?.featureId || !body.text) return json(res, { error: 'expected { featureId, text }' }, 400);
       try {
-        json(res, { ok: true, ...pool.requestChanges(project.paths, body.featureId, String(body.text), { via: 'dashboard' }) });
+        json(res, { ok: true, ...await underRoadmapLock(project, () => pool.requestChanges(project.paths, body.featureId, String(body.text), { via: 'dashboard' })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }

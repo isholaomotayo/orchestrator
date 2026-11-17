@@ -367,6 +367,24 @@ test('a state-changing request from another origin is refused', withServer(async
   assert.equal(res.status, 403);
 }));
 
+test('a pool action waits for a supervisor tick without freezing the server', withServer(async ({ base, get, post, paths }) => {
+  // A supervisor (another live process: our parent) is mid-tick, holding the roadmap lock.
+  fs.writeFileSync(paths.roadmapLock, JSON.stringify({ pid: process.ppid }));
+  let settled = false;
+  const hold = post('/api/pool/action', { action: 'hold', featureId: 'F1', reason: 'held during a tick' }).then((r) => { settled = true; return r; });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(settled, false, 'the action waits for the tick');
+  const started = Date.now();
+  assert.equal((await fetch(`${base}/healthz`)).status, 200);
+  assert.equal((await get('/api/runs')).status, 200);
+  assert.ok(Date.now() - started < 1000, `other requests were answered in ${Date.now() - started}ms`);
+  fs.unlinkSync(paths.roadmapLock); // the tick ends
+  const res = await hold;
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(JSON.parse(fs.readFileSync(paths.roadmapJson, 'utf8')).features[0].status, 'held');
+  assert.equal(fs.existsSync(paths.roadmapLock), false, 'the server let go of the lock');
+}));
+
 test('every POST under /api is guarded, including ones added later', withServer(async ({ base, root }) => {
   for (const route of ['/api/decisions/answer', '/api/merge/approve', '/api/pool/pause', '/api/followup']) {
     const res = await fetch(`${base}${route}?project=${encodeURIComponent(root)}`, {
