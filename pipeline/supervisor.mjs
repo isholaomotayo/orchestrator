@@ -27,7 +27,7 @@ import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
   writeStatus, newStatus, appendEvent, withFileLock,
 } from './state.mjs';
-import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { newRunId, writeRunMeta, readRunMeta, updateRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
 import { recordRecovery } from './interventions.mjs';
 import { planHeal } from './self-heal.mjs';
 import { readRunSummary } from './run-reader.mjs';
@@ -1382,21 +1382,17 @@ export function createSupervisor({
 
   function recordAutoResume(run, reason, extra = {}) {
     const runPaths = pipelinePaths(repoRoot, { runId: run.runId });
-    const meta = readRunMeta(runPaths) || {};
-    const next = {
+    updateRunMeta(runPaths, (meta) => ({
       ...meta,
       ...extra,
       autoResumes: Number(meta.autoResumes || 0) + 1,
       ...(reason === 'MAX_CYCLES' ? { autoCycleExtends: Number(meta.autoCycleExtends || 0) + 1 } : {}),
-    };
-    if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify(next, null, 2));
+    }));
   }
 
   function clearRequests(run) {
     const runPaths = pipelinePaths(repoRoot, { runId: run.runId });
-    const meta = readRunMeta(runPaths) || {};
-    delete meta.requests;
-    if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify(meta, null, 2));
+    updateRunMeta(runPaths, (meta) => { const next = { ...meta }; delete next.requests; return next; });
   }
 
   function touchHeartbeat() {

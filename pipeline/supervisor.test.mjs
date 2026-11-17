@@ -380,7 +380,7 @@ function healRig(autonomy, { autoResumes = 0 } = {}) {
   const runId = '20260909T000000Z-F1-ticket-dddddd';
   const runPaths = seedDeadEngine(repo.root, runId, { autonomy, autoResumes });
   const spawned = [];
-  let clock = Date.parse('2026-10-03T12:00:00Z');
+  let clock = Date.now();
   const sup = createSupervisor({
     repoRoot: repo.root, now: () => clock,
     spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },

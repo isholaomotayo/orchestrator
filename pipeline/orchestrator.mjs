@@ -795,9 +795,13 @@ function agentAuthHint(runnerName) {
 // invocation of that agent, then cleared.
 function consumeFollowups(name) {
   const file = path.join(paths.dir, 'followups', `${name}.txt`);
+  // Move the file aside before reading: a note appended after the rename lands
+  // in a fresh file for the next invocation instead of being deleted unread.
+  const taken = `${file}.${process.pid}.consumed`;
   try {
-    const text = fs.readFileSync(file, 'utf8').trim();
-    fs.unlinkSync(file);
+    fs.renameSync(file, taken);
+    const text = fs.readFileSync(taken, 'utf8').trim();
+    fs.unlinkSync(taken);
     if (text) appendEvent(paths, { stage: name, type: 'followup_applied', text });
     return text;
   } catch { return ''; }
@@ -862,7 +866,7 @@ async function runStageAgent(name, task, { cycle = 1, readOnly = false, chatResu
   let res;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     res = await runAgent({
-      runner, stage: name, cycle, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
+      runner, stage: name, cycle, attempt, task, systemPromptFile: promptFile, cwd: workCwd, readOnly, paths, config,
       model: stageModel,
       effort: stageEffort,
       modelSelection: models?.selection,

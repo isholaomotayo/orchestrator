@@ -10,7 +10,7 @@
 // atomic on POSIX, which makes two writers safe without a lock.
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import { atomicWrite, appendLine } from './state.mjs';
+import { atomicWrite, appendLine, withFileLock } from './state.mjs';
 
 export const RUN_META_CONTRACT = 'orchestrator-run-meta.v1';
 
@@ -80,6 +80,24 @@ export function isValidRunId(runId) {
  */
 export function writeRunMeta(paths, patch) {
   if (!paths.runMeta) return null;
+  return withFileLock(`${paths.runMeta}.lock`, () => mergeRunMeta(paths, patch));
+}
+
+/**
+ * Read-modify-write run.json under its lock. The supervisor and the dashboard's
+ * verbs both edit it; without the lock one silently overwrites the other.
+ * `fn(meta)` returns the next record (or null to leave the file alone).
+ */
+export function updateRunMeta(paths, fn) {
+  if (!paths.runMeta) return null;
+  return withFileLock(`${paths.runMeta}.lock`, () => {
+    const next = fn(readRunMeta(paths) || {});
+    if (next) atomicWrite(paths.runMeta, JSON.stringify(next, null, 2));
+    return next;
+  });
+}
+
+function mergeRunMeta(paths, patch) {
   const current = readRunMeta(paths) || {
     contract: RUN_META_CONTRACT,
     runId: paths.runId,

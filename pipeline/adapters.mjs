@@ -126,6 +126,9 @@ export function agentEnv(base = process.env) {
 // them down with it instead of leaving orphans editing the worktree.
 const liveAgents = new Set();
 
+/** Time a timed-out agent gets between SIGTERM and SIGKILL. */
+export const KILL_GRACE_MS = 10_000;
+
 function killAgentTree(child, signal) {
   try {
     if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
@@ -338,7 +341,7 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
+export function runAgent({ runner, stage, cycle = 0, attempt = 1, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -356,7 +359,8 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
-  const log = fs.createWriteStream(logFile, { flags: cycle > 1 ? 'a' : 'w' });
+  // A retry (attempt > 1) appends, so the failed attempt's output survives for diagnosis.
+  const log = fs.createWriteStream(logFile, { flags: cycle > 1 || attempt > 1 ? 'a' : 'w' });
   const level = normalizeEffort(effort);
   const modelLabel = model ? ` · model ${model}${level ? ` · effort ${level}` : ''}` : '';
   log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
@@ -380,8 +384,11 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     const timer = setTimeout(() => {
       timedOut = true;
       appendEvent(paths, { stage, cycle, type: 'agent_timeout', timeoutMs: config.agentTimeoutMs });
-      killAgentTree(child, 'SIGKILL');
+      // Ask first so the agent's own children (test runners, servers) can shut down.
+      killAgentTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
     }, config.agentTimeoutMs);
+    let killTimer = null;
 
     let buffer = '';
     const parser = createStreamParser();
@@ -417,6 +424,7 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       liveAgents.delete(child);
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
@@ -441,7 +449,8 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
     args = ['-p', prompt];
     if (model) args.push('--model', model);
   } else if (runner === 'codex') {
-    args = ['exec', '--full-auto', prompt];
+    // A one-shot classifies text; it never needs to write.
+    args = ['exec', '--sandbox', 'read-only', prompt];
     if (model) args.push('--model', model);
   } else {
     const custom = config?.customRunners?.[runner];
@@ -457,12 +466,12 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let stdout = '';
     let stderr = '';
     
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      killAgentTree(child, 'SIGKILL');
       reject(new Error(`runOneShot timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 

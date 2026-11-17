@@ -15,7 +15,7 @@ import {
   pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock, withFileLock,
   newStatus, ensureStageEntries, appendLine, appendEvent,
 } from './state.mjs';
-import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
+import { readRunMeta, updateRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
 import {
   parseRoadmapMd, compileRoadmap, setFeatureStatus, setRoadmapStatus, nextFeature, FEATURE_STATUSES,
 } from './roadmap.mjs';
@@ -549,20 +549,16 @@ export function setRunAutonomy(paths, runId, autonomy, { by = 'operator', via = 
 
 export function markResumeRequested(paths, runId, why) {
   const runPaths = pipelinePaths(paths.root, { runId });
-  const meta = readRunMeta(runPaths) || {};
-  const requests = { ...(meta.requests || {}), resume: { at: new Date().toISOString(), why } };
-  if (runPaths.runMeta) {
-    atomicWrite(runPaths.runMeta, JSON.stringify({ ...meta, requests }, null, 2));
-  }
-  return requests.resume;
+  const resume = { at: new Date().toISOString(), why };
+  updateRunMeta(runPaths, (meta) => ({ ...meta, requests: { ...(meta.requests || {}), resume } }));
+  return resume;
 }
 
 export function requestExtend(paths, runId, cycles) {
   const runPaths = pipelinePaths(paths.root, { runId });
-  const meta = readRunMeta(runPaths) || {};
-  const requests = { ...(meta.requests || {}), extend: { at: new Date().toISOString(), cycles: Number(cycles) } };
-  if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify({ ...meta, requests }, null, 2));
-  return requests.extend;
+  const extend = { at: new Date().toISOString(), cycles: Number(cycles) };
+  updateRunMeta(runPaths, (meta) => ({ ...meta, requests: { ...(meta.requests || {}), extend } }));
+  return extend;
 }
 
 export function approvePlan(paths, runId, { by = 'operator', via = 'cli' } = {}) {

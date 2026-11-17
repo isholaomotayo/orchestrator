@@ -241,5 +241,8 @@ export function resolveDecision(paths, decisionId, { decision, note = null, by =
   }
   const record = { decisionId, ts: new Date().toISOString(), status: 'resolved', decision, note, by, via };
   appendLine(paths.decisions, JSON.stringify(record));
+  // The attention items that surfaced this decision are answered with it; left
+  // open they point at a decision no client can find any more.
+  for (const item of pendingAttention(paths)) if (item.decisionId === decisionId) ackAttention(paths, item.id, { by });
   return { ...existing, ...record };
 }

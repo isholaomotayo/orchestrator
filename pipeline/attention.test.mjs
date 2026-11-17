@@ -299,3 +299,13 @@ test('resolving an unknown decision is refused', () => {
   assert.throws(() => resolveDecision(paths, 'nope', { decision: 'a', by: 'operator', via: 'chat' }), /unknown decision/i);
   fs.rmSync(paths.root, { recursive: true, force: true });
 });
+
+test('resolving a decision acknowledges the attention items that raised it', () => {
+  const paths = tmpControl();
+  fs.mkdirSync(paths.control, { recursive: true });
+  const d = openDecision(paths, { runId: 'r1', featureId: 'F1', kind: 'merge-approval', question: 'Merge?' });
+  appendAttention(paths, { runId: 'r1', featureId: 'F1', kind: 'merge-approval', decisionId: d.id });
+  const unrelated = appendAttention(paths, { runId: 'r2', featureId: 'F2', kind: 'stalled' });
+  resolveDecision(paths, d.id, { decision: 'later' });
+  assert.deepEqual(pendingAttention(paths).map((i) => i.id), [unrelated.id]);
+});

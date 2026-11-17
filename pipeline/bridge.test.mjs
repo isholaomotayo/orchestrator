@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
 import {
   bridgeCommand, inspectBridge, readBridge, assertMessagesSettled,
-  validateCompletion, commitCompletion, bindHandoff, bridgePaths,
+  validateCompletion, commitCompletion, bindHandoff, bridgePaths, completionTimeoutMs,
 } from './bridge.mjs';
 
 function project() {
@@ -502,4 +502,23 @@ test('dismiss refuses while the run engine is alive', () => {
   const { p } = awaitingRun(root, runId);
   fs.writeFileSync(p.lock, JSON.stringify({ pid: process.pid }));
   assert.throws(() => bridgeCommand('run.dismiss', { project: root, runId, reason: 'x' }), /engine is still running/);
+});
+
+test('commitCompletion drops the prepared completion so later journal records stop copying it', () => {
+  const root = project();
+  const runId = 'r1';
+  const { status } = awaitingRun(root, runId, { stage: 'coder', handoffId: 'h1' });
+  const session = register(root);
+  const claimed = claim(root, runId, session.sessionId);
+  writeArtifact(root, runId, 'changes');
+  bridgeCommand('stage.prepare', { project: root, runId, sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId });
+  assert.ok(readBridge(root).runs[runId].completion.previousStatus);
+  const credentials = { sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId };
+  commitCompletion(root, runId, status, credentials, { ...status });
+  assert.equal(readBridge(root).runs[runId].completion, undefined);
+});
+
+test('completionTimeoutMs covers every configured check', () => {
+  assert.equal(completionTimeoutMs({ checks: { a: 'x' }, checkTimeoutMs: 1000 }), 600000);
+  assert.equal(completionTimeoutMs({ checks: { a: 'x', b: 'y', c: 'z', d: null }, checkTimeoutMs: 300000 }), 1020000);
 });

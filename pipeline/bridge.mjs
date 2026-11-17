@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { pipelinePaths, readLock, pidAlive, acquireLockFile, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, readLock, pidAlive, acquireLockFile, loadConfig, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { transact, commandState, recoverCommands } from './commands.mjs';
@@ -206,6 +206,13 @@ export function validateCompletion(project, runId, status, credentials) {
   const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (!owner.completion || owner.completion.id !== credentials.completionId || owner.completion.artifactHash !== hash) throw new Error('Stage completion was not prepared for this artifact.');
 }
+// stage.complete runs the engine's verification synchronously: every configured
+// check may take up to checkTimeoutMs, so a fixed budget would kill a slow but
+// healthy check run mid-way. Allow all of them plus a margin for the engine itself.
+export function completionTimeoutMs(config) {
+  const checks = Object.values(config?.checks || {}).filter(Boolean).length;
+  return Math.max(600000, checks * (config?.checkTimeoutMs || 300000) + 120000);
+}
 export function completeStage(args) {
   const p = bridgePaths(args.project, args.runId);
   recoverCommands(p.control);
@@ -216,7 +223,7 @@ export function completeStage(args) {
   if (before.completedHandoffs?.[args.handoffId]) return before.completedHandoffs[args.handoffId];
   const prepared = bridgeCommand('stage.prepare', { ...args, commandId });
   const credentials = { sessionId: args.sessionId, leaseToken: args.leaseToken, handoffId: args.handoffId, completionId: prepared.completion.id };
-  const result = spawnSync(process.execPath, [path.join(p.root, 'pipeline/orchestrator.mjs'), '--continue', ...(args.runId ? ['--run-id', args.runId] : [])], { cwd: p.root, encoding: 'utf8', timeout: 600000, maxBuffer: 1024 * 1024, env: { ...process.env, ORCHESTRATOR_COMPLETION: JSON.stringify(credentials) } });
+  const result = spawnSync(process.execPath, [path.join(p.root, 'pipeline/orchestrator.mjs'), '--continue', ...(args.runId ? ['--run-id', args.runId] : [])], { cwd: p.root, encoding: 'utf8', timeout: completionTimeoutMs(loadConfig(p)), maxBuffer: 1024 * 1024, env: { ...process.env, ORCHESTRATOR_COMPLETION: JSON.stringify(credentials) } });
   const after = loadStatus(p);
   if (after.completedHandoffs?.[args.handoffId]) return after.completedHandoffs[args.handoffId];
   return { ok: false, overall: after.overall, error: result.error?.message || result.stderr?.slice(-2000) || 'Stage did not advance; inspect run state.' };
@@ -257,6 +264,10 @@ export function commitCompletion(project, runId, previous, credentials, next) {
     if (!owner || owner.token !== credentials.leaseToken || owner.sessionId !== credentials.sessionId || owner.handoffId !== previous.handoffId) throw new Error('Completion ownership changed.');
     owned(state, { ...credentials, runId }, previous, Date.now());
     assertMessagesSettled(state, runId, previous.handoffId);
+    // The prepared completion carries a full copy of the old status and handoff
+    // for crash recovery; once committed it is dead weight that every later
+    // journal record would otherwise copy.
+    delete owner.completion;
     const result = { ok: true, runId, handoffId: previous.handoffId, completedAt: new Date().toISOString() };
     next.completedHandoffs = { ...next.completedHandoffs, [previous.handoffId]: result };
     next.handoffId = null;
