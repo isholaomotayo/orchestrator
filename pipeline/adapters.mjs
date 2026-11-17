@@ -305,8 +305,12 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
   }
 }
 
+/** Shape of stage-handoff.json; SKILL.md documents the matching protocol. */
+export const HANDOFF_VERSION = 3;
+
 function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null, handoffId = null, runId = null }) {
   const handoff = {
+    version: HANDOFF_VERSION,
     ...(handoffId ? { handoffId, runId } : {}),
     stage,
     cycle: cycle || 1,
@@ -338,18 +342,13 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     handoff.skills = skills.active.map((a) => ({ name: a.skill.name, dir: a.dir, entry: a.skill.entry }));
     handoff.skillsPromptSection = skills.promptSection;
   }
-  if (hostClient) {
-    handoff.hostClient = hostClient;
-    handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
-  }
-  handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, instructions: 'Register your host conversation, run.claim this handoff, run.checkpoint before work and after tool batches, acknowledge and resolve operator messages, then stage.complete. Never edit control state directly.', command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
+  // The brief carries only what differs per stage. The fixed protocol (never
+  // spawn another CLI, how to report progress, the bridge lease steps) lives in
+  // skills/orchestrate/SKILL.md, versioned by HANDOFF_VERSION, instead of being
+  // repeated in every brief.
+  if (hostClient) handoff.hostClient = hostClient;
+  handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
   handoff.eventCommand = hostEventCommand({ runId: paths.runId, stage });
-  const runFlag = paths.runId ? ` --run-id ${paths.runId}` : '';
-  handoff.progressStream = {
-    heartbeat: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind text --text "<action_summary>"`,
-    toolCall: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind tool --tool <tool_name> --file <file_path>`,
-    frequency: 'Run heartbeat immediately upon starting stage, after each major tool batch or file edit, and before stage completion.',
-  };
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }

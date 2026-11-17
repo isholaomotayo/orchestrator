@@ -116,8 +116,11 @@ test('host runAgent with hostClient stamps the handoff and events', async () => 
   assert.deepEqual(res, { ok: false, hostHandoff: true });
   const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
   assert.equal(handoff.hostClient, 'antigravity');
-  assert.match(handoff.hostNote, /antigravity chat session/);
-  assert.match(handoff.hostNote, /do not spawn/i);
+  assert.equal(handoff.version, 3);
+  // Fixed protocol text lives in SKILL.md, not in every brief.
+  for (const key of ['hostNote', 'progressStream']) assert.ok(!(key in handoff), key);
+  assert.equal(handoff.bridge.instructions, undefined);
+  assert.match(handoff.bridge.command, /bridge-cli\.mjs/);
   assert.match(handoff.eventCommand, /host-event\.mjs/);
   assert.match(handoff.eventCommand, /--stage planner/);
   const parked = readEvents(paths).find((e) => e.type === 'agent_parked');
