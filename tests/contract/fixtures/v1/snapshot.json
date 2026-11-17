@@ -9,7 +9,7 @@
       "engine": {
         "source": "host",
         "projectCommit": null,
-        "hostCommit": "e533f8e8e842a84ccf21588f42a059af2bc4487e",
+        "hostCommit": "<commit>",
         "mismatch": false
       },
       "install": null
@@ -116,7 +116,7 @@
       ],
       "diagnosis": {
         "waitingOn": "a chat agent",
-        "since": "2026-10-03T06:52:28.613Z",
+        "since": "<time>",
         "evidence": [
           "status.overall=awaiting_chat (coder)",
           "no live lease on the handoff"
@@ -488,7 +488,7 @@
       ],
       "diagnosis": {
         "waitingOn": "a chat agent",
-        "since": "2026-10-03T03:54:28.613Z",
+        "since": "<time>",
         "evidence": [
           "status.overall=awaiting_chat (tester)",
           "no live lease on the handoff"
