@@ -114,6 +114,23 @@ test('commands are idempotent per commandId: a double click is a duplicate, not 
   assert.equal((await execute({ commandId: 'c2', type: 'nope' })).error.code, 'unknown_command');
 });
 
+test('a retry that arrives while the first command is still running waits for it instead of running again', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const execute = createCommandExecutor({ handlers: { 'run.resume': async () => { calls++; await gate; return { ok: true }; } } });
+  const first = execute({ commandId: 'slow', type: 'run.resume', runId: 'r1' });
+  const retry = execute({ commandId: 'slow', type: 'run.resume', runId: 'r1' });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(calls, 1, 'the retry did not start a second action');
+  release();
+  assert.equal((await first).status, 'applied');
+  const second = await retry;
+  assert.equal(second.status, 'duplicate');
+  assert.equal(second.original, 'applied');
+  assert.equal(calls, 1);
+});
+
 test('a project id is stable for the same directory', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pid-'));
   assert.equal(projectIdOf(dir), projectIdOf(path.join(dir, '.')));

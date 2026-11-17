@@ -265,7 +265,26 @@ export const COMMAND_TYPES = [
  * maps a command type to an (async) function returning { ok } or { error, code }.
  */
 export function createCommandExecutor({ handlers, capacity = 2000 }) {
+  // commandId -> { fingerprint, done }. The receipt is stored before the
+  // handler runs, so a retry that arrives while the first request is still
+  // waiting (an engine start, a roadmap lock) awaits that result instead of
+  // running the action a second time.
   const receipts = new Map();
+  async function run(body) {
+    const { commandId, type } = body;
+    const handler = handlers[type];
+    if (!COMMAND_TYPES.includes(type) || !handler) {
+      return { commandId, status: 'rejected', error: { code: 'unknown_command', message: `unknown command type "${type}"`, retryable: false } };
+    }
+    try {
+      const out = await handler(body);
+      return out?.error
+        ? { commandId, status: 'rejected', error: { code: out.code === 409 ? 'conflict' : out.code === 404 ? 'not_found' : 'invalid', message: out.error, retryable: out.code === 409 }, ...(out.outputTail ? { outputTail: out.outputTail } : {}) }
+        : { commandId, status: 'applied', result: out };
+    } catch (err) {
+      return { commandId, status: 'rejected', error: { code: 'failed', message: err.message, retryable: false } };
+    }
+  }
   return async function execute(body = {}) {
     const { commandId, type } = body;
     if (!commandId || typeof commandId !== 'string') return { status: 'rejected', error: { code: 'bad_request', message: 'commandId is required', retryable: false } };
@@ -273,24 +292,12 @@ export function createCommandExecutor({ handlers, capacity = 2000 }) {
     const prior = receipts.get(commandId);
     if (prior) {
       if (prior.fingerprint !== fingerprint) return { commandId, status: 'rejected', error: { code: 'conflict', message: 'commandId was already used for a different command', retryable: false } };
-      return { ...prior.result, status: 'duplicate', original: prior.result.status };
+      const result = await prior.done;
+      return { ...result, status: 'duplicate', original: result.status };
     }
-    const handler = handlers[type];
-    let result;
-    if (!COMMAND_TYPES.includes(type) || !handler) {
-      result = { commandId, status: 'rejected', error: { code: 'unknown_command', message: `unknown command type "${type}"`, retryable: false } };
-    } else {
-      try {
-        const out = await handler(body);
-        result = out?.error
-          ? { commandId, status: 'rejected', error: { code: out.code === 409 ? 'conflict' : out.code === 404 ? 'not_found' : 'invalid', message: out.error, retryable: out.code === 409 }, ...(out.outputTail ? { outputTail: out.outputTail } : {}) }
-          : { commandId, status: 'applied', result: out };
-      } catch (err) {
-        result = { commandId, status: 'rejected', error: { code: 'failed', message: err.message, retryable: false } };
-      }
-    }
-    receipts.set(commandId, { fingerprint, result });
+    const done = run(body);
+    receipts.set(commandId, { fingerprint, done });
     if (receipts.size > capacity) receipts.delete(receipts.keys().next().value);
-    return result;
+    return done;
   };
 }
