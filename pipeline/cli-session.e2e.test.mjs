@@ -40,7 +40,8 @@ const files = ${JSON.stringify(FILES)};
 const valid = ${JSON.stringify(VALID)};
 const calls = fs.existsSync('calls.jsonl') ? fs.readFileSync('calls.jsonl', 'utf8').trim().split('\\n').filter(Boolean).length : 0;
 const mine = fs.existsSync('calls.jsonl') ? fs.readFileSync('calls.jsonl', 'utf8').split('\\n').filter((l) => l.includes('"stage":"' + stage + '"')).length : 0;
-fs.appendFileSync('calls.jsonl', JSON.stringify({ stage, resume, n: calls + 1 }) + '\\n');
+const message = at('-p') || '';
+fs.appendFileSync('calls.jsonl', JSON.stringify({ stage, resume, n: calls + 1, taskBlock: message.includes('TASK BLOCK'), message: message.slice(0, 300) }) + '\\n');
 if (resume && fs.existsSync('refuse-resume')) {
   console.error('Error: No conversation found with session ID: ' + resume);
   process.exit(1);
@@ -91,6 +92,9 @@ test('CLI e2e: the coder fix cycle resumes the session that wrote the code, and 
     assert.equal(coder.length, 2, 'one initial cycle and one fix cycle');
     assert.equal(coder[0].resume, null, 'the first cycle starts cold');
     assert.equal(coder[1].resume, `sess-coder-${coder[0].n}`, 'the fix cycle resumes the first cycle\'s session');
+    assert.equal(coder[0].taskBlock, true, 'a cold start carries the whole task');
+    assert.equal(coder[1].taskBlock, false, 'the resumed session already has it: only the new instruction goes');
+    assert.match(coder[1].message, /^Fix cycle 2: .*task you have been implementing in this session/);
     for (const other of r.calls().filter((c) => c.stage !== 'coder')) assert.equal(other.resume, null, `${other.stage} never resumes`);
     // The model the CLI reported, not the requested family.
     assert.equal(s.stages.find((st) => st.name === 'coder').actualModel, 'claude-sonnet-5');
@@ -109,6 +113,8 @@ test('CLI e2e: when the CLI refuses the resume, the fix cycle reruns cold and th
     assert.equal(coder.length, 3, 'cold cycle 1, refused resume, cold rerun of cycle 2');
     assert.ok(coder[1].resume, 'cycle 2 tried to resume first');
     assert.equal(coder[2].resume, null, 'then ran cold');
+    assert.equal(coder[1].taskBlock, false, 'the resume attempt sent only the instruction');
+    assert.equal(coder[2].taskBlock, true, 'the cold rerun sent the whole task again');
     const failed = events(r.paths).filter((e) => e.type === 'session_resume_failed');
     assert.equal(failed.length, 1);
     assert.equal(failed[0].stage, 'coder');
