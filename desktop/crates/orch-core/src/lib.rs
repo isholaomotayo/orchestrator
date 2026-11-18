@@ -228,7 +228,8 @@ impl AppState {
 
     /// Runs that want a person, plus escalated attention not already counted.
     pub fn badge_count(&self) -> u32 {
-        self.projects
+        let runs: u32 = self
+            .projects
             .values()
             .map(|p| {
                 p.runs
@@ -236,10 +237,13 @@ impl AppState {
                     .filter(|r| !r.dismissed && r.bucket.wants_attention())
                     .count() as u32
             })
-            .sum()
+            .sum();
+        runs + self.project_decisions().len() as u32
     }
 
     /// The inbox: runs needing a person first, oldest wait first within a bucket.
+    /// A finished run stays while a decision about it is open: a completed
+    /// integration run still carries its merge approval.
     pub fn inbox(&self) -> Vec<(&str, &RunSummary)> {
         let mut out: Vec<(&str, &RunSummary)> = self
             .projects
@@ -247,7 +251,11 @@ impl AppState {
             .flat_map(|(pid, p)| {
                 p.runs
                     .values()
-                    .filter(|r| !r.dismissed && r.bucket != Bucket::Done)
+                    .filter(move |r| {
+                        !r.dismissed
+                            && (r.bucket != Bucket::Done
+                                || p.decisions.iter().any(|d| d.run_id.as_deref() == Some(r.run_id.as_str())))
+                    })
                     .map(move |r| (pid.as_str(), r))
             })
             .collect();
@@ -264,6 +272,24 @@ impl AppState {
             .get(&(project_id.to_string(), run_id.to_string()))
             .map(|f| f.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Open decisions no listed run can show: roadmap-level ones (no runId,
+    /// such as the final merge approval) and ones about a run that is gone or
+    /// dismissed. The app lists these on their own.
+    pub fn project_decisions(&self) -> Vec<(&str, &Decision)> {
+        self.projects
+            .iter()
+            .flat_map(|(pid, p)| {
+                p.decisions
+                    .iter()
+                    .filter(move |d| match d.run_id.as_deref() {
+                        None => true,
+                        Some(run_id) => p.runs.get(run_id).is_none_or(|r| r.dismissed),
+                    })
+                    .map(move |d| (pid.as_str(), d))
+            })
+            .collect()
     }
 
     /// Open decisions put to a person about this run.
@@ -442,6 +468,16 @@ fn feed_line(seq: u64, event: &Value) -> Option<FeedLine> {
         _ => return None,
     };
     Some(FeedLine { seq, stage, text })
+}
+
+/// The web dashboard's tab for a run. The v1 API calls a single-run project's
+/// run `root`; the dashboard's tab for it has no subject (`run:`).
+pub fn dashboard_tab(run_id: &str) -> String {
+    if run_id == "root" {
+        "run:".into()
+    } else {
+        format!("run:{run_id}")
+    }
 }
 
 #[cfg(test)]

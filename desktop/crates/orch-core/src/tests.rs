@@ -279,3 +279,27 @@ fn self_heal_alerts_have_their_own_notification_titles() {
     assert_eq!(titles(&mut s, alert("supervisor-dead", "s1")), ["The roadmap supervisor stopped"]);
     assert_eq!(titles(&mut s, alert("self-heal-exhausted", "s2")), ["Automatic recovery gave up"]);
 }
+
+#[test]
+fn a_roadmap_merge_approval_and_a_finished_runs_approval_stay_reachable() {
+    let mut s = AppState::default();
+    let mut snap = snapshot(vec![run("done", Bucket::Done), run("other", Bucket::Done)]);
+    let mut roadmap = decision("d-roadmap", "x");
+    roadmap.run_id = None;
+    snap.decisions = vec![roadmap, decision("d-integration", "done"), decision("d-gone", "vanished")];
+    s.apply(Input::Snapshot(snap));
+    // A finished run whose merge approval is open stays in the inbox; one without leaves.
+    let inbox: Vec<_> = s.inbox().iter().map(|(_, r)| r.run_id.as_str()).collect();
+    assert_eq!(inbox, ["done"]);
+    assert_eq!(s.decisions_for("p", "done").len(), 1);
+    // The roadmap approval (no runId) and one about an unlisted run are listed on their own.
+    let own: Vec<_> = s.project_decisions().iter().map(|(_, d)| d.decision_id.as_str()).collect();
+    assert_eq!(own, ["d-roadmap", "d-gone"]);
+    assert_eq!(s.badge_count(), 2);
+}
+
+#[test]
+fn a_single_run_projects_root_run_opens_the_dashboards_root_tab() {
+    assert_eq!(dashboard_tab("root"), "run:");
+    assert_eq!(dashboard_tab("20261117-f1-t1"), "run:20261117-f1-t1");
+}

@@ -59,6 +59,9 @@ pub struct OrchestratorApp {
     confirming: Option<String>,
     toast: Option<(SharedString, bool)>,
     title: String,
+    /// A deep link whose run is not loaded yet (the link launched the app):
+    /// selected as soon as a snapshot lists it.
+    pending_link: Option<Selected>,
 }
 
 impl OrchestratorApp {
@@ -76,6 +79,7 @@ impl OrchestratorApp {
             confirming: None,
             toast: None,
             title: String::new(),
+            pending_link: None,
         };
         this.connect(cx);
         this
@@ -96,15 +100,17 @@ impl OrchestratorApp {
                 _ => {}
             }
         }
-        if let (Some(p), Some(r)) = (project, run)
-            && self.state.run(&p, &r).is_some()
-        {
-            self.selected = Some(Selected {
-                project_id: p,
-                run_id: r,
-            });
+        let (Some(project_id), Some(run_id)) = (project, run) else {
+            return;
+        };
+        let target = Selected { project_id, run_id };
+        if self.state.run(&target.project_id, &target.run_id).is_some() {
+            self.selected = Some(target);
+            self.pending_link = None;
             self.confirming = None;
             cx.notify();
+        } else {
+            self.pending_link = Some(target);
         }
     }
 
@@ -124,6 +130,7 @@ impl OrchestratorApp {
                         project_id: p.into(),
                         run_id: r.into(),
                     });
+                    this.pending_link = None;
                 }
                 cx.notify();
             });
@@ -237,6 +244,12 @@ impl OrchestratorApp {
             if notified_changed {
                 notified::save(self.state.notified_keys());
             }
+            if let Some(target) = &self.pending_link
+                && self.state.run(&target.project_id, &target.run_id).is_some()
+            {
+                self.selected = self.pending_link.take();
+                self.confirming = None;
+            }
             if self.selected.is_none()
                 && let Some((p, r)) = self.state.inbox().first()
             {
@@ -347,7 +360,7 @@ impl OrchestratorApp {
 
     fn answer_decision(&mut self, project_id: &str, d: &Decision, option: &str, cx: &mut Context<Self>) {
         if needs_text(&d.kind, option) {
-            self.open_dashboard(cx);
+            self.open_dashboard_at(project_id, d.run_id.as_deref(), cx);
             return;
         }
         let key = format!("decision:{}:{option}", d.decision_id);
@@ -389,21 +402,28 @@ impl OrchestratorApp {
     }
 
     fn open_dashboard(&self, cx: &mut Context<Self>) {
-        if let (Phase::Connected { base_url }, Some(sel)) = (&self.phase, &self.selected) {
-            let repo = self
-                .state
-                .projects
-                .get(&sel.project_id)
-                .and_then(|p| p.info.as_ref())
-                .map(|i| i.repo_root.clone())
-                .unwrap_or_default();
-            let tab = format!("run:{}", sel.run_id);
-            cx.open_url(&format!(
-                "{base_url}/?project={}#tabs={}&active=0",
-                encode(&repo),
-                encode(&tab)
-            ));
+        if let Some(sel) = &self.selected {
+            self.open_dashboard_at(&sel.project_id, Some(&sel.run_id), cx);
         }
+    }
+
+    /// The web dashboard for a project, on one run's tab when `run_id` is given.
+    fn open_dashboard_at(&self, project_id: &str, run_id: Option<&str>, cx: &mut Context<Self>) {
+        let Phase::Connected { base_url } = &self.phase else {
+            return;
+        };
+        let repo = self
+            .state
+            .projects
+            .get(project_id)
+            .and_then(|p| p.info.as_ref())
+            .map(|i| i.repo_root.clone())
+            .unwrap_or_default();
+        let mut url = format!("{base_url}/?project={}", encode(&repo));
+        if let Some(run_id) = run_id {
+            url.push_str(&format!("#tabs={}&active=0", encode(&orch_core::dashboard_tab(run_id))));
+        }
+        cx.open_url(&url);
     }
 }
 
@@ -552,7 +572,28 @@ impl OrchestratorApp {
                     .text_color(theme::muted())
                     .child("INBOX"),
             );
-        if inbox.is_empty() {
+        // Decisions no run can show (the roadmap's final merge approval has no
+        // run), answered right here.
+        let own: Vec<(String, Decision)> = self
+            .state
+            .project_decisions()
+            .into_iter()
+            .map(|(p, d)| (p.to_string(), d.clone()))
+            .collect();
+        if !own.is_empty() {
+            list = list.child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .text_xs()
+                    .text_color(theme::muted())
+                    .child("DECISIONS"),
+            );
+            for (i, (project_id, d)) in own.iter().enumerate() {
+                list = list.child(self.render_decision(1000 + i, d, project_id, cx));
+            }
+        }
+        if inbox.is_empty() && own.is_empty() {
             list = list.child(
                 div()
                     .px_2()
@@ -588,6 +629,7 @@ impl OrchestratorApp {
                             project_id: pid.clone(),
                             run_id: rid.clone(),
                         });
+                        this.pending_link = None;
                         this.confirming = None;
                         cx.notify();
                     }))
