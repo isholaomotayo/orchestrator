@@ -463,8 +463,11 @@ test('a text runner (parse: "text")\'s output is shown as written, and a JSON li
 // worker in its process group that ignores SIGTERM and writes its pid.
 function stubbornAgent(root, { child = false } = {}) {
   const worker = "process.on('SIGTERM', () => {}); require('fs').writeFileSync('worker.pid', String(process.pid)); setInterval(() => {}, 1000);";
+  // With a worker, the agent blocks until the worker is up, so the timeout
+  // cannot fire before there is a worker to outlive it.
+  const waitForWorker = "const t0 = Date.now(); while (!require('fs').existsSync('worker.pid') && Date.now() - t0 < 20000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);";
   return [
-    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' });` : '',
+    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' }); ${waitForWorker}` : '',
     "process.on('SIGTERM', () => process.exit(0));",
     "console.log('working');",
     'setInterval(() => {}, 1000);',

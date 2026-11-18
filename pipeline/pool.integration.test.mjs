@@ -163,6 +163,17 @@ function makeProject() {
 // would have produced for that stage, and continue — repeating until the run
 // finishes. Every `--continue` here is the same command a real coordinator
 // would type after claiming the run with `pool claim`.
+// The supervisor's workers are detached engine processes that can still be
+// writing their last files when a test's assertion is met. Wait for them to
+// exit before deleting the project, or the delete races their writes.
+async function cleanup(root) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline && pool.listRunStates(pipelinePaths(root)).some((r) => r.pidAlive)) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 function driveHostTicket(root, runId, which) {
   const p = pipelinePaths(root, { runId });
   for (let i = 0; i < 10; i++) {
@@ -236,7 +247,7 @@ async function until(sup, predicate, { limit = 400, gap = 60 } = {}) {
 
 test('a roadmap runs features in order, tickets in parallel, and lands each one', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
 
   const paths = pipelinePaths(root);
   const compiled = pool.compile(paths);
@@ -326,7 +337,7 @@ test('a roadmap runs features in order, tickets in parallel, and lands each one'
 
 test('a failing review is escalated instead of being merged', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   // Make the reviewer refuse.
   const runner = fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8').replace("w('review_report.md', [\n    '## Verdict: APPROVED'", "w('review_report.md', [\n    '## Verdict: REQUEST_CHANGES'");
   fs.writeFileSync(path.join(root, 'fake-runner.mjs'), runner);
@@ -352,7 +363,7 @@ test('a failing review is escalated instead of being merged', async (t) => {
 
 test('a feature whose configured runner is unusable never spawns; the supervisor raises runner-unavailable instead', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const cfgFile = path.join(root, '.pipeline', 'config.json');
   const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
   // Neither a known CLI name nor a declared custom runner: a misconfiguration,
@@ -385,7 +396,7 @@ test('a feature whose configured runner is unusable never spawns; the supervisor
 
 test('a mixed feature runs one ticket on a CLI and the other on host, landing both', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   // The beta ticket is host-runner; the alpha ticket keeps the fake CLI.
   const runner = fs.readFileSync(path.join(root, 'fake-runner.mjs'), 'utf8').replace(
     "    '- **Dependencies:** None', '',\n  ].join('\\n'));",
@@ -424,7 +435,7 @@ test('a mixed feature runs one ticket on a CLI and the other on host, landing bo
 
 test('review: end accepts features onto a working branch and waits for a final land', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   fs.writeFileSync(path.join(root, '.pipeline', 'roadmap.md'), ROADMAP.replace('merge: local-only', 'merge: local-only\nreview: end'));
   git(root, 'add', '-A'); git(root, 'commit', '-q', '-m', 'review end');
 
@@ -466,7 +477,7 @@ test('review: end accepts features onto a working branch and waits for a final l
 
 test('MAX_CYCLES auto-extends once without an operator verb, then stops asking', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const paths = pipelinePaths(root);
   pool.compile(paths);
 
@@ -511,7 +522,7 @@ test('MAX_CYCLES auto-extends once without an operator verb, then stops asking',
 
 test('pool retry requeues a failed feature so the supervisor plans it again', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const paths = pipelinePaths(root);
   pool.compile(paths);
   const { setFeatureStatus } = await import('./roadmap.mjs');
@@ -532,7 +543,7 @@ test('pool retry requeues a failed feature so the supervisor plans it again', as
 
 test('a resolved merge-conflict rerun-ticket leaves integrating', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const paths = pipelinePaths(root);
   pool.compile(paths);
   const { setFeatureStatus } = await import('./roadmap.mjs');
@@ -589,7 +600,7 @@ function seedExecutingTicket(root, { haltReason, ticketStatus = 'running' }) {
 
 test('a recoverable ticket halt holds the ticket for repair instead of failing the feature', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const { paths, runId } = seedExecutingTicket(root, { haltReason: 'MISSING_ARTIFACT' });
   const sup = createSupervisor({ repoRoot: root, spawn: () => ({ pid: 4242, unref() {} }), spawnSync: () => ({ status: 0 }) });
   sup.tick(); sup.tick();
@@ -604,7 +615,7 @@ test('a recoverable ticket halt holds the ticket for repair instead of failing t
 
 test('a non-recoverable ticket halt still fails the feature', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const { paths } = seedExecutingTicket(root, { haltReason: 'INTEGRITY_VIOLATION' });
   createSupervisor({ repoRoot: root, spawn: () => ({ pid: 4242, unref() {} }), spawnSync: () => ({ status: 0 }) }).tick();
   assert.equal(pool.readRoadmap(paths).features.find((x) => x.id === 'F1').status, 'failed');
@@ -612,7 +623,7 @@ test('a non-recoverable ticket halt still fails the feature', async (t) => {
 
 test('retry-ticket requeues one ticket, keeps the others, and records lineage', async (t) => {
   const root = makeProject();
-  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.after(() => cleanup(root));
   const { paths, runId } = seedExecutingTicket(root, { haltReason: 'INTEGRITY_VIOLATION', ticketStatus: 'failed' });
   const rm = pool.readRoadmap(paths);
   const f = rm.features.find((x) => x.id === 'F1');

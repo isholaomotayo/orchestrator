@@ -523,8 +523,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, appendLog = fa
       liveAgents.delete(child);
       log.write(`[error] failed to spawn ${bin}: ${err.message}\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, error: err.message });
-      log.end();
-      resolve({ ok: false, exitCode: -1, error: err.message });
+      log.end(() => resolve({ ok: false, exitCode: -1, error: err.message }));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
@@ -558,8 +557,9 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, appendLog = fa
       const ok = code === 0 && !observed.resultError && !timedOut;
       if (code === 0 && observed.resultError) log.write('[error] agent exited 0 but reported an error result\n');
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok, exitCode: code, timedOut: timedOut || undefined, resultError: observed.resultError || undefined, model: observed.model || undefined });
-      log.end();
-      resolve({ ok, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n'), sessionId: observed.sessionId, observedModel: observed.model, resultError: observed.resultError });
+      // Resolve once the log is on disk: on a failure the engine reads its tail
+      // straight away to classify it.
+      log.end(() => resolve({ ok, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n'), sessionId: observed.sessionId, observedModel: observed.model, resultError: observed.resultError }));
     };
   });
 }

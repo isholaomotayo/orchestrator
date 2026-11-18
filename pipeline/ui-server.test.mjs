@@ -367,6 +367,15 @@ test('a note targets the selected run, not the project root', withServer(async (
   assert.match(events, /"kind":"note"/);
 }));
 
+// A cursor-agent that answers its login check at once. Without it the engine
+// runs the real CLI's check when one is installed, which can outlast the
+// server's settle window on a busy machine.
+const FAKE_CLI_BIN = (() => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-cli-'));
+  fs.writeFileSync(path.join(dir, 'cursor-agent'), '#!/bin/sh\necho "Not logged in"\nexit 1\n', { mode: 0o755 });
+  return dir;
+})();
+
 test('/api/run with an explicit external runner always sends an explicit --mode cli', withServer(async ({ post, root, paths }) => {
   // A dashboard-spawned run must never fall back to guessing chat-vs-cli from
   // this long-lived server process's own (possibly stale IDE) environment —
@@ -377,7 +386,7 @@ test('/api/run with an explicit external runner always sends an explicit --mode 
   const out = fs.readFileSync(path.join(paths.dir, 'orchestrator.out'), 'utf8');
   assert.match(out, /--runner cursor/);
   assert.match(out, /--mode cli/);
-}));
+}, { env: { PATH: `${FAKE_CLI_BIN}${path.delimiter}${process.env.PATH}` } }));
 
 test('/api/run with runner "host" sends --mode chat', withServer(async ({ post, paths }) => {
   const res = await post('/api/run', { task: 'do the thing', runner: 'host' });
