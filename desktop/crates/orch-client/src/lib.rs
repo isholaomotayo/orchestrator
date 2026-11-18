@@ -33,7 +33,8 @@ pub fn rediscover(client: &Client) -> Option<Client> {
         .iter()
         .find(|r| r.base_url() == client.base)
         .or_else(|| servers.first())?;
-    (record.base_url() != client.base || record.token != client.token()).then(|| Client::from_record(record))
+    (record.base_url() != client.base || record.token != client.token())
+        .then(|| Client::from_record(record))
 }
 
 /// Everything the network side reports, in arrival order.

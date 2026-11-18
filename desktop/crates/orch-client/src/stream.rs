@@ -1,6 +1,6 @@
 //! The live event stream, resumed with Last-Event-ID across disconnects.
 
-use crate::{SharedClient, client::Client, sse::SseParser};
+use crate::{client::Client, sse::SseParser, SharedClient};
 use futures_util::StreamExt;
 use orch_contract::ServerEvent;
 use std::time::Duration;
@@ -41,11 +41,7 @@ pub async fn run_event_stream(
             return;
         }
         let client = shared.read().unwrap_or_else(|e| e.into_inner()).clone();
-        match client
-            .events_request(&[], last_id.as_deref())
-            .send()
-            .await
-        {
+        match client.events_request(&[], last_id.as_deref()).send().await {
             Ok(res) if res.status().is_success() => {
                 backoff_ms = 500;
                 let mut parser = SseParser::new();
@@ -138,11 +134,20 @@ mod tests {
         let shared = Arc::new(RwLock::new(Client::new(base, "t")));
         let (tx, rx) = async_channel::unbounded();
         let stream = tokio::spawn(run_event_stream(shared, Some("i1.5".into()), |_| None, tx));
-        assert!(matches!(rx.recv().await.unwrap(), StreamEvent::Connected { .. }));
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            StreamEvent::Connected { .. }
+        ));
         let head = server.await.unwrap().to_lowercase();
         rx.close();
         stream.abort();
-        assert!(head.starts_with("get /api/v1/events http/1.1"), "no project filter: {head}");
-        assert!(head.contains("last-event-id: i1.5"), "resumes from the snapshot cursor: {head}");
+        assert!(
+            head.starts_with("get /api/v1/events http/1.1"),
+            "no project filter: {head}"
+        );
+        assert!(
+            head.contains("last-event-id: i1.5"),
+            "resumes from the snapshot cursor: {head}"
+        );
     }
 }

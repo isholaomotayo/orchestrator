@@ -126,7 +126,12 @@ impl AppState {
                     .map(|r| (r.run_id.clone(), r.clone()))
                     .collect();
                 p.attention = snap.attention.clone();
-                p.decisions = snap.decisions.iter().filter(|d| d.status != "resolved").cloned().collect();
+                p.decisions = snap
+                    .decisions
+                    .iter()
+                    .filter(|d| d.status != "resolved")
+                    .cloned()
+                    .collect();
                 // Anything already waiting when we connect is in the inbox, not a
                 // fresh notification; mark it seen so it does not fire later either.
                 if !p.primed {
@@ -254,7 +259,9 @@ impl AppState {
                     .filter(move |r| {
                         !r.dismissed
                             && (r.bucket != Bucket::Done
-                                || p.decisions.iter().any(|d| d.run_id.as_deref() == Some(r.run_id.as_str())))
+                                || p.decisions
+                                    .iter()
+                                    .any(|d| d.run_id.as_deref() == Some(r.run_id.as_str())))
                     })
                     .map(move |r| (pid.as_str(), r))
             })
@@ -342,10 +349,7 @@ impl AppState {
         let runs = self.autonomous_runs();
         let mut pools: Vec<String> = runs
             .iter()
-            .filter(|(p, r)| {
-                self.run(p, r)
-                    .is_some_and(|run| run.feature_id.is_some())
-            })
+            .filter(|(p, r)| self.run(p, r).is_some_and(|run| run.feature_id.is_some()))
             .map(|(p, _)| p.clone())
             .collect();
         pools.dedup();

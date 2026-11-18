@@ -189,7 +189,11 @@ fn open_decisions_are_listed_under_their_run() {
     let mut snap = snapshot(vec![run("a", Bucket::NeedsYou), run("b", Bucket::Working)]);
     snap.decisions = vec![decision("d1", "a"), decision("d2", "b")];
     s.apply(Input::Snapshot(snap));
-    let ids: Vec<_> = s.decisions_for("p", "a").iter().map(|d| d.decision_id.as_str()).collect();
+    let ids: Vec<_> = s
+        .decisions_for("p", "a")
+        .iter()
+        .map(|d| d.decision_id.as_str())
+        .collect();
     assert_eq!(ids, ["d1"]);
     assert!(s.decisions_for("p", "nope").is_empty());
 }
@@ -204,11 +208,17 @@ fn attention_naming_an_unknown_decision_asks_for_a_fresh_snapshot() {
             items: vec![attention_for("d1")],
         }))
     };
-    assert!(attention(&mut s).contains(&Effect::Resnapshot), "decisions never stream, so fetch them");
+    assert!(
+        attention(&mut s).contains(&Effect::Resnapshot),
+        "decisions never stream, so fetch them"
+    );
     let mut snap = snapshot(vec![run("a", Bucket::NeedsYou)]);
     snap.decisions = vec![decision("d1", "a")];
     s.apply(Input::Snapshot(snap));
-    assert!(!attention(&mut s).contains(&Effect::Resnapshot), "known decision: nothing to fetch");
+    assert!(
+        !attention(&mut s).contains(&Effect::Resnapshot),
+        "known decision: nothing to fetch"
+    );
 }
 
 #[test]
@@ -226,7 +236,10 @@ fn pause_all_targets_only_live_autonomous_runs() {
         auto("gone", Bucket::Blocked, true),
         run("guided", Bucket::Working),
     ])));
-    assert_eq!(s.autonomous_runs(), vec![("p".to_string(), "live".to_string())]);
+    assert_eq!(
+        s.autonomous_runs(),
+        vec![("p".to_string(), "live".to_string())]
+    );
 }
 
 #[test]
@@ -245,7 +258,11 @@ fn pause_all_pauses_only_pools_with_live_autonomous_work() {
     other.project.project_id = "q".into();
     s.apply(Input::Snapshot(other));
     let plan = s.pause_all_plan();
-    assert_eq!(plan.pools, vec!["p".to_string()], "no pool in project q, so nothing to pause there");
+    assert_eq!(
+        plan.pools,
+        vec!["p".to_string()],
+        "no pool in project q, so nothing to pause there"
+    );
     assert_eq!(plan.runs.len(), 3);
 }
 
@@ -276,8 +293,14 @@ fn self_heal_alerts_have_their_own_notification_titles() {
         }));
         notifies(&fx).iter().map(|n| n.title.clone()).collect()
     };
-    assert_eq!(titles(&mut s, alert("supervisor-dead", "s1")), ["The roadmap supervisor stopped"]);
-    assert_eq!(titles(&mut s, alert("self-heal-exhausted", "s2")), ["Automatic recovery gave up"]);
+    assert_eq!(
+        titles(&mut s, alert("supervisor-dead", "s1")),
+        ["The roadmap supervisor stopped"]
+    );
+    assert_eq!(
+        titles(&mut s, alert("self-heal-exhausted", "s2")),
+        ["Automatic recovery gave up"]
+    );
 }
 
 #[test]
@@ -286,14 +309,22 @@ fn a_roadmap_merge_approval_and_a_finished_runs_approval_stay_reachable() {
     let mut snap = snapshot(vec![run("done", Bucket::Done), run("other", Bucket::Done)]);
     let mut roadmap = decision("d-roadmap", "x");
     roadmap.run_id = None;
-    snap.decisions = vec![roadmap, decision("d-integration", "done"), decision("d-gone", "vanished")];
+    snap.decisions = vec![
+        roadmap,
+        decision("d-integration", "done"),
+        decision("d-gone", "vanished"),
+    ];
     s.apply(Input::Snapshot(snap));
     // A finished run whose merge approval is open stays in the inbox; one without leaves.
     let inbox: Vec<_> = s.inbox().iter().map(|(_, r)| r.run_id.as_str()).collect();
     assert_eq!(inbox, ["done"]);
     assert_eq!(s.decisions_for("p", "done").len(), 1);
     // The roadmap approval (no runId) and one about an unlisted run are listed on their own.
-    let own: Vec<_> = s.project_decisions().iter().map(|(_, d)| d.decision_id.as_str()).collect();
+    let own: Vec<_> = s
+        .project_decisions()
+        .iter()
+        .map(|(_, d)| d.decision_id.as_str())
+        .collect();
     assert_eq!(own, ["d-roadmap", "d-gone"]);
     assert_eq!(s.badge_count(), 2);
 }

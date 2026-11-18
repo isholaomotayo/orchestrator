@@ -216,9 +216,21 @@ fn open_decision_is_typed_and_answerable(server: &Server, handle: &ClientHandle,
 /// The exact commands behind the autonomy control, "Pause all autonomy" and Acknowledge.
 fn control_commands_are_accepted(handle: &ClientHandle, project: &str) {
     let cases = [
-        ("run.set_autonomy", Some("r1"), serde_json::json!({ "autonomy": "guided" })),
-        ("pool.pause", None, serde_json::json!({ "reason": "Paused from the desktop app" })),
-        ("attention.ack", None, serde_json::json!({ "id": "att-e2e" })),
+        (
+            "run.set_autonomy",
+            Some("r1"),
+            serde_json::json!({ "autonomy": "guided" }),
+        ),
+        (
+            "pool.pause",
+            None,
+            serde_json::json!({ "reason": "Paused from the desktop app" }),
+        ),
+        (
+            "attention.ack",
+            None,
+            serde_json::json!({ "id": "att-e2e" }),
+        ),
     ];
     for (kind, run, args) in cases {
         let request = handle.command(project, kind, run, args);

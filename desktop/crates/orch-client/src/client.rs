@@ -142,7 +142,11 @@ impl Client {
         let url = if projects.is_empty() {
             format!("{}/api/v1/events", self.base)
         } else {
-            format!("{}/api/v1/events?projects={}", self.base, projects.join(","))
+            format!(
+                "{}/api/v1/events?projects={}",
+                self.base,
+                projects.join(",")
+            )
         };
         let mut req = self
             .http

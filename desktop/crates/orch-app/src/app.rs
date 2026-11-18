@@ -6,7 +6,9 @@ use gpui::{
     SystemNotificationAction, SystemNotificationResponse, Window, div, prelude::*, px,
 };
 use orch_client::{Client, ClientEvent, ClientHandle, StreamEvent, discovery};
-use orch_contract::{Action, Autonomy, Bucket, CommandStatus, Decision, Diagnosis, RunSummary, Surface};
+use orch_contract::{
+    Action, Autonomy, Bucket, CommandStatus, Decision, Diagnosis, RunSummary, Surface,
+};
 use orch_core::{AppState, Connection, Effect, Input};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -27,7 +29,10 @@ fn irreversible(decision_kind: &str, option: &str) -> bool {
 
 /// Choices the server only accepts with a written reason ("request-changes: …").
 fn needs_text(decision_kind: &str, option: &str) -> bool {
-    matches!((decision_kind, option), ("merge-approval", "request-changes"))
+    matches!(
+        (decision_kind, option),
+        ("merge-approval", "request-changes")
+    )
 }
 
 #[derive(Clone)]
@@ -340,7 +345,14 @@ impl OrchestratorApp {
     }
 
     /// Send one command and track it under `key` until it completes.
-    fn send(&mut self, key: String, project_id: &str, kind: &str, run_id: Option<&str>, args: Value) {
+    fn send(
+        &mut self,
+        key: String,
+        project_id: &str,
+        kind: &str,
+        run_id: Option<&str>,
+        args: Value,
+    ) {
         if let Some(handle) = &self.handle {
             let request = handle.command(project_id, kind, run_id, args);
             self.pending.insert(key, request);
@@ -358,7 +370,13 @@ impl OrchestratorApp {
         false
     }
 
-    fn answer_decision(&mut self, project_id: &str, d: &Decision, option: &str, cx: &mut Context<Self>) {
+    fn answer_decision(
+        &mut self,
+        project_id: &str,
+        d: &Decision,
+        option: &str,
+        cx: &mut Context<Self>,
+    ) {
         if needs_text(&d.kind, option) {
             self.open_dashboard_at(project_id, d.run_id.as_deref(), cx);
             return;
@@ -368,18 +386,42 @@ impl OrchestratorApp {
             return;
         }
         let args = json!({ "decisionId": d.decision_id, "answer": option });
-        self.send(key, project_id, "decision.answer", d.run_id.as_deref(), args);
+        self.send(
+            key,
+            project_id,
+            "decision.answer",
+            d.run_id.as_deref(),
+            args,
+        );
         cx.notify();
     }
 
-    fn set_autonomy(&mut self, project_id: &str, run_id: &str, value: &str, cx: &mut Context<Self>) {
+    fn set_autonomy(
+        &mut self,
+        project_id: &str,
+        run_id: &str,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) {
         let args = json!({ "autonomy": value });
-        self.send(format!("autonomy:{run_id}"), project_id, "run.set_autonomy", Some(run_id), args);
+        self.send(
+            format!("autonomy:{run_id}"),
+            project_id,
+            "run.set_autonomy",
+            Some(run_id),
+            args,
+        );
         cx.notify();
     }
 
     fn acknowledge(&mut self, project_id: &str, id: &str, cx: &mut Context<Self>) {
-        self.send(format!("ack:{id}"), project_id, "attention.ack", None, json!({ "id": id }));
+        self.send(
+            format!("ack:{id}"),
+            project_id,
+            "attention.ack",
+            None,
+            json!({ "id": id }),
+        );
         cx.notify();
     }
 
@@ -392,11 +434,23 @@ impl OrchestratorApp {
         let plan = self.state.pause_all_plan();
         for (i, project) in plan.pools.iter().enumerate() {
             let args = json!({ "reason": "Paused from the desktop app" });
-            self.send(format!("pause-all:pool:{i}"), project, "pool.pause", None, args);
+            self.send(
+                format!("pause-all:pool:{i}"),
+                project,
+                "pool.pause",
+                None,
+                args,
+            );
         }
         for (project, run) in &plan.runs {
             let args = json!({ "autonomy": "guided" });
-            self.send(format!("pause-all:run:{run}"), project, "run.set_autonomy", Some(run), args);
+            self.send(
+                format!("pause-all:run:{run}"),
+                project,
+                "run.set_autonomy",
+                Some(run),
+                args,
+            );
         }
         cx.notify();
     }
@@ -421,7 +475,10 @@ impl OrchestratorApp {
             .unwrap_or_default();
         let mut url = format!("{base_url}/?project={}", encode(&repo));
         if let Some(run_id) = run_id {
-            url.push_str(&format!("#tabs={}&active=0", encode(&orch_core::dashboard_tab(run_id))));
+            url.push_str(&format!(
+                "#tabs={}&active=0",
+                encode(&orch_core::dashboard_tab(run_id))
+            ));
         }
         cx.open_url(&url);
     }
@@ -771,14 +828,21 @@ impl OrchestratorApp {
                         .unwrap_or_default()
                 ))
             }))
-            .children(run.diagnosis.as_ref().filter(|d| d.needs_attention()).map(render_diagnosis))
+            .children(
+                run.diagnosis
+                    .as_ref()
+                    .filter(|d| d.needs_attention())
+                    .map(render_diagnosis),
+            )
             .children(run.completion_blocked.as_ref().map(|why| {
                 div()
                     .p_3()
                     .rounded_md()
                     .bg(theme::raised())
                     .text_color(theme::bucket(Bucket::Blocked))
-                    .child(format!("The chat agent's last completion did not commit: {why}"))
+                    .child(format!(
+                        "The chat agent's last completion did not commit: {why}"
+                    ))
             }))
             .children(run.halt_reason.as_ref().map(|h| {
                 div()
@@ -795,7 +859,12 @@ impl OrchestratorApp {
                     ))
             }))
             .children(plan_card)
-            .children(decisions.iter().enumerate().map(|(i, d)| self.render_decision(i, d, &project_id, cx)))
+            .children(
+                decisions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| self.render_decision(i, d, &project_id, cx)),
+            )
             .children(attention.into_iter().enumerate().map(|(i, (id, summary))| {
                 let p = project_id.clone();
                 card()
@@ -804,8 +873,12 @@ impl OrchestratorApp {
                     .gap_3()
                     .child(div().flex_1().child(summary))
                     .child(
-                        button(("ack", i), "Acknowledge".to_string(), !self.pending.contains_key(&format!("ack:{id}")))
-                            .on_click(cx.listener(move |this, _, _, cx| this.acknowledge(&p, &id, cx))),
+                        button(
+                            ("ack", i),
+                            "Acknowledge".to_string(),
+                            !self.pending.contains_key(&format!("ack:{id}")),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| this.acknowledge(&p, &id, cx))),
                     )
             }))
             .child(actions)
@@ -885,7 +958,13 @@ impl OrchestratorApp {
             (!action.enabled)
                 .then(|| action.disabled_reason.clone())
                 .flatten()
-                .map(|why| div().text_xs().text_color(theme::muted()).max_w(px(260.)).child(why)),
+                .map(|why| {
+                    div()
+                        .text_xs()
+                        .text_color(theme::muted())
+                        .max_w(px(260.))
+                        .child(why)
+                }),
         )
     }
 
@@ -894,7 +973,9 @@ impl OrchestratorApp {
     fn render_autonomy(&self, run: &RunSummary, project_id: &str, cx: &mut Context<Self>) -> Div {
         let control = run.actions.iter().find(|a| a.id == "run.set_autonomy");
         let can_set = control.is_some_and(|a| a.enabled);
-        let busy = self.pending.contains_key(&format!("autonomy:{}", run.run_id));
+        let busy = self
+            .pending
+            .contains_key(&format!("autonomy:{}", run.run_id));
         let segment = |i: usize, value: &'static str, mine: Autonomy| {
             let active = run.autonomy == mine;
             let (p, r) = (project_id.to_string(), run.run_id.clone());
@@ -903,13 +984,21 @@ impl OrchestratorApp {
                 .px_2()
                 .py(px(2.))
                 .text_xs()
-                .bg(if active { theme::accent() } else { theme::raised() })
-                .text_color(if active { theme::text() } else { theme::muted() })
+                .bg(if active {
+                    theme::accent()
+                } else {
+                    theme::raised()
+                })
+                .text_color(if active {
+                    theme::text()
+                } else {
+                    theme::muted()
+                })
                 .child(value);
             if can_set && !active && !busy {
-                s = s
-                    .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_autonomy(&p, &r, value, cx)));
+                s = s.cursor_pointer().on_click(
+                    cx.listener(move |this, _, _, cx| this.set_autonomy(&p, &r, value, cx)),
+                );
             }
             s
         };
@@ -935,7 +1024,12 @@ impl OrchestratorApp {
 
     /// Shown while the run waits on plan approval. The plan itself is long, so
     /// it is read in the web dashboard; asking for changes needs free text.
-    fn render_plan_card(&self, run: &RunSummary, project_id: &str, cx: &mut Context<Self>) -> Option<Div> {
+    fn render_plan_card(
+        &self,
+        run: &RunSummary,
+        project_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<Div> {
         let approve = run.actions.iter().position(|a| a.id == "plan.approve")?;
         let reject = run.actions.iter().position(|a| a.id == "plan.reject");
         let waiting = run.actions[approve].enabled;
@@ -944,21 +1038,33 @@ impl OrchestratorApp {
                 .flex()
                 .flex_col()
                 .gap_2()
+                .child(div().font_weight(FontWeight::SEMIBOLD).child(if waiting {
+                    "The plan is waiting for your approval"
+                } else {
+                    "Plan approval"
+                }))
                 .child(
                     div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(if waiting { "The plan is waiting for your approval" } else { "Plan approval" }),
+                        .text_color(theme::muted())
+                        .child("Read it in the web dashboard first. Approving starts the build."),
                 )
-                .child(div().text_color(theme::muted()).child(
-                    "Read it in the web dashboard first. Approving starts the build.",
-                ))
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_2()
-                        .child(self.action_button(approve, &run.actions[approve], run, project_id, cx))
-                        .children(reject.map(|i| self.action_button(i, &run.actions[i], run, project_id, cx)))
+                        .child(self.action_button(
+                            approve,
+                            &run.actions[approve],
+                            run,
+                            project_id,
+                            cx,
+                        ))
+                        .children(
+                            reject.map(|i| {
+                                self.action_button(i, &run.actions[i], run, project_id, cx)
+                            }),
+                        )
                         .child(
                             button("plan-read", "Read the plan ↗".to_string(), true)
                                 .on_click(cx.listener(|this, _, _, cx| this.open_dashboard(cx))),
@@ -967,7 +1073,13 @@ impl OrchestratorApp {
         )
     }
 
-    fn render_decision(&self, index: usize, d: &Decision, project_id: &str, cx: &mut Context<Self>) -> Div {
+    fn render_decision(
+        &self,
+        index: usize,
+        d: &Decision,
+        project_id: &str,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let mut options = div().flex().flex_wrap().gap_2();
         for (i, option) in d.options.iter().enumerate() {
             let key = format!("decision:{}:{option}", d.decision_id);
@@ -991,7 +1103,9 @@ impl OrchestratorApp {
             let (p, dd, o) = (project_id.to_string(), d.clone(), option.clone());
             let mut b = button(("decision", index * 16 + i), label, !pending);
             if !pending {
-                b = b.on_click(cx.listener(move |this, _, _, cx| this.answer_decision(&p, &dd, &o, cx)));
+                b = b.on_click(
+                    cx.listener(move |this, _, _, cx| this.answer_decision(&p, &dd, &o, cx)),
+                );
             }
             options = options.child(b);
         }
@@ -999,10 +1113,22 @@ impl OrchestratorApp {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_xs().text_color(theme::muted()).child(d.kind.replace('-', " ").to_uppercase()))
-            .child(div().font_weight(FontWeight::SEMIBOLD).child(d.question.clone()))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::muted())
+                    .child(d.kind.replace('-', " ").to_uppercase()),
+            )
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(d.question.clone()),
+            )
             .children((!d.artifacts.is_empty()).then(|| {
-                div().text_xs().text_color(theme::muted()).child(d.artifacts.join(" · "))
+                div()
+                    .text_xs()
+                    .text_color(theme::muted())
+                    .child(d.artifacts.join(" · "))
             }))
             .child(options)
     }
@@ -1015,18 +1141,32 @@ fn render_diagnosis(d: &Diagnosis) -> Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(div().text_xs().text_color(theme::muted()).child(
-            format!("DIAGNOSIS · {}", d.state.label().to_uppercase()),
-        ))
-        .child(div().font_weight(FontWeight::SEMIBOLD).child(d.explanation.clone()))
+        .child(
+            div()
+                .text_xs()
+                .text_color(theme::muted())
+                .child(format!("DIAGNOSIS · {}", d.state.label().to_uppercase())),
+        )
+        .child(
+            div()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(d.explanation.clone()),
+        )
         .children(d.waiting_on.as_ref().map(|who| {
             div().text_color(theme::muted()).child(format!(
                 "Waiting on {who}{}",
-                d.since.as_ref().map(|t| format!(" since {t}")).unwrap_or_default()
+                d.since
+                    .as_ref()
+                    .map(|t| format!(" since {t}"))
+                    .unwrap_or_default()
             ))
         }))
         .children(d.evidence.iter().map(|e| {
-            div().text_xs().text_color(theme::muted()).font_family("Menlo").child(format!("· {e}"))
+            div()
+                .text_xs()
+                .text_color(theme::muted())
+                .font_family("Menlo")
+                .child(format!("· {e}"))
         }))
         .children(d.remedies.iter().map(|r| {
             div()
@@ -1039,7 +1179,11 @@ fn render_diagnosis(d: &Diagnosis) -> Div {
                     r.reason
                 )))
                 .children(r.shell.as_ref().map(|c| {
-                    div().text_xs().font_family("Menlo").text_color(theme::muted()).child(c.clone())
+                    div()
+                        .text_xs()
+                        .font_family("Menlo")
+                        .text_color(theme::muted())
+                        .child(c.clone())
                 }))
         }))
 }

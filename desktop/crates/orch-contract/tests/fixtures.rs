@@ -117,7 +117,10 @@ fn a_blocked_completion_is_carried_and_absent_is_none() {
         "completionBlocked": "lease expired for handoff h1",
     }))
     .unwrap();
-    assert_eq!(with.completion_blocked.as_deref(), Some("lease expired for handoff h1"));
+    assert_eq!(
+        with.completion_blocked.as_deref(),
+        Some("lease expired for handoff h1")
+    );
     let without: orch_contract::RunSummary = serde_json::from_value(serde_json::json!({
         "runId": "a", "title": "t", "autonomy": "guided", "bucket": "working",
         "driver": { "kind": "none", "presence": "absent" }, "actions": [], "dismissed": false,
@@ -150,8 +153,15 @@ fn a_diagnosis_parses_and_a_state_from_a_newer_server_does_not_break_it() {
     assert_eq!(d.state, DoctorState::HaltedRecoverable);
     assert_eq!(d.waiting_on.as_deref(), Some("you"));
     assert_eq!(d.remedies[0].command.as_deref(), Some("run.resume"));
-    assert!(d.remedies[1].shell.as_deref().unwrap().contains("pool start"));
-    assert_eq!(parse("some-future-state").diagnosis.unwrap().state, DoctorState::Unknown);
+    assert!(d.remedies[1]
+        .shell
+        .as_deref()
+        .unwrap()
+        .contains("pool start"));
+    assert_eq!(
+        parse("some-future-state").diagnosis.unwrap().state,
+        DoctorState::Unknown
+    );
     assert!(
         serde_json::from_value::<RunSummary>(serde_json::json!({
             "runId": "a", "title": "t", "autonomy": "guided", "bucket": "working",
@@ -183,7 +193,10 @@ fn needs_attention_matches_the_cli_rule() {
     // ...but a plan waiting on you is yours.
     assert!(d(DoctorState::Waiting, Some("you")).needs_attention());
     assert!(d(DoctorState::ParkedNoHost, Some("a chat agent")).needs_attention());
-    assert!(d(DoctorState::Unknown, None).needs_attention(), "when in doubt, show it");
+    assert!(
+        d(DoctorState::Unknown, None).needs_attention(),
+        "when in doubt, show it"
+    );
 }
 
 #[test]
