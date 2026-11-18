@@ -466,9 +466,11 @@ function stubbornAgent(root, { child = false } = {}) {
   // With a worker, the agent blocks until the worker is up, so the timeout
   // cannot fire before there is a worker to outlive it.
   const waitForWorker = "const t0 = Date.now(); while (!require('fs').existsSync('worker.pid') && Date.now() - t0 < 20000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);";
+  // The handler goes first: on a loaded machine node can take longer to start
+  // than a short timeout, and a SIGTERM before it is installed kills outright.
   return [
-    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' }); ${waitForWorker}` : '',
     "process.on('SIGTERM', () => process.exit(0));",
+    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' }); ${waitForWorker}` : '',
     "console.log('working');",
     'setInterval(() => {}, 1000);',
   ].join('\n');
@@ -494,7 +496,7 @@ const alive = (pid) => {
 test('a timed-out agent is a failure even when its SIGTERM handler exits 0', async () => {
   const r = stageRig('timeout-ok-');
   try {
-    const config = { agentTimeoutMs: 400, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root)] } } };
+    const config = { agentTimeoutMs: 4000, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root)] } } };
     const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
     assert.equal(res.exitCode, 0);
     assert.equal(res.timedOut, true);
@@ -505,7 +507,7 @@ test('a timed-out agent is a failure even when its SIGTERM handler exits 0', asy
 test('after a timeout, a worker that ignores SIGTERM is killed before the stage is reported over', async () => {
   const r = stageRig('timeout-group-');
   try {
-    const config = { agentTimeoutMs: 400, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root, { child: true })] } } };
+    const config = { agentTimeoutMs: 4000, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root, { child: true })] } } };
     const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
     assert.equal(res.ok, false);
     const pid = Number(fs.readFileSync(path.join(r.root, 'worker.pid'), 'utf8'));

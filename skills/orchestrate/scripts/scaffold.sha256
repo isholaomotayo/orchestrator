@@ -21,7 +21,7 @@
     "GEMINI.md": "1959302a62d017c1100c4e018e9276a279067029b52071bc7982d9897183919b",
     "package.json": "94bd7781ec79afbb31bf253466e5b2c6ed2d73eb7d6daa857a5bcc1c4dd87bcd",
     "pipeline/adapters.mjs": "a85c5b5db5630c3ee8fe508047d920152f35eb15d3f0948abef85584f44bb70d",
-    "pipeline/adapters.test.mjs": "bd5681e1b279293767f661a23289a20a7fbda509c10532b0e758e60ce09caf46",
+    "pipeline/adapters.test.mjs": "c4a4f94d950526837a1489afa94df7a280245119b5096f8fe47b0923d129a2b1",
     "pipeline/api-v1.mjs": "4bd19291b74c26afc2f4cf82d1f60da130b6184b3ba0addffe9bb7d5f838d645",
     "pipeline/api-v1.test.mjs": "76676070ee0b7bacddce8e46718b29d352caf60b3b5cefd133ca100132c8e9b2",
     "pipeline/artifacts.mjs": "aa025ca8b0158d90aae25ab9e3880c394914fd497636a51ee7fe59f186ed1c69",
