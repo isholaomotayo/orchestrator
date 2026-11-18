@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS, resolveExecutionSurface, isHostSurface, resolveChatSafeRunner, reconcileChatRunner } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
@@ -479,7 +480,13 @@ function stageRig(prefix) {
   return { root, paths, prompt, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Running, not just present: a SIGKILLed process is a zombie for a moment
+// until the system reaps it, and kill(pid, 0) still finds a zombie.
+const alive = (pid) => {
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  const stat = (ps.stdout || '').trim();
+  return stat !== '' && !stat.startsWith('Z');
+};
 
 test('a timed-out agent is a failure even when its SIGTERM handler exits 0', async () => {
   const r = stageRig('timeout-ok-');

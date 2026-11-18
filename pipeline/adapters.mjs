@@ -144,6 +144,12 @@ function groupAlive(child) {
   try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 0); return true; } catch { return false; }
 }
 
+/** Wait (up to `ms`) until nothing in the agent's process group is left; SIGKILL takes a moment to land. */
+async function untilGroupGone(child, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (groupAlive(child) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+}
+
 /** Signal every live agent's whole process group; returns how many were signalled. */
 export function killLiveAgents(signal = 'SIGTERM') {
   let n = 0;
@@ -166,7 +172,9 @@ export async function stopLiveAgents({ graceMs = KILL_GRACE_MS, pollMs = 100 } =
   for (const child of children) killAgentTree(child, 'SIGTERM');
   const deadline = Date.now() + graceMs;
   while (children.some(groupAlive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, pollMs));
-  for (const child of children) if (groupAlive(child)) killAgentTree(child, 'SIGKILL');
+  const left = children.filter(groupAlive);
+  for (const child of left) killAgentTree(child, 'SIGKILL');
+  await Promise.all(left.map((child) => untilGroupGone(child)));
   return children.length;
 }
 
@@ -527,7 +535,7 @@ export function runAgent({ runner, stage, cycle = 0, attempt = 1, appendLog = fa
       if (killTimer && groupAlive(child)) {
         clearTimeout(killTimer);
         const wait = Math.max(0, killAt - Date.now());
-        setTimeout(() => { killAgentTree(child, 'SIGKILL'); finish(code); }, wait);
+        setTimeout(() => { killAgentTree(child, 'SIGKILL'); untilGroupGone(child).then(() => finish(code)); }, wait);
         return;
       }
       clearTimeout(killTimer);

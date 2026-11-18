@@ -20,7 +20,13 @@ const AGENT = [
   'setInterval(() => {}, 1000);',
 ].join('\n');
 
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+// Running, not just present: a SIGKILLed process is a zombie for a moment
+// until the system reaps it, and kill(pid, 0) still finds a zombie.
+const alive = (pid) => {
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  const stat = (ps.stdout || '').trim();
+  return stat !== '' && !stat.startsWith('Z');
+};
 const until = async (cond, ms) => { const end = Date.now() + ms; while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 50)); return cond(); };
 
 test('a stopped engine kills an agent worker that ignores SIGTERM before it frees the run lock', async () => {
