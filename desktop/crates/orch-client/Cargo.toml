@@ -1,0 +1,21 @@
+[package]
+name = "orch-client"
+description = "Discovery, REST, commands and a resuming SSE stream for the orchestrator /api/v1"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+orch-contract = { path = "../orch-contract" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+async-channel.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["net", "io-util"] }

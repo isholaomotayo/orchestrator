@@ -72,3 +72,20 @@ test('every stage prompt carries the trust boundary', () => {
     assert.match(text, /exfiltrate/i, name);
   }
 });
+
+test('a timeout is transient even when the agent printed auth-looking test names', () => {
+  const res = { ok: false, timedOut: true, exitCode: null };
+  const tail = 'ok 3 - rejects_unauthorized_discussion_list\nnot ok 4 - permission denied for guest';
+  assert.equal(classifyFailure(res, tail).transient, true);
+});
+
+test('an agent\'s own tool/test output is not read as a fatal auth error', () => {
+  const res = { ok: false, exitCode: 1, stderrTail: 'Error: 529 overloaded', outputTail: '{"type":"result","is_error":true}' };
+  const logTail = 'PASS test/rejects_unauthorized.test.ts\nEACCES: permission denied, open /tmp/x';
+  assert.equal(classifyFailure(res, logTail).transient, true);
+});
+
+test('a real auth failure on stderr stays fatal', () => {
+  const res = { ok: false, exitCode: 1, stderrTail: 'Error: Invalid API key · Please run /login', outputTail: '' };
+  assert.equal(classifyFailure(res, '').transient, false);
+});

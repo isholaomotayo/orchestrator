@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { buildInvocation, runAgent, detectRunner, agentEnv, resolvePoolRunner, checkRunnerAvailable, RUNNER_BINS, resolveExecutionSurface, isHostSurface, resolveChatSafeRunner, reconcileChatRunner } from './adapters.mjs';
 import { pipelinePaths } from './state.mjs';
 
@@ -43,10 +44,18 @@ test('codex read-only uses a hard read-only sandbox', () => {
   assert.ok(ro.args.includes('read-only'));
   assert.ok(!ro.args.includes('--full-auto'));
 
+  // Current codex rejects --full-auto (exit 2); writing stages use workspace-write.
   const rw = buildInvocation({ ...base, runner: 'codex', readOnly: false });
   assert.equal(rw.readOnlyEnforced, false);
-  assert.ok(rw.args.includes('--full-auto'));
-  assert.ok(!rw.args.includes('--sandbox'));
+  assert.ok(!rw.args.includes('--full-auto'));
+  assert.equal(rw.args[rw.args.indexOf('--sandbox') + 1], 'workspace-write');
+});
+
+test('a codex fix cycle resumes its thread with the sandbox passed as config', () => {
+  const { args } = buildInvocation({ ...base, runner: 'codex', readOnly: false, task: 'fix it', resumeSession: 'thread-1' });
+  assert.deepEqual(args.slice(0, 4), ['exec', 'resume', '-c', 'sandbox_mode="workspace-write"']);
+  assert.ok(!args.includes('--sandbox'), 'exec resume has no --sandbox flag');
+  assert.deepEqual(args.slice(-2), ['thread-1', 'fix it']);
 });
 
 test('cursor withholds --force during a read-only audit', () => {
@@ -116,8 +125,11 @@ test('host runAgent with hostClient stamps the handoff and events', async () => 
   assert.deepEqual(res, { ok: false, hostHandoff: true });
   const handoff = JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
   assert.equal(handoff.hostClient, 'antigravity');
-  assert.match(handoff.hostNote, /antigravity chat session/);
-  assert.match(handoff.hostNote, /do not spawn/i);
+  assert.equal(handoff.version, 3);
+  // Fixed protocol text lives in SKILL.md, not in every brief.
+  for (const key of ['hostNote', 'progressStream']) assert.ok(!(key in handoff), key);
+  assert.equal(handoff.bridge.instructions, undefined);
+  assert.match(handoff.bridge.command, /bridge-cli\.mjs/);
   assert.match(handoff.eventCommand, /host-event\.mjs/);
   assert.match(handoff.eventCommand, /--stage planner/);
   const parked = readEvents(paths).find((e) => e.type === 'agent_parked');
@@ -310,4 +322,195 @@ test('a host runner is always a host-handoff, even when the CLI flag said cli', 
   assert.equal(resolveExecutionSurface({ runner: 'claude', invocationMode: 'chat' }), 'host-handoff');
   assert.equal(isHostSurface({ runner: 'host' }), true);
   assert.equal(isHostSurface({ executionSurface: 'cli-subprocess', runner: 'host' }), false);
+});
+
+test('a low-effort host stage carries a delegate hint naming its suggested model', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { pipelinePaths } = await import('./state.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'delegate-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'reporter_prompt.txt');
+  fs.writeFileSync(prompt, 'report');
+  const brief = async (stage, effort, model) => {
+    await runAgent({ runner: 'host', stage, task: 't', systemPromptFile: prompt, cwd: root, paths, config: {}, model, effort, handoffId: 'h1' });
+    return JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+  };
+  const reporter = await brief('reporter', 'low', 'haiku-4.5');
+  assert.equal(reporter.delegate.model, 'haiku-4.5');
+  assert.equal(reporter.handoffId, 'h1');
+  assert.equal((await brief('coder', 'medium', 'sonnet-5')).delegate, undefined);
+  assert.equal((await brief('reporter', 'low', 'current-chat')).delegate, undefined);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('the brief says hooks report progress only where installed hooks write tool events', async () => {
+  const { installHooks, configPath } = await import('./hook-install.mjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hookprogress-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const brief = async (hostClient) => {
+    await runAgent({ runner: 'host', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config: {}, hostClient, handoffId: 'h1' });
+    return JSON.parse(fs.readFileSync(paths.stageHandoff, 'utf8'));
+  };
+  try {
+    assert.equal((await brief('claude')).hookProgress, undefined, 'no hooks installed: report by hand');
+    installHooks(root, 'claude');
+    assert.equal((await brief('claude')).hookProgress, true);
+    assert.equal((await brief(null)).hookProgress, undefined, 'unknown host');
+    installHooks(root, 'antigravity');
+    assert.equal((await brief('antigravity')).hookProgress, undefined, 'its hook records no tool events');
+    fs.writeFileSync(configPath(root, 'claude'), '{ not json');
+    assert.equal((await brief('claude')).hookProgress, undefined, 'a broken settings file does not break the handoff');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a coder fix cycle resumes the claude session it was given', () => {
+  const { args } = buildInvocation({ runner: 'claude', stage: 'coder', systemPrompt: 'p', task: 't', readOnly: false, config: {}, model: 'sonnet-5', effort: 'medium', resumeSession: 'sess-1' });
+  assert.equal(args[args.indexOf('--resume') + 1], 'sess-1');
+  const cold = buildInvocation({ runner: 'claude', stage: 'coder', systemPrompt: 'p', task: 't', readOnly: false, config: {}, model: 'sonnet-5' });
+  assert.equal(cold.args.includes('--resume'), false);
+});
+
+test('runAgent reports the session and model claude actually used, and an error result is a failure', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'observe-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const bin = path.join(root, 'bin');
+  fs.mkdirSync(bin);
+  const fake = (isError) => fs.writeFileSync(path.join(bin, 'claude'), [
+    '#!/bin/sh',
+    `echo '${JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-9', model: 'claude-haiku-4-5' })}'`,
+    `echo '${JSON.stringify({ type: 'result', subtype: isError ? 'error_max_turns' : 'success', is_error: isError, session_id: 'sess-9' })}'`,
+    'exit 0', '',
+  ].join('\n'), { mode: 0o755 });
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${oldPath}`;
+  try {
+    const call = () => runAgent({ runner: 'claude', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config: { agentTimeoutMs: 10000 }, model: 'sonnet-5' });
+    fake(false);
+    const good = await call();
+    assert.equal(good.ok, true);
+    assert.equal(good.sessionId, 'sess-9');
+    assert.equal(good.observedModel, 'claude-haiku-4-5');
+    fake(true);
+    const bad = await call();
+    assert.equal(bad.exitCode, 0);
+    assert.equal(bad.ok, false, 'exit 0 with an error result did not do the work');
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('an agent that goes silent past agentIdleTimeoutMs is stopped as a timeout', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'idle-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  const config = { agentTimeoutMs: 20000, agentIdleTimeoutMs: 300, customRunners: { hang: { command: process.execPath, args: ['-e', 'console.log("hi"); setTimeout(() => {}, 60000)'] } } };
+  const started = Date.now();
+  const res = await runAgent({ runner: 'hang', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config });
+  assert.equal(res.ok, false);
+  assert.equal(res.timedOut, true);
+  assert.ok(Date.now() - started < 10000, 'stopped long before the wall-clock budget');
+  assert.match(fs.readFileSync(path.join(paths.logs, 'coder.log'), 'utf8'), /no output for agentIdleTimeoutMs/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a text runner (parse: "text")\'s output is shown as written, and a JSON line it prints is not read as an agent event', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'text-runner-'));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  // Prints a package.json line and a line shaped like a failed result event.
+  const script = [
+    'console.log(\'{"name":"demo","version":"1.0.0"}\')',
+    'console.log(\'{"type":"result","is_error":true,"session_id":"not-a-session"}\')',
+    'console.log("all done")',
+  ].join(';');
+  const config = { agentTimeoutMs: 20000, customRunners: { plain: { command: process.execPath, args: ['-e', script], parse: 'text' } } };
+  const res = await runAgent({ runner: 'plain', stage: 'coder', task: 't', systemPromptFile: prompt, cwd: root, paths, config });
+  assert.equal(res.ok, true, 'exit 0 from a text runner is success');
+  assert.equal(res.resultError, false);
+  assert.equal(res.sessionId, null, 'a text runner has no session to resume');
+  const shown = fs.readFileSync(paths.events, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+    .filter((e) => e.type === 'agent_output').map((e) => e.text);
+  assert.deepEqual(shown, ['{"name":"demo","version":"1.0.0"}', '{"type":"result","is_error":true,"session_id":"not-a-session"}', 'all done']);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+// An agent that answers SIGTERM by exiting 0; with `child`, it first starts a
+// worker in its process group that ignores SIGTERM and writes its pid.
+function stubbornAgent(root, { child = false } = {}) {
+  const worker = "process.on('SIGTERM', () => {}); require('fs').writeFileSync('worker.pid', String(process.pid)); setInterval(() => {}, 1000);";
+  // With a worker, the agent blocks until the worker is up, so the timeout
+  // cannot fire before there is a worker to outlive it.
+  const waitForWorker = "const t0 = Date.now(); while (!require('fs').existsSync('worker.pid') && Date.now() - t0 < 20000) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);";
+  // The handler goes first: on a loaded machine node can take longer to start
+  // than a short timeout, and a SIGTERM before it is installed kills outright.
+  return [
+    "process.on('SIGTERM', () => process.exit(0));",
+    child ? `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(worker)}], { stdio: 'ignore' }); ${waitForWorker}` : '',
+    "console.log('working');",
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+}
+
+function stageRig(prefix) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const paths = pipelinePaths(root);
+  fs.mkdirSync(paths.prompts, { recursive: true });
+  const prompt = path.join(paths.prompts, 'coder_prompt.txt');
+  fs.writeFileSync(prompt, 'code');
+  return { root, paths, prompt, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+// Running, not just present: a SIGKILLed process is a zombie for a moment
+// until the system reaps it, and kill(pid, 0) still finds a zombie.
+const alive = (pid) => {
+  const ps = spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' });
+  const stat = (ps.stdout || '').trim();
+  return stat !== '' && !stat.startsWith('Z');
+};
+
+test('a timed-out agent is a failure even when its SIGTERM handler exits 0', async () => {
+  const r = stageRig('timeout-ok-');
+  try {
+    const config = { agentTimeoutMs: 4000, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root)] } } };
+    const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
+    assert.equal(res.exitCode, 0);
+    assert.equal(res.timedOut, true);
+    assert.equal(res.ok, false, 'stopped work is not finished work');
+  } finally { r.cleanup(); }
+});
+
+test('after a timeout, a worker that ignores SIGTERM is killed before the stage is reported over', async () => {
+  const r = stageRig('timeout-group-');
+  try {
+    const config = { agentTimeoutMs: 4000, customRunners: { stubborn: { command: process.execPath, args: ['-e', stubbornAgent(r.root, { child: true })] } } };
+    const res = await runAgent({ runner: 'stubborn', stage: 'coder', task: 't', systemPromptFile: r.prompt, cwd: r.root, paths: r.paths, config });
+    assert.equal(res.ok, false);
+    const pid = Number(fs.readFileSync(path.join(r.root, 'worker.pid'), 'utf8'));
+    assert.equal(alive(pid), false, 'the worker is gone when runAgent returns');
+  } finally { r.cleanup(); }
 });

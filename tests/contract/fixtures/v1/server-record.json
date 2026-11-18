@@ -1,0 +1,12 @@
+{
+  "instanceId": "<instance>",
+  "port": 0,
+  "pid": 0,
+  "startedAt": "<time>",
+  "token": "<token>",
+  "apiVersions": [
+    "v1"
+  ],
+  "serverVersion": "3.0.6",
+  "url": "http://127.0.0.1:0"
+}

@@ -1071,10 +1071,14 @@ function createApi(projectRef) {
     return res.json();
   }
 
+  // The server embeds its API token in the page it serves; every state-changing
+  // call presents it.
+  const token = () => globalThis.document?.querySelector?.('meta[name="pipeline-api-token"]')?.content || '';
+
   async function post(path, body = {}) {
     const res = await fetch(`${path}?${q()}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
@@ -1084,7 +1088,8 @@ function createApi(projectRef) {
 
   return {
     projects: () => get('/api/projects'),
-    state: (run) => get('/api/state', run ? { run } : {}),
+    // `stage` narrows the events to that stage (the server picks the active one otherwise).
+    state: (run, stage) => get('/api/state', { ...(run ? { run } : {}), ...(stage ? { stage } : {}) }),
     runs: () => get('/api/runs'),
     pool: () => get('/api/pool'),
     decisions: (status) => get('/api/decisions', status ? { status } : {}),
@@ -1097,14 +1102,16 @@ function createApi(projectRef) {
     approveMerge: (featureId, note) => post('/api/merge/approve', { featureId, note }),
     requestChanges: (featureId, text) => post('/api/merge/request-changes', { featureId, text }),
     followup: (stage, text, run) => post('/api/followup', { stage, text, run }),
-    poolAction: (action, featureId, reason) => post('/api/pool/action', { action, featureId, reason }),
+    poolAction: (action, featureId, reason, extra = {}) => post('/api/pool/action', { action, featureId, reason, ...extra }),
     pausePool: (why) => post('/api/pool/pause', { why }),
     resumePool: () => post('/api/pool/resume', {}),
-    continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
+    continueRun: (approve, run, handoffId) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}), ...(handoffId ? { handoffId } : {}) }),
     cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
-    extendRun: (cycles, run) => post('/api/extend', { cycles, ...(run ? { run } : {}) }),
+    extendRun: (cycles, run) => post('/api/extend', { extend: cycles, ...(run ? { run } : {}) }),
     dismissRun: (run, reason) => post('/api/run/dismiss', { run, reason }),
+    setAutonomy: (autonomy, run) => post('/api/run/autonomy', { autonomy, ...(run ? { run } : {}) }),
+    startRun: (body) => post('/api/run', body),
   };
 }
 
@@ -1166,6 +1173,20 @@ function skipReason(stage, status) {
   const reasonFn = SKIP_REASONS[stage.name];
   if (reasonFn) return reasonFn(status) ?? 'Skipped for this run (reason not recorded).';
   return 'Skipped for this run (see status.json for details).';
+}
+
+/**
+ * The stage a run view opens on: the one the person picked, else the one the
+ * run is waiting on or running, else the last one that finished. The server
+ * uses the same rule to send only that stage's events.
+ */
+function activeStageOf(status, picked = null) {
+  const stages = status?.stages || [];
+  return picked
+    || status?.awaitingStage
+    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
+    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
+    || 'planner';
 }
 
 
@@ -1964,6 +1985,39 @@ function renderDecisionList(host, items) {
   patchList(host, items, { key: decisionKey, sig: decisionSig, render: decisionCard });
 }
 
+// Start a single run from the dashboard. The surface is an explicit choice:
+// "host" waits for a chat session to do each stage; any other runner runs
+// unattended as a CLI agent (the dashboard is never itself a chat).
+function newRunForm() {
+  const task = el('textarea', { rows: 4, placeholder: 'What should be built or fixed?', style: 'width:100%' });
+  const runner = el('select', {}, [
+    ['host', 'Chat session (host) — you or an IDE agent completes each stage'],
+    ['auto', 'First signed-in agent CLI (unattended)'],
+    ['claude', 'Claude Code CLI'], ['codex', 'Codex CLI'], ['cursor', 'Cursor agent CLI'], ['antigravity', 'Antigravity CLI'],
+  ].map(([value, text]) => el('option', { value, text })));
+  const autonomy = el('select', {}, ['guided', 'autonomous'].map((v) => el('option', { value: v, text: v })));
+  const approve = el('input', { type: 'checkbox' });
+  const submit = el('button', { class: 'btn', text: 'Start run' });
+  submit.addEventListener('click', async () => {
+    if (!task.value.trim()) return toast('Describe the task first.');
+    submit.disabled = true;
+    try {
+      await api.startRun({ task: task.value.trim(), runner: runner.value, autonomy: autonomy.value, approvePlan: approve.checked });
+      toast(runner.value === 'host' ? 'Run started — it now waits for a chat session to take the Planner stage.' : 'Run started.');
+      refresh();
+    } catch (err) { toast(err.message); } finally { submit.disabled = false; }
+  });
+  return el('div', { class: 'card', style: 'max-width:720px;margin-top:16px' }, [
+    el('h2', { text: 'New run' }), task,
+    el('div', { class: 'row', style: 'gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center' }, [
+      el('span', { class: 'meta', text: 'Who executes' }), runner,
+      el('span', { class: 'meta', text: 'Autonomy' }), autonomy,
+      el('label', { class: 'meta' }, [approve, ' I approve the plan before building']),
+    ]),
+    el('div', { style: 'margin-top:10px' }, [submit]),
+  ]);
+}
+
 function viewOverview(wrap) {
   const snap = state.pool?.snapshot;
   if (!snap) {
@@ -1971,7 +2025,8 @@ function viewOverview(wrap) {
       wrap.dataset.view = 'overview-empty';
       wrap.replaceChildren();
       wrap.append(el('h1', { text: 'Orchestrator' }));
-      wrap.append(el('p', { class: 'sub', text: 'No roadmap is running in this project. Open a run from the sidebar, or start one with the orchestrate command.' }));
+      wrap.append(el('p', { class: 'sub', text: 'No roadmap is running in this project. Open a run from the sidebar, or start one here.' }));
+      wrap.append(newRunForm());
     }
     return;
   }
@@ -2031,7 +2086,7 @@ function viewOverview(wrap) {
     for (const skill of nonVerifiedSkills) {
       h.append(el('div', {
         class: 'banner warn',
-        html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
+        html: `Skill <code>${esc(skill.name)}</code> is not in use (${esc(skill.status)}). Run <code>node pipeline/skills-cli.mjs pin ${esc(skill.name)}</code> after reviewing it.`,
       }));
     }
   });
@@ -2050,7 +2105,7 @@ function viewOverview(wrap) {
 // item with no real decisionId — its "options" are pool verbs (retry/hold/
 // release/skip), not free-text answers, so they get their own explicit
 // action buttons rather than routing through the answer-a-decision flow.
-const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held']);
+const FEATURE_ACTION_KINDS = new Set(['feature-failed', 'held', 'ticket-held', 'ticket-failed']);
 
 function decisionCard(item) {
   const isFeatureAction = !item.decisionId && item.featureId && FEATURE_ACTION_KINDS.has(item.kind);
@@ -2067,7 +2122,7 @@ function decisionCard(item) {
       onclick: isFeatureAction
         ? async () => {
           try {
-            await api.poolAction(option, item.featureId, answer.value.trim() || undefined);
+            await api.poolAction(option, item.featureId, answer.value.trim() || undefined, { ticketId: item.ticketId, runId: item.runId });
             toast(`${option} recorded for ${item.featureId}.`);
             refresh();
           } catch (err) { toast(err.message); }
@@ -2434,7 +2489,7 @@ async function viewRun(wrap, tab) {
   const gen = tab._fetchGen;
 
   let data;
-  try { data = await api.state(tab.subject); }
+  try { data = await api.state(tab.subject, tab.stage); }
   catch (err) {
     if (firstMount) wrap.replaceChildren(el('p', { class: 'sub', text: err.message }));
     return;
@@ -2444,11 +2499,7 @@ async function viewRun(wrap, tab) {
   const status = data.status || {};
   const byName = new Map((status.stages || []).map((s) => [s.name, s]));
   const stages = STAGE_ORDER.map((name) => byName.get(name) || { name, status: 'pending' });
-  const active = tab.stage
-    || status.awaitingStage
-    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
-    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
-    || 'planner';
+  const active = activeStageOf({ ...status, stages }, tab.stage);
   const meta = agentMeta(active);
   const remount = wrap.dataset.stage !== active || wrap.dataset.subject !== String(tab.subject || '');
 
@@ -2618,7 +2669,7 @@ function fillGoal(wrap, goal) {
 function fillControls(wrap, tab, data) {
   const host = wrap.querySelector('[data-role="controls"]');
   if (!host) return;
-  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue, data.status?.overall, data.status?.haltReason, !!data.live, !!data.stale].join();
+  const sig = [!!data.canCancel, !!data.canResume, !!data.canExtend, !!data.canContinue, !!data.canApprovePlan, data.policy?.autonomy, data.status?.overall, data.status?.haltReason, data.status?.handoffId, !!data.live, !!data.stale].join();
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.replaceChildren();
@@ -2632,8 +2683,35 @@ function fillControls(wrap, tab, data) {
 
   row(data.canContinue, el('button', {
     class: 'btn', text: 'Continue', disabled: !data.canContinue,
-    onclick: async () => { try { await api.continueRun(false, run); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
+    onclick: async () => { try { await api.continueRun(false, run, data.status?.handoffId); toast('Resuming — the stage you completed will be picked up.'); refresh(); } catch (err) { toast(err.message); } },
   }), unavailableReason('continue', data));
+
+  if (data.canApprovePlan) {
+    // The server always computed this; the dashboard never offered it, so a
+    // plan gate could only be answered from a terminal.
+    const note = el('textarea', { placeholder: 'What should the Planner change? (required to request changes)', rows: 2, style: 'width:100%;margin:4px 0' });
+    list.append(el('div', { style: 'margin-bottom:10px' }, [
+      el('div', { class: 'row', style: 'gap:8px;align-items:center' }, [
+        el('button', {
+          class: 'btn', text: 'Approve plan',
+          onclick: async () => { try { await api.continueRun(true, run); toast('Plan approved — building starts now.'); refresh(); } catch (err) { toast(err.message); } },
+        }),
+        el('button', {
+          class: 'btn ghost', text: 'Request changes',
+          onclick: async () => {
+            if (!note.value.trim()) return toast('Describe the changes first.');
+            try {
+              await api.followup('planner', note.value.trim(), run);
+              await api.continueRun(true, run);
+              toast('Sent back to the Planner with your notes.');
+              refresh();
+            } catch (err) { toast(err.message); }
+          },
+        }),
+      ]),
+      note,
+    ]));
+  }
 
   row(data.canResume, el('button', {
     class: 'btn ghost', text: 'Resume', disabled: !data.canResume,
@@ -2652,7 +2730,7 @@ function fillControls(wrap, tab, data) {
 
   row(data.canCancel, el('button', {
     class: 'btn danger', text: 'Stop run', disabled: !data.canCancel,
-    onclick: async () => { try { await api.cancelRun(run); toast('Stopping — the current stage will finish first.'); refresh(); } catch (err) { toast(err.message); } },
+    onclick: async () => { try { await api.cancelRun(run); toast('Stopping — the engine and its agent processes are being stopped; the run can be resumed.'); refresh(); } catch (err) { toast(err.message); } },
   }), unavailableReason('cancel', data));
 
   if (!data.canCancel && run) {
@@ -2661,13 +2739,26 @@ function fillControls(wrap, tab, data) {
         class: 'btn ghost danger', text: 'Dismiss run',
         onclick: async () => {
           try {
-            await api.dismissRun(run, 'Dismissed from dashboard');
-            toast('Run dismissed.');
+            const res = await api.dismissRun(run, 'Dismissed from dashboard');
+            toast(res.alreadyDismissed ? 'This run was already dismissed.' : 'Run dismissed.');
             refresh();
           } catch (err) { toast(err.message); }
         },
       }),
       el('span', { class: 'meta', text: 'Dismiss and archive this run.' }),
+    ]));
+  }
+
+  if (data.policy && !['done', 'halted'].includes(data.status?.overall)) {
+    const select = el('select', {}, ['guided', 'autonomous'].map((v) => el('option', { value: v, text: v, ...(data.policy.autonomy === v ? { selected: true } : {}) })));
+    select.addEventListener('change', async () => {
+      try { await api.setAutonomy(select.value, run); toast(`Now ${select.value} — applies at the run's next gate.`); refresh(); } catch (err) { toast(err.message); }
+    });
+    list.append(el('div', { class: 'row', style: 'margin-top:10px;align-items:center;gap:8px' }, [
+      el('span', { class: 'meta', text: 'Autonomy' }), select,
+      el('span', { class: 'meta', text: data.policy.autonomy === 'autonomous'
+        ? 'Recoverable failures are retried once automatically; merges still need you.'
+        : 'Recoverable failures wait for you; merges need you.' }),
     ]));
   }
 

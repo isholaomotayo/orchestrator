@@ -12,6 +12,23 @@ export const POOL_SNAPSHOT_CONTRACT = 'orchestrator-pool-snapshot.v1';
 
 const LANDED_LIMIT = 5;
 
+/** What a run is for: its roadmap feature, and what comes after it. */
+export function goalFor(feature, features = []) {
+  const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(feature.id))
+    || features.find((f) => f.status === 'queued');
+  return {
+    featureId: feature.id,
+    title: feature.title,
+    status: feature.status,
+    dependsOn: feature.dependsOn || [],
+    acceptance: feature.acceptance || null,
+    specRunId: feature.specRunId ?? null,
+    integrationRunId: feature.integrationRunId ?? null,
+    nextFeatureId: next?.id ?? null,
+    nextTitle: next?.title ?? null,
+  };
+}
+
 export function buildSnapshot({
   roadmap = null, runs = [], decisions = [], attention = [],
   supervisor = null, skills = [], repoRoot = null, now = new Date(),
@@ -77,6 +94,29 @@ export function buildSnapshot({
         artifacts: [feature.branch, feature.committedSha].filter(Boolean), since: null,
       });
       covered.add(feature.id);
+    }
+    // A held or failed ticket is repaired or rerun on its own; it never needs
+    // the whole feature replanned.
+    if (['executing', 'failed'].includes(feature.status) && !covered.has(feature.id)) {
+      const stuck = (feature.tickets || []).filter((t) => ['held', 'failed'].includes(t.status));
+      for (const ticket of stuck) {
+        needsDecision.push({
+          decisionId: null,
+          kind: ticket.status === 'held' ? 'ticket-held' : 'ticket-failed',
+          runId: ticket.runId ?? null,
+          featureId: feature.id,
+          ticketId: ticket.id,
+          featureTitle: feature.title,
+          question: ticket.status === 'held'
+            ? `${feature.id}/${ticket.id} is held for repair; the rest of ${feature.id} continues.`
+            : `${feature.id}/${ticket.id} failed.`,
+          options: ticket.status === 'held' ? ['resume-run', 'retry-ticket'] : ['retry-ticket'],
+          recommended: ticket.status === 'held' ? 'resume-run' : 'retry-ticket',
+          artifacts: [],
+          since: feature.startedAt ?? null,
+        });
+      }
+      if (stuck.length) covered.add(feature.id);
     }
     if (!['failed', 'held'].includes(feature.status) || covered.has(feature.id)) continue;
     needsDecision.push({
@@ -146,8 +186,6 @@ export function buildSnapshot({
 
   const inProgress = runs.filter(r => !r.dismissed && !['done','halted'].includes(r.overall)).map((r) => {
     const feature = byFeature.get(r.featureId);
-    const next = features.find((f) => f.status === 'queued' && (f.dependsOn || []).includes(r.featureId))
-      || features.find((f) => f.status === 'queued');
     return {
       runId: r.runId,
       featureId: r.featureId ?? null,
@@ -167,19 +205,7 @@ export function buildSnapshot({
       runner: r.runner ?? null,
       hostClient: r.hostClient ?? null, invocationMode: r.invocationMode ?? null, runnerRequested: r.runnerRequested ?? null,
       spawnedAt: r.spawnedAt ?? null, reportRel: r.reportRel ?? null, reportError: r.reportError ?? null,
-      goal: feature
-        ? {
-          featureId: feature.id,
-          title: feature.title,
-          status: feature.status,
-          dependsOn: feature.dependsOn || [],
-          acceptance: feature.acceptance || null,
-          specRunId: feature.specRunId ?? null,
-          integrationRunId: feature.integrationRunId ?? null,
-          nextFeatureId: next?.id ?? null,
-          nextTitle: next?.title ?? null,
-        }
-        : null,
+      goal: feature ? goalFor(feature, features) : null,
     };
   });
 
@@ -275,6 +301,10 @@ export function renderDigest(snapshot) {
     const recommended = d.recommended ? ` Recommended: ${d.recommended}.` : '';
     const how = d.decisionId
       ? ` — answer with \`pool decide ${d.decisionId} "<answer>"\``
+      : d.kind === 'ticket-held'
+        ? ` — after fixing it, \`pool resume-run ${d.runId}\`; or rerun it with \`pool retry-ticket ${d.featureId} ${d.ticketId}\``
+      : d.kind === 'ticket-failed'
+        ? ` — rerun just this ticket with \`pool retry-ticket ${d.featureId} ${d.ticketId}\` (or \`pool retry ${d.featureId}\` to replan)`
       : d.kind === 'feature-failed'
         ? ` — retry with \`pool retry ${d.featureId}\`, or skip with \`roadmap skip ${d.featureId}\``
         : d.kind === 'held'
@@ -315,7 +345,7 @@ export function renderDigest(snapshot) {
 
   const unverified = snapshot.skills.filter((s) => s.status !== 'verified');
   if (unverified.length) {
-    parts.push(`> Skills not in use: ${unverified.map((s) => `${s.name} (${s.status})`).join(', ')} — run \`node pipeline/skills.mjs pin <name>\` after reviewing the change.`, '');
+    parts.push(`> Skills not in use: ${unverified.map((s) => `${s.name} (${s.status})`).join(', ')} — run \`node pipeline/skills-cli.mjs pin <name>\` after reviewing the change.`, '');
   }
   return parts.join('\n').trimEnd() + '\n';
 }

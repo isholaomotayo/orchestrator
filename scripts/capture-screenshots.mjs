@@ -2,6 +2,8 @@
 // Capture dashboard screenshots for README using Playwright (v2 control room).
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { projectIdOf } from '../pipeline/api-v1.mjs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -58,15 +60,17 @@ async function waitForServer() {
     if (res.status === 0) {
       let health = {};
       try { health = JSON.parse(res.stdout); } catch {}
-      if (health.repoRoot && path.resolve(health.repoRoot) !== repoRoot) {
+      if (health.projectId && health.projectId !== projectIdOf(repoRoot)) {
         throw new Error(
-          `Port ${port} is serving a different project (${health.repoRoot}).\n` +
+          `Port ${port} is serving a different project (id ${health.projectId}).\n` +
           `Re-run on a free port, e.g. PIPELINE_UI_PORT=4660 npm run screenshots`
         );
       }
       // Ensure this repo is registered even if the server was already up.
+      let token = '';
+      try { token = JSON.parse(fs.readFileSync(path.join(process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator'), 'servers', `${health.instanceId}.json`), 'utf8')).token || ''; } catch { /* no record: the register is refused */ }
       spawnSync('curl', [
-        '-sf', '-H', 'Content-Type: application/json',
+        '-sf', '-H', 'Content-Type: application/json', '-H', `Authorization: Bearer ${token}`,
         '-d', JSON.stringify({ repoRoot }),
         `${url}/api/register`,
       ], { encoding: 'utf8' });

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { acquireLockFile } from './state.mjs';
+import { memoByStat } from './file-cache.mjs';
 
 function syncDirectory(dir) {
   const fd = fs.openSync(dir, 'r');
@@ -40,11 +41,19 @@ function projectRecord(dir, name, row) {
   appendRecord(dir, name, { at: new Date().toISOString(), command: 'projection.applied', commandId: row.commandId, state: row.state });
 }
 export function recoverCommands(dir, name = 'bridge') {
-  if (!readJournal(path.join(dir, `${name}.journal.jsonl`)).at(-1)?.writes?.length) return;
+  if (!lastJournalRecord(path.join(dir, `${name}.journal.jsonl`))?.writes?.length) return;
   const lock = path.join(dir, `${name}.lock`);
   if (!acquireLockFile(lock, { pid: process.pid })) throw new Error('Command busy; retry with the same commandId.');
   try { projectRecord(dir, name, readJournal(path.join(dir, `${name}.journal.jsonl`)).at(-1)); }
   finally { fs.unlinkSync(lock); }
+}
+
+// Every record carries the full state, so readers only need the last one. The
+// whole file is still parsed (a corrupt row stays a hard error), but only once
+// per change instead of on every read: the dashboard and the supervisor read
+// it once per run per request/tick.
+function lastJournalRecord(file) {
+  return memoByStat(file, () => readJournal(file).at(-1) ?? null);
 }
 
 export function readJournal(file) {
@@ -60,9 +69,29 @@ export function readJournal(file) {
   return out;
 }
 export function commandState(dir, name = 'bridge') {
-  const rows = readJournal(path.join(dir, `${name}.journal.jsonl`));
-  return rows.at(-1)?.state ?? { version: 2, revision: 0, sessions: {}, runs: {}, messages: [], receipts: {} };
+  const state = lastJournalRecord(path.join(dir, `${name}.journal.jsonl`))?.state;
+  // A copy: callers mutate the state they are handed, the cache must not see it.
+  return state ? structuredClone(state) : { version: 2, revision: 0, sessions: {}, runs: {}, messages: [], receipts: {} };
 }
+// Each record carries the full state, so the journal grew without bound (14.7MB
+// for 375 commands in the field) and every read parsed all of it. Once the
+// last record's writes are applied, the journal can be replaced by one record
+// holding the current state. Receipts are kept for recent commands only — a
+// retry of an old commandId is no longer deduplicated.
+export const COMPACT_JOURNAL_BYTES = 1024 * 1024;
+export const KEEP_RECEIPTS = 500;
+function compactJournal(dir, name, { maxBytes = COMPACT_JOURNAL_BYTES } = {}) {
+  const journal = path.join(dir, `${name}.journal.jsonl`);
+  let size = 0;
+  try { size = fs.statSync(journal).size; } catch { return false; }
+  if (size <= maxBytes) return false;
+  const last = readJournal(journal).at(-1);
+  if (!last || last.writes?.length) return false; // a projection is still pending
+  const state = { ...last.state, receipts: Object.fromEntries(Object.entries(last.state.receipts || {}).slice(-KEEP_RECEIPTS)) };
+  durableWrite(journal, JSON.stringify({ at: new Date().toISOString(), command: 'journal.compacted', commandId: null, state }) + '\n');
+  return true;
+}
+
 export function transact(dir, command, input, mutate, { name = 'bridge', expectedRevision, commandId = crypto.randomUUID() } = {}) {
   fs.mkdirSync(dir, { recursive: true });
   const lock = path.join(dir, `${name}.lock`);
@@ -98,6 +127,7 @@ export function transact(dir, command, input, mutate, { name = 'bridge', expecte
       error.committed = true;
       throw error;
     }
+    compactJournal(dir, name);
     return response;
   } finally { fs.unlinkSync(lock); }
 }

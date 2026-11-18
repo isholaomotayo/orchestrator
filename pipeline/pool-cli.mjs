@@ -12,7 +12,7 @@ import { renderDigest } from './snapshot.mjs';
 import { createSupervisor } from './supervisor.mjs';
 import { writeTerminalReport } from './report.mjs';
 
-const USAGE = `Usage: node pipeline/pool.mjs <verb> [options]
+const USAGE = `Usage: node pipeline/pool-cli.mjs <verb> [options]
 
 Reading:
   status [--json]              the pool snapshot
@@ -33,12 +33,15 @@ Acting:
   approve-merge [featureId] [--note "..."]   omit featureId to land a review:end roadmap
   land-roadmap [--note "..."]
   request-changes <featureId> "<text>"
-  retry <featureId>
+  retry <featureId>            replan the whole feature from scratch
+  retry-ticket <featureId> <ticketId>   rerun one failed/held ticket, keeping the plan and committed tickets
   extend <runId> <cycles>
+  set-autonomy <runId> guided|autonomous   applies at the run's next gate
+  resume-run <runId>           resume one halted run in place (after fixing its artifact)
   ack <attentionId>
   notes add "<text>" [--kind learning|decision|gotcha] [--run <id>] [--feature <id>]
   pause [why] | resume
-  reset | clean [--hard]`;
+  reset | clean [--hard] [--discard-unmerged]   refuses while work is live; keeps unmerged worktrees`;
 
 function out(json, value, text) {
   if (json) console.log(JSON.stringify(value, null, 2));
@@ -245,6 +248,25 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
         out(json, pool.requestExtend(paths, args[1], args[2]), `Asked the supervisor to extend ${args[1]} by ${args[2]} cycle(s).`);
         return 0;
       }
+      case 'set-autonomy': {
+        if (!args[1] || !args[2]) { console.error(USAGE); return 2; }
+        const res = pool.setRunAutonomy(paths, args[1], args[2], { via: 'cli' });
+        out(json, res, `${args[1]} is now ${res.autonomy}; it applies at the run's next gate.`);
+        return 0;
+      }
+      case 'retry-ticket': {
+        if (!args[1] || !args[2]) { console.error(USAGE); return 2; }
+        const res = pool.retryTicket(paths, args[1], args[2]);
+        out(json, res, `Requeued ${args[1]}/${args[2]}${res.supersedes ? ` (supersedes ${res.supersedes})` : ''}; the supervisor will start it.`);
+        return 0;
+      }
+      case 'resume-run': {
+        if (!args[1]) { console.error(USAGE); return 2; }
+        const res = pool.requestRunResume(paths, args[1]);
+        if (!res.ok) { console.error(`Cannot resume ${args[1]}: ${res.reason}`); return 1; }
+        out(json, res, `Asked the supervisor to resume ${args[1]} in place.`);
+        return 0;
+      }
       case 'ack': {
         if (!args[1]) { console.error(USAGE); return 2; }
         pool.ackAttention(paths, args[1]);
@@ -265,8 +287,11 @@ export async function main(argv, { cwd = process.cwd() } = {}) {
       case 'reset':
       case 'clean': {
         const hard = args.includes('--hard');
-        pool.reset(paths, { archive: !hard, hard });
-        out(json, { reset: true }, `Pool reset completed. Runs archived${hard ? ' (hard deleted)' : ''}.`);
+        const res = pool.reset(paths, { archive: !hard, hard, discardUnmerged: args.includes('--discard-unmerged') });
+        const keptNote = res.keptWorktrees.length
+          ? ` Kept ${res.keptWorktrees.length} worktree(s) holding uncommitted or unmerged work (and their runs): ${res.keptWorktrees.join(', ')}. Pass --discard-unmerged to drop them.`
+          : '';
+        out(json, res, `Pool reset completed. Runs ${hard ? 'hard deleted' : 'archived'}.${keptNote}`);
         return 0;
       }
       default:

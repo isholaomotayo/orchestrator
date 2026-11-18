@@ -245,8 +245,15 @@ export function orderFeatures(features) {
 export function compileRoadmap(roadmap, previous = null, { sourceSha256 = null, now = new Date() } = {}) {
   const titleChanged = Boolean(previous?.title && previous.title !== roadmap.title);
   const prior = new Map(titleChanged ? [] : (previous?.features || []).map((f) => [f.id, f]));
+  // Landing is a fact about the repository, not about one roadmap: a new
+  // roadmap that lists an already-landed feature must not plan it again
+  // (petra re-planned a P1 that had landed weeks earlier).
+  const landedBefore = new Map([...(previous?.orphans || []), ...(previous?.features || [])]
+    .filter((f) => ['landed', 'accepted'].includes(f.status))
+    .map((f) => [f.id, f]));
   const features = roadmap.features.map((f) => {
-    const before = prior.get(f.id);
+    const landed = landedBefore.get(f.id);
+    const before = prior.get(f.id) || (landed && landed.title === f.title ? landed : undefined);
     return {
       id: f.id,
       title: f.title,

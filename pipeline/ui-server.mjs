@@ -6,17 +6,32 @@
 // Binds to 127.0.0.1 only — the dashboard exposes code, diffs, and controls.
 import fs from 'node:fs';
 import { bridgeCommand, inspectBridge } from './bridge.mjs';
+import { commandState } from './commands.mjs';
 import { isValidRunId } from './run-registry.mjs';
+import { recordIntervention } from './interventions.mjs';
+import { readRunSummary } from './run-reader.mjs';
 import { readUsage } from './usage.mjs';
+import { goalFor } from './snapshot.mjs';
+import { activeStageOf } from './ui/stages.mjs';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pipelinePaths, loadConfig, pidAlive, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, loadConfig, pidAlive, withFileLock, withFileLockAsync, readLock, ensureStageEntries, CORE_STAGES, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
+import { recoveryFor } from './recoverability.mjs';
+import { policyOf, readPolicyOverride } from './mode.mjs';
 import { DEFAULT_MODEL_PROFILES, DEFAULT_STAGE_EFFORT, EFFORT_LEVELS, MODEL_CATALOG } from './models.mjs';
 import { routeMessage } from './router.mjs';
-import { isTrustedRequest } from './http-guard.mjs';
+import { isTrustedRequest, isLoopbackHost } from './http-guard.mjs';
+import { openDecisions, appendAttention } from './attention.mjs';
+import { planSupervisorWatch } from './self-heal.mjs';
+import os from 'node:os';
+import crypto from 'node:crypto';
+import {
+  API_VERSION, CONTRACT, CAPABILITIES, projectIdOf, summarySignature,
+  createEventHub, createEventTail, createCommandExecutor,
+} from './api-v1.mjs';
 import { isOrchestratorSourceRepo } from './self-guard.mjs';
 import { resolveEngineEntry, readInstall, readCheck, gitHead, packageVersion } from './installer.mjs';
 import * as pool from './pool.mjs';
@@ -31,6 +46,21 @@ function selfGuardError(project) {
     return { error: 'refusing to target the orchestrator source repository — install the pipeline into a consumer project and run it there (maintainers: set ORCH_ALLOW_SELF=1)', code: 403 };
   }
   return null;
+}
+
+// Writes under .pipeline/ that are not state a client renders: agent worktrees
+// and installs, raw logs (tailed by offset), atomic-write temporaries, lock and
+// heartbeat files, and process stdout captures (including this server's own,
+// which would otherwise feed back into the watcher).
+const IGNORED_CHANGE = /^(worktrees|\.pipeline_sandbox)[\\/]|node_modules|(^|[\\/])logs[\\/]|\.(tmp|candidate|consumed|lock)$|(^|[\\/])\.lock$|(^|[\\/])(orchestrator|ui-server)\.out$/;
+const CHANGE_DEBOUNCE_MS = 150;
+const CHANGE_MAX_WAIT_MS = 500;
+// Legacy /events clients get the same bound as v1: a tab that stops reading is
+// dropped once 1 MB is queued for it, instead of growing the server's memory.
+function writeOrDrop(set, res, msg) {
+  try {
+    if (!res.write(msg) && (res.writableLength || 0) > 1024 * 1024) { set.delete(res); res.destroy(); }
+  } catch { set.delete(res); }
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,6 +86,51 @@ const defaultPaths = pipelinePaths(defaultRepoRoot);
 const defaultConfig = loadConfig(defaultPaths);
 const PORT = Number(process.env.PIPELINE_UI_PORT || defaultConfig.uiPort || 4600);
 const HOST = '127.0.0.1';
+
+// ---- identity for /api/v1 clients (the desktop app, scripts) ---------------
+// The token gates every /api/v1 route and the legacy POSTs. It is published in
+// a per-user, owner-only registry file and embedded in the dashboard page.
+// There is deliberately no sign-in: anything on this machine that can open
+// the page can read the token, so the token only stops requests that cannot
+// read the page (another website's POST; DNS rebinding is refused by the Host
+// check). Every local user is trusted. See SECURITY.md, "Dashboard access".
+const ORCH_HOME = process.env.ORCHESTRATOR_HOME || path.join(os.homedir(), '.orchestrator');
+const INSTANCE_ID = crypto.randomUUID();
+const API_TOKEN = crypto.randomBytes(24).toString('hex');
+const STARTED_AT = new Date().toISOString();
+const SERVER_RECORD = path.join(ORCH_HOME, 'servers', `${INSTANCE_ID}.json`);
+const PROJECTS_FILE = path.join(ORCH_HOME, 'projects.json');
+const hub = createEventHub({ instanceId: INSTANCE_ID });
+const tailEvents = createEventTail();
+const childrenByPid = new Map();
+
+function readKnownProjects() {
+  try { return JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8')).filter((p) => typeof p === 'string'); } catch { return []; }
+}
+function rememberProject(repoRoot) {
+  try {
+    if (readKnownProjects().includes(repoRoot)) return;
+    fs.mkdirSync(ORCH_HOME, { recursive: true, mode: 0o700 });
+    // Several servers (and the desktop app) share this file: re-read under the
+    // lock and replace it atomically, so concurrent registrations both survive.
+    withFileLock(`${PROJECTS_FILE}.lock`, () => {
+      const known = readKnownProjects();
+      if (known.includes(repoRoot)) return;
+      const tmp = `${PROJECTS_FILE}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify([...known, repoRoot], null, 2), { mode: 0o600 });
+      fs.renameSync(tmp, PROJECTS_FILE);
+    }, { timeoutMs: 2000 });
+  } catch { /* the registry is a convenience; serving continues without it */ }
+}
+function writeServerRecord() {
+  try {
+    fs.mkdirSync(path.dirname(SERVER_RECORD), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(SERVER_RECORD, JSON.stringify({
+      instanceId: INSTANCE_ID, port: PORT, pid: process.pid, startedAt: STARTED_AT, token: API_TOKEN,
+      apiVersions: [API_VERSION], serverVersion: HOST_ENGINE.version, url: `http://127.0.0.1:${PORT}`,
+    }, null, 2), { mode: 0o600 });
+  } catch (err) { console.warn(`[UI] Could not write server registry ${SERVER_RECORD}: ${err.message}`); }
+}
 
 // This server is started detached (nohup, see orchestrate.sh) so nothing else
 // ever stops it — a run finishing doesn't touch it, since one dashboard is
@@ -106,15 +181,24 @@ function getOrCreateProject(projectPath) {
   // Watcher setup
   fs.mkdirSync(pPaths.dir, { recursive: true });
   const onFsChange = (file) => {
+    // Agent edits and installs inside worktrees are not pipeline state; they
+    // used to trigger a dashboard refresh on every keystroke.
+    if (file && IGNORED_CHANGE.test(String(file))) return;
     project.changedSet.add(file || '*');
     clearTimeout(project.debounceTimer);
+    // Trailing debounce, but never longer than CHANGE_MAX_WAIT_MS after the first
+    // change: a stage that streams continuously would otherwise starve every client.
+    project.firstChangeAt ??= Date.now();
+    const wait = Math.max(0, Math.min(CHANGE_DEBOUNCE_MS, project.firstChangeAt + CHANGE_MAX_WAIT_MS - Date.now()));
     project.debounceTimer = setTimeout(() => {
+      project.firstChangeAt = null;
       const msg = `data: ${JSON.stringify({ type: 'change', changed: [...project.changedSet] })}\n\n`;
       for (const res of project.sseClients) {
-        try { res.write(msg); } catch { project.sseClients.delete(res); }
+        writeOrDrop(project.sseClients, res, msg);
       }
+      try { publishProjectChanges(project, [...project.changedSet]); } catch (err) { console.warn(`[UI] v1 publish failed: ${err.message}`); }
       project.changedSet.clear();
-    }, 150);
+    }, wait);
   };
 
   try {
@@ -127,12 +211,116 @@ function getOrCreateProject(projectPath) {
     }
   }
 
+  project.projectId = projectIdOf(resolvedPath);
+  project.lastSigs = new Map();
   projects.set(resolvedPath, project);
+  rememberProject(resolvedPath);
+  // Prime the event tails so the first change publishes only new events.
+  for (const runId of listRunIds(project)) tailEvents(runPathsFor(project, runId).events);
   return project;
 }
 
-// Register the default project at startup
-getOrCreateProject(defaultRepoRoot);
+function listRunIds(project) {
+  const ids = [];
+  if (fs.existsSync(path.join(project.paths.dir, 'status.json'))) ids.push(null);
+  try { for (const d of fs.readdirSync(project.paths.runs)) if (isValidRunId(d) && fs.existsSync(path.join(project.paths.runs, d, 'status.json'))) ids.push(d); } catch { /* no runs */ }
+  return ids;
+}
+
+function projectById(projectId) {
+  for (const project of projects.values()) if (project.projectId === projectId) return project;
+  return null;
+}
+
+function computeSummary(project, runId) {
+  const read = readRunSummary(project.repoRoot, runId || null, { config: project.config });
+  if (!read) return null;
+  // The liveness this summary was built with: publishProjectChanges compares it
+  // to detect the supervisor starting or stopping.
+  if (read.supervisor) project.supervisorAlive = read.supervisor.alive;
+  return read.summary;
+}
+
+// Runs the bridge holds an owner record for now, plus those it held last time:
+// a claim, a release or a lease renewal changes only the bridge journal, never
+// the run's own files, yet it changes who is driving the run.
+function bridgeOwnedRuns(project) {
+  let owned = [];
+  try { owned = Object.keys(commandState(project.paths.control).runs || {}); } catch { /* unreadable journal */ }
+  const ids = new Set([...(project.bridgeOwned || []), ...owned]);
+  project.bridgeOwned = owned;
+  return [...ids].map((key) => (key === 'legacy-root' ? null : key)).filter((id) => id === null || isValidRunId(id));
+}
+
+// Turn file changes into typed v1 events: run.upserted when a run's summary
+// changes, run.event for each new events.jsonl line, and control-plane updates.
+function publishProjectChanges(project, files) {
+  const projectId = project.projectId;
+  const runIds = new Set();
+  let control = false;
+  let bridge = false;
+  for (const f of files) {
+    const rel = String(f || '').replaceAll('\\', '/');
+    const m = /^runs\/([^/]+)\//.exec(rel);
+    if (m && isValidRunId(m[1])) runIds.add(m[1]);
+    else if (/^control\//.test(rel)) { control = true; if (/^control\/bridge\./.test(rel)) bridge = true; }
+    else if (rel === '*') { for (const id of listRunIds(project)) runIds.add(id); control = true; }
+    else runIds.add(null);
+  }
+  if (control) {
+    let alive = null;
+    try { alive = pool.supervisorState(project.paths).alive; } catch { /* no pool state */ }
+    // computeSummary records the liveness it last used; a different answer now means
+    // every pool run's diagnosis is out of date, though none of their files changed.
+    if (alive !== null && project.supervisorAlive !== undefined && project.supervisorAlive !== alive) {
+      for (const id of listRunIds(project)) runIds.add(id);
+    }
+  }
+  if (bridge) for (const id of bridgeOwnedRuns(project)) runIds.add(id);
+  for (const runId of runIds) {
+    const runPaths = runPathsFor(project, runId);
+    for (const { seq, event } of tailEvents(runPaths.events)) hub.publish('run.event', { projectId, runId: runId || 'root', seq, event });
+    const summary = computeSummary(project, runId);
+    if (!summary) continue;
+    const sig = summarySignature(summary);
+    if (project.lastSigs.get(runId || 'root') === sig) continue;
+    project.lastSigs.set(runId || 'root', sig);
+    hub.publish('run.upserted', { projectId, run: summary });
+  }
+  if (control) {
+    // Publish only what changed: control/ is touched by every supervisor tick,
+    // and an unchanged frame still costs every client a re-render.
+    let attention = [];
+    try { attention = pool.pendingAttention(project.paths); } catch { /* none */ }
+    const attentionSig = JSON.stringify(attention);
+    if (project.lastSigs.get('@attention') !== attentionSig) {
+      project.lastSigs.set('@attention', attentionSig);
+      hub.publish('attention.updated', { projectId, items: attention });
+    }
+    let snapshot = null;
+    try { snapshot = JSON.parse(fs.readFileSync(project.paths.snapshot, 'utf8')); } catch { /* no pool */ }
+    if (snapshot) {
+      const { generatedAt, ...rest } = snapshot;
+      const snapSig = JSON.stringify({ ...rest, supervisor: { ...rest.supervisor, heartbeatAt: null } });
+      if (project.lastSigs.get('@pool') !== snapSig) {
+        project.lastSigs.set('@pool', snapSig);
+        hub.publish('pool.updated', { projectId, snapshot });
+      }
+    }
+  }
+}
+
+// Register the default project at startup, then every project a previous
+// session knew about, so their dashboard links keep working after a restart.
+// Called once the port is ours. A server that loses the race for its port must
+// not have watched (and, on exit, cleaned up after) projects another live
+// server is serving.
+function registerKnownProjects() {
+  getOrCreateProject(defaultRepoRoot);
+  for (const known of readKnownProjects()) {
+    if (known !== defaultRepoRoot && fs.existsSync(path.join(known, '.pipeline'))) getOrCreateProject(known);
+  }
+}
 
 function runDir(project, runId) {
   if (!runId) return project.paths.dir;
@@ -141,28 +329,9 @@ function runDir(project, runId) {
   return fs.existsSync(dir) ? dir : null;
 }
 
-// Cost must be summed over the WHOLE log: reading only the trailing window (as
-// the feed does) silently under-reports every run long enough to need it. The
-// log is truncated per run, so a full scan stays bounded.
-function readTotalCost(file) {
-  let total = 0;
-  let truncated = false;
-  let raw;
-  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { costUsd: 0, truncated }; }
-  for (const line of raw.split('\n')) {
-    if (!line.includes('costUsd')) continue; // cheap prefilter; most lines have none
-    try {
-      const ev = JSON.parse(line);
-      if (typeof ev.costUsd === 'number') total += ev.costUsd;
-    } catch { truncated = true; }
-  }
-  return { costUsd: total, truncated };
-}
-
-function readEventsByStage(dir) {
-  const byStage = Object.fromEntries(AGENT_STAGES.map((s) => [s, []]));
+function readEventsByStage(dir, only = null) {
+  const byStage = Object.fromEntries((only ? [only] : AGENT_STAGES).map((s) => [s, []]));
   const file = path.join(dir, 'events.jsonl');
-  const { costUsd: totalCost, truncated: costPartial } = readTotalCost(file);
   let raw = '';
   try {
     const size = fs.statSync(file).size;
@@ -173,7 +342,7 @@ function readEventsByStage(dir) {
     fs.closeSync(fd);
     raw = buf.toString('utf8');
     if (start > 0) raw = raw.slice(raw.indexOf('\n') + 1);
-  } catch { return { byStage, totalCost, costPartial }; }
+  } catch { return { byStage }; }
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     let ev;
@@ -184,10 +353,10 @@ function readEventsByStage(dir) {
       byStage[stage].push({ ...ev, stage });
     }
   }
-  for (const s of AGENT_STAGES) {
+  for (const s of Object.keys(byStage)) {
     if (byStage[s].length > EVENTS_PER_STAGE) byStage[s] = byStage[s].slice(-EVENTS_PER_STAGE);
   }
-  return { byStage, totalCost, costPartial };
+  return { byStage };
 }
 
 function readFollowups(dir) {
@@ -258,7 +427,7 @@ function engineInfo(project) {
   };
 }
 
-function readState(project, runId) {
+function readState(project, runId, stage = null) {
   const dir = runDir(project, runId);
   if (!dir) return { error: 'unknown run' };
   let status = loadRunStatus(dir);
@@ -270,11 +439,15 @@ function readState(project, runId) {
   const artifacts = ARTIFACTS.filter((n) => {
     try { return fs.statSync(path.join(dir, n)).size > 0; } catch { return false; }
   });
-  const { byStage, totalCost, costPartial } = readEventsByStage(dir);
-  const canExtend = !alive && status?.overall === 'halted' && status?.haltReason === 'MAX_CYCLES';
-  const canResume = !alive &&
-    ((status?.overall === 'halted' && status?.haltReason === 'INTERRUPTED') ||
-      (status?.overall === 'running' && stale));
+  // The run view renders one stage's conversation; sending all of them made
+  // every refresh carry up to 7×250 events the page discards.
+  const eventsStage = AGENT_STAGES.includes(stage) ? stage : activeStageOf({ ...status, stages: status?.stages || [] });
+  const { byStage } = readEventsByStage(dir, AGENT_STAGES.includes(eventsStage) ? eventsStage : null);
+  // Same table the engine's --resume guard and the supervisor read, so a
+  // button is only offered when the engine will actually accept it.
+  const recovery = status ? recoveryFor(status, { engineAlive: alive }) : null;
+  const canExtend = !alive && !!recovery?.extend;
+  const canResume = !alive && !!recovery?.resume;
   const canApprovePlan = !alive && status?.overall === 'awaiting_plan_approval';
   const canContinue = !alive && status?.overall === 'awaiting_chat';
   const canCancel = alive;
@@ -286,23 +459,33 @@ function readState(project, runId) {
       : { ok: true, reason: null };
   }
   const live = canCancel || canExtend || canResume || canContinue || canApprovePlan;
+  // Only the roadmap is needed here; building a whole pool snapshot for it made
+  // every /api/state pay the cost of /api/pool as well.
   const goal = (() => {
     try {
-      const snap = pool.snapshot(project.paths, { config: project.config });
-      const row = (snap.inProgress || []).find((r) => r.runId === (runId || snap.pool?.primaryRunId));
-      if (row?.goal) return row.goal;
-      const feature = snap.roadmap?.features?.find((f) => f.id === status?.featureId);
-      return feature
-        ? { featureId: feature.id, title: feature.title, dependsOn: feature.dependsOn, acceptance: feature.acceptance, specRunId: feature.specRunId, integrationRunId: feature.integrationRunId }
-        : null;
+      const features = pool.readRoadmap(project.paths)?.features || [];
+      let featureId = status?.featureId;
+      if (!runId && status?.pool) {
+        const primary = status.pool.primaryRunId && runDir(project, status.pool.primaryRunId);
+        featureId = (primary && loadRunStatus(primary)?.featureId) || status.pool.featureId;
+      }
+      const feature = features.find((f) => f.id === featureId);
+      return feature ? goalFor(feature, features) : null;
     } catch { return null; }
   })();
+  const usage = readUsage(path.join(dir, 'events.jsonl'));
+  // A corrupt or busy bridge journal must cost this panel its bridge section,
+  // not take the whole server down.
+  let bridge;
+  try { bridge = inspectBridge(project.repoRoot, runId || null); }
+  catch (err) { bridge = { error: err.message }; }
   return {
-    status, artifacts, events: byStage, bridge: inspectBridge(project.repoRoot, runId || null),
+    status, artifacts, events: byStage, bridge,
     followups: readFollowups(dir),
     live, stale, runId: runId || null, isRoot, goal,
-    totals: { ...readUsage(path.join(dir,'events.jsonl')), costPartial: readUsage(path.join(dir,'events.jsonl')).partial },
+    totals: { ...usage, costPartial: usage.partial },
     canCancel, canExtend, canResume, canApprovePlan, canContinue,
+    policy: status ? policyOf(status, project.config, readPolicyOverride(dir)) : null,
     stageReady,
     ...engineInfo(project),
     runners: [...RUNNERS, ...Object.keys(project.config.customRunners || {})],
@@ -453,15 +636,35 @@ function spawnOrchestrator(project, nodeArgs, options = {}) {
     cwd: project.repoRoot,
     detached: true,
     stdio: ['ignore', outFd, outFd],
-    env: { ...process.env, PIPELINE_UI_PORT: String(PORT) },
+    env: { ...engineEnv(), PIPELINE_UI_PORT: String(PORT) },
   });
   
   child.unref();
   fs.closeSync(outFd);
+  if (child.pid) {
+    childrenByPid.set(child.pid, { child, outPath, exited: null });
+    child.on('exit', (code) => { const rec = childrenByPid.get(child.pid); if (rec) rec.exited = code; setTimeout(() => childrenByPid.delete(child.pid), 60_000); });
+  }
   return child;
 }
 
-function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, maxReviewCycles, modelProfile, models, design, handoff, approvePlan }) {
+// A command that spawns the engine is "applied" only once the engine has made
+// its first move. A quick non-zero exit (refused resume, rejected continue)
+// is reported back with its output instead of a success toast.
+async function settleSpawn(result, { waitMs = 4000 } = {}) {
+  if (!result?.pid) return result;
+  const rec = childrenByPid.get(result.pid);
+  if (!rec) return result;
+  const deadline = Date.now() + waitMs;
+  while (rec.exited === null && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+  if (rec.exited === null || rec.exited === 0) return { ...result, engine: rec.exited === 0 ? 'exited' : 'running' };
+  let tail = '';
+  try { tail = fs.readFileSync(rec.outPath, 'utf8').trim().split('\n').slice(-15).join('\n'); } catch { /* no output */ }
+  const reason = tail.split('\n').reverse().find((l) => /Cannot|Not continuing|Nothing to|Refusing|error|HALT/i.test(l)) || `the engine exited with code ${rec.exited}`;
+  return { error: reason.replace(/^\[Orchestrator\]\s*/, ''), code: 409, outputTail: tail };
+}
+
+function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycles, maxReviewCycles, modelProfile, models, design, approvePlan, autonomy }) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   if (typeof task !== 'string' || !task.trim()) return { error: 'task is required', code: 400 };
@@ -478,16 +681,14 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   }
   const nodeArgs = [orchestratorEntry(project), '--task', task.trim(), '--model-profile', profile];
   if (profile === 'manual') nodeArgs.push('--models', JSON.stringify(models));
-  if (runner && runner !== 'auto') {
-    nodeArgs.push('--runner', runner);
-    // A dashboard-spawned run must never infer chat-vs-cli from inherited
-    // environment variables — this is a long-lived, detached process that can
-    // still carry stale IDE env vars from whatever shell originally launched
-    // it (the documented root cause of a dashboard-started run silently
-    // landing in the wrong mode). The operator's own runner choice is the
-    // only signal that matters here.
-    nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
-  }
+  // A dashboard-spawned run never infers chat-vs-cli from inherited
+  // environment variables — this long-lived, detached server can carry stale
+  // IDE env vars from whatever shell launched it (the documented root cause
+  // of dashboard runs silently landing in the wrong mode). The dashboard is
+  // not a chat session: a host run is an explicit "host" choice, and anything
+  // else runs on the CLI surface.
+  if (runner && runner !== 'auto') nodeArgs.push('--runner', runner);
+  nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   if (sandbox) nodeArgs.push('--sandbox');
   const mc = positiveInt(maxCycles);
   if (mc) nodeArgs.push('--max-cycles', String(mc));
@@ -498,8 +699,8 @@ function startRun(project, { task, runner, sandbox, maxCycles, maxPostTesterCycl
   // The optional stages and the approval gate were CLI-only until now, so the
   // dashboard could not start the pipeline's three headline features.
   if (design) nodeArgs.push('--design');
-  if (handoff) nodeArgs.push('--handoff');
   if (approvePlan) nodeArgs.push('--approve-plan');
+  if (autonomy === 'guided' || autonomy === 'autonomous') nodeArgs.push('--autonomy', autonomy);
   const child = spawnOrchestrator(project, nodeArgs, { append: false });
   return { ok: true, pid: child.pid };
 }
@@ -512,6 +713,14 @@ function targetRun(project, run) {
   return { runPaths, status, run: run || null };
 }
 
+// Chat-session markers the server may have inherited. Every engine it spawns
+// gets an explicit --mode or keeps its recorded surface, so these can only
+// mislead it (and the agent CLIs it starts).
+const CHAT_ENV_KEYS = ['CLAUDECODE', 'CLAUDE_CODE', 'CURSOR_AGENT', 'CURSOR_TRACE_ID', 'CODEX_IN_IDE', 'GEMINI_CLI_IDE', 'PIPELINE_INVOCATION'];
+function engineEnv(env = process.env) {
+  return Object.fromEntries(Object.entries(env).filter(([k]) => !CHAT_ENV_KEYS.includes(k) && !k.startsWith('ANTIGRAVITY')));
+}
+
 function spawnForRun(project, runPaths, nodeArgs) {
   const args = runPaths.runId ? [...nodeArgs, '--run-id', runPaths.runId] : nodeArgs;
   return spawnOrchestrator(project, args, {
@@ -520,7 +729,7 @@ function spawnForRun(project, runPaths, nodeArgs) {
   });
 }
 
-function extendRun(project, { extend, runner, run = null } = {}) {
+function extendRun(project, { extend, runner, run = null, via = 'web' } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const n = positiveInt(extend);
@@ -528,9 +737,8 @@ function extendRun(project, { extend, runner, run = null } = {}) {
   const target = targetRun(project, run);
   if (target.error) return target;
   if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
-  if (target.status.overall !== 'halted' || target.status.haltReason !== 'MAX_CYCLES') {
-    return { error: `cannot extend: last halt reason was "${target.status.haltReason || target.status.overall}", not MAX_CYCLES`, code: 409 };
-  }
+  const recovery = recoveryFor(target.status, { engineAlive: false });
+  if (!recovery.extend) return { error: `cannot extend: ${recovery.reason || `the run is ${target.status.overall}`}`, code: 409 };
   const nodeArgs = [orchestratorEntry(project), '--resume', '--extend', String(n)];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
@@ -543,20 +751,18 @@ function extendRun(project, { extend, runner, run = null } = {}) {
     nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
+  recordIntervention(project.paths.root, target.runPaths.runId || null, { action: 'extend', via, detail: `+${n} cycles` });
   return { ok: true, pid: child.pid, extend: n };
 }
 
-function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
+function resumeInterruptedRunUi(project, { runner, run = null, via = 'web' } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const target = targetRun(project, run);
   if (target.error) return target;
   if (runProcessAlive(target.runPaths)) return { error: 'a pipeline run is already active', code: 409 };
-  const stale = target.status.overall === 'running' && !runProcessAlive(target.runPaths);
-  const isInterrupted = target.status.overall === 'halted' && target.status.haltReason === 'INTERRUPTED';
-  if (!isInterrupted && !stale) {
-    return { error: `cannot resume: run is not interrupted or stale (overall=${target.status.overall}, haltReason=${target.status.haltReason})`, code: 409 };
-  }
+  const recovery = recoveryFor(target.status, { engineAlive: false });
+  if (!recovery.resume) return { error: `cannot resume: ${recovery.reason}`, code: 409 };
   const nodeArgs = [orchestratorEntry(project), '--resume'];
   if (runner && runner !== 'auto') {
     nodeArgs.push('--runner', runner);
@@ -569,13 +775,14 @@ function resumeInterruptedRunUi(project, { runner, run = null } = {}) {
     nodeArgs.push('--mode', runner === 'host' ? 'chat' : 'cli');
   }
   const child = spawnForRun(project, target.runPaths, nodeArgs);
+  recordIntervention(project.paths.root, target.runPaths.runId || null, { action: 'resume', via, detail: target.status?.haltReason || null });
   return { ok: true, pid: child.pid };
 }
 
 // Advance a run parked at a chat handoff or the plan-approval gate. Without
 // this the dashboard could only print the shell command for the user to go and
 // type somewhere else — it could observe the pipeline but never move it.
-function continueRun(project, { approve = false, run = null } = {}) {
+function continueRun(project, { approve = false, run = null, handoffId = null } = {}) {
   const guarded = selfGuardError(project);
   if (guarded) return guarded;
   const target = targetRun(project, run);
@@ -596,7 +803,13 @@ function continueRun(project, { approve = false, run = null } = {}) {
     return { error: `cannot continue: run is "${status.overall}", not awaiting a handoff or approval`, code: 409 };
   }
 
-  const child = spawnForRun(project, target.runPaths, [orchestratorEntry(project), '--continue']);
+  // Name the handoff this click completes, so a stale button (or a race with
+  // the host's own --continue) cannot advance a newer handoff.
+  const id = handoffId || status.handoffId || null;
+  if (handoffId && status.handoffId && handoffId !== status.handoffId) {
+    return { error: `this Continue was for an earlier handoff; the run is now awaiting ${status.awaitingStage}. Refresh and check that stage.`, code: 409 };
+  }
+  const child = spawnForRun(project, target.runPaths, [orchestratorEntry(project), '--continue', ...(id ? ['--handoff-id', id] : [])]);
   return { ok: true, pid: child.pid, continued: status.overall };
 }
 
@@ -722,19 +935,202 @@ function json(res, body, code = 200) {
   res.end(JSON.stringify(body));
 }
 
+const MAX_BODY_BYTES = 64 * 1024;
 function readBody(req, cb) {
-  let body = '';
-  req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
-  req.on('end', () => {
-    try { cb(JSON.parse(body || '{}')); } catch { cb(null); }
+  const res = req.res;
+  const chunks = [];
+  let size = 0;
+  let tooBig = false;
+  req.on('data', (c) => {
+    if (tooBig) return;
+    size += c.length;
+    if (size > MAX_BODY_BYTES) {
+      tooBig = true;
+      if (res && !res.headersSent) json(res, { error: `request body over ${MAX_BODY_BYTES} bytes` }, 413);
+      req.destroy();
+      return;
+    }
+    chunks.push(c);
   });
+  req.on('end', () => {
+    if (tooBig) return;
+    let body = null;
+    try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { body = null; }
+    // A throw in a handler runs outside the request handler's try, so it gets
+    // its own; an async handler's rejection is caught the same way.
+    try { Promise.resolve(cb(body)).catch((err) => failRequest(res, err)); } catch (err) { failRequest(res, err); }
+  });
+}
+
+function failRequest(res, err) {
+  console.error(`[UI] request failed: ${err?.stack || err}`);
+  if (res && !res.headersSent) json(res, { error: 'internal error', detail: String(err?.message || err) }, 500);
+  else try { res?.end(); } catch { /* socket gone */ }
+}
+
+// ---- /api/v1 ----------------------------------------------------------------
+
+function v1Authorized(req, url) {
+  const header = req.headers.authorization || '';
+  const bearer = header.startsWith('Bearer ') ? header.slice(7) : null;
+  // EventSource cannot set headers, so the dashboard passes ?access_token=.
+  const given = bearer || url.searchParams.get('access_token') || '';
+  const a = Buffer.from(given), b = Buffer.from(API_TOKEN);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function projectInfo(project) {
+  const engine = engineInfo(project);
+  let attention = [];
+  try { attention = pool.pendingAttention(project.paths); } catch { /* none */ }
+  return {
+    projectId: project.projectId, repoRoot: project.repoRoot, name: path.basename(project.repoRoot),
+    install: engine, capabilities: CAPABILITIES,
+    attention: { needsYou: attention.filter((a) => a.escalate).length, total: attention.length },
+    defaults: { autonomy: project.config.autonomy || 'guided' },
+  };
+}
+
+// Pool verbs that edit roadmap.json take the roadmap lock, and a supervisor
+// tick holds it for the whole tick, merges and worktree work included. The
+// verbs' own lock waits synchronously, which would freeze every request and
+// stream on this server until the tick ends, so the server takes the lock on
+// timers first; the verb's own lock then re-enters at once.
+function underRoadmapLock(project, fn) {
+  return withFileLockAsync(project.paths.roadmapLock, fn);
+}
+
+function v1Commands(project) {
+  if (!project.executeCommand) {
+    const via = (b) => b.client?.kind || 'api';
+    const run = (b) => (b.runId && b.runId !== 'root' ? b.runId : null);
+    const a = (b) => b.args || {};
+    project.executeCommand = createCommandExecutor({ handlers: {
+      'run.start': (b) => settleSpawn(startRun(project, a(b))),
+      'run.continue': (b) => settleSpawn(continueRun(project, { run: run(b), handoffId: a(b).handoffId || null })),
+      'plan.approve': (b) => settleSpawn(continueRun(project, { approve: true, run: run(b) })),
+      'plan.reject': (b) => {
+        if (!a(b).note?.trim()) return { error: 'a note describing the changes is required', code: 400 };
+        queueStageNote(runPathsFor(project, run(b)), 'planner', a(b).note.trim());
+        return settleSpawn(continueRun(project, { approve: true, run: run(b) }));
+      },
+      'run.resume': (b) => settleSpawn(resumeInterruptedRunUi(project, { run: run(b), via: via(b) })),
+      'run.extend': (b) => settleSpawn(extendRun(project, { extend: a(b).extend, run: run(b), via: via(b) })),
+      'run.cancel': (b) => cancelRun(project, { run: run(b) }),
+      'run.dismiss': (b) => pool.dismissRun(project.paths, run(b), a(b).reason || 'Dismissed', { via: via(b) }),
+      'run.set_autonomy': (b) => pool.setRunAutonomy(project.paths, run(b), a(b).autonomy, { via: via(b) }),
+      'message.queue': (b) => {
+        if (!a(b).stage || !a(b).text?.trim()) return { error: 'stage and text are required', code: 400 };
+        return queueStageNote(runPathsFor(project, run(b)), a(b).stage, a(b).text.trim());
+      },
+      'decision.answer': (b) => underRoadmapLock(project, () => pool.decide(project.paths, a(b).decisionId, a(b).answer, { via: via(b) })),
+      'ticket.retry': (b) => underRoadmapLock(project, () => pool.retryTicket(project.paths, a(b).featureId, a(b).ticketId)),
+      'run.resume_in_pool': (b) => { const r = pool.requestRunResume(project.paths, run(b)); return r.ok ? r : { error: r.reason, code: 409 }; },
+      'merge.approve': (b) => underRoadmapLock(project, () => pool.approveMerge(project.paths, a(b).featureId || null, { via: via(b), note: a(b).note ?? null })),
+      'merge.request_changes': (b) => underRoadmapLock(project, () => pool.requestChanges(project.paths, a(b).featureId, a(b).text, { via: via(b) })),
+      'feature.hold': (b) => underRoadmapLock(project, () => pool.holdFeature(project.paths, a(b).featureId, a(b).reason)),
+      'feature.release': (b) => underRoadmapLock(project, () => pool.releaseFeature(project.paths, a(b).featureId)),
+      'feature.skip': (b) => underRoadmapLock(project, () => pool.skipFeature(project.paths, a(b).featureId, a(b).reason)),
+      'pool.pause': (b) => pool.pause(project.paths, a(b).reason || ''),
+      'pool.resume': () => pool.resume(project.paths),
+      'attention.ack': (b) => { pool.ackAttention(project.paths, a(b).id); return { acked: a(b).id }; },
+    } });
+  }
+  return project.executeCommand;
+}
+
+function readEventsAfter(file, afterSeq, limit) {
+  let raw = '';
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return { events: [], nextSeq: afterSeq, hasMore: false }; }
+  // Same numbering as the live tail: one seq per newline-terminated line, so a
+  // client can backfill and then continue from the stream without gaps.
+  const lines = raw.split('\n').slice(0, -1);
+  const events = [];
+  for (let i = 0; i < lines.length; i++) {
+    const seq = i + 1;
+    const line = lines[i];
+    if (!line.trim() || seq <= afterSeq) continue;
+    if (events.length >= limit) return { events, nextSeq: events.at(-1).seq, hasMore: true };
+    try { events.push({ seq, ...JSON.parse(line) }); } catch { /* torn line */ }
+  }
+  return { events, nextSeq: events.length ? events.at(-1).seq : afterSeq, hasMore: false };
+}
+
+function handleV1(req, res, url) {
+  if (!v1Authorized(req, url)) return json(res, { error: 'unauthorized: pass the server token as "Authorization: Bearer <token>"' }, 401);
+  const parts = url.pathname.split('/').filter(Boolean).slice(2); // after api/v1
+  if (req.method === 'GET' && parts[0] === 'projects' && parts.length === 1) {
+    return json(res, { projects: [...projects.values()].map(projectInfo) });
+  }
+  if (req.method === 'POST' && parts[0] === 'projects' && parts.length === 1) {
+    return readBody(req, (body) => {
+      const project = body?.repoRoot && fs.existsSync(path.join(body.repoRoot, '.pipeline')) ? getOrCreateProject(body.repoRoot) : null;
+      return project ? json(res, projectInfo(project)) : json(res, { error: 'not a pipeline project (no .pipeline/ directory)' }, 400);
+    });
+  }
+  if (req.method === 'GET' && parts[0] === 'events') {
+    const wanted = url.searchParams.get('projects');
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+    const detach = hub.attach(res, {
+      lastEventId: req.headers['last-event-id'] || url.searchParams.get('lastEventId') || null,
+      projects: wanted ? wanted.split(',').filter(Boolean) : null,
+    });
+    req.on('close', detach);
+    return undefined;
+  }
+  if (parts[0] !== 'projects' || !parts[1]) return json(res, { error: 'not found' }, 404);
+  const project = projectById(parts[1]);
+  if (!project) return json(res, { error: 'unknown project' }, 404);
+  if (req.method === 'GET' && parts[2] === 'snapshot') {
+    let attention = [], decisions = [], snapshot = null;
+    try { attention = pool.pendingAttention(project.paths); } catch { /* none */ }
+    try { decisions = openDecisions(project.paths); } catch { /* none */ }
+    try { snapshot = JSON.parse(fs.readFileSync(project.paths.snapshot, 'utf8')); } catch { /* no pool */ }
+    return json(res, {
+      cursor: hub.cursor, generatedAt: new Date().toISOString(), project: projectInfo(project),
+      runs: listRunIds(project).map((id) => computeSummary(project, id)).filter(Boolean),
+      attention, decisions, pool: snapshot,
+    });
+  }
+  if (req.method === 'GET' && parts[2] === 'runs' && parts[3]) {
+    const runId = parts[3] === 'root' ? null : parts[3];
+    if (runId && !isValidRunId(runId)) return json(res, { error: 'invalid run id' }, 400);
+    if (parts[4] === 'events') {
+      const afterSeq = Math.max(0, Number(url.searchParams.get('afterSeq')) || 0);
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 200));
+      return json(res, readEventsAfter(runPathsFor(project, runId).events, afterSeq, limit));
+    }
+    const summary = computeSummary(project, runId);
+    if (!summary) return json(res, { error: 'unknown run' }, 404);
+    const dir = runDir(project, runId);
+    const artifacts = ARTIFACTS.flatMap((name) => {
+      try { const st = fs.statSync(path.join(dir, name)); return st.size ? [{ name, size: st.size, updatedAt: st.mtime.toISOString() }] : []; } catch { return []; }
+    });
+    return json(res, { run: summary, status: loadRunStatus(dir), artifacts });
+  }
+  if (req.method === 'POST' && parts[2] === 'commands') {
+    return readBody(req, async (body) => {
+      let result;
+      try { result = await v1Commands(project)(body || {}); }
+      catch (err) { return json(res, { status: 'rejected', error: { code: 'failed', message: err.message, retryable: false } }, 500); }
+      // A command that changed state shows up on the stream right away.
+      if (result.status === 'applied') publishProjectChanges(project, body?.runId && body.runId !== 'root' ? [`runs/${body.runId}/status.json`, 'control/'] : ['status.json', 'control/']);
+      json(res, { ...result, cursor: hub.cursor }, result.status === 'rejected' && result.error?.code === 'bad_request' ? 400 : 200);
+    });
+  }
+  return json(res, { error: 'not found' }, 404);
 }
 
 function getProjectForRequest(req, url) {
   const projectPath = url.searchParams.get('project');
   if (projectPath) {
-    const proj = getOrCreateProject(projectPath);
-    if (proj) return proj;
+    // Only projects registered with this server (POST /api/register, which
+    // orchestrate.sh calls, or a previous session's registry). An arbitrary
+    // path used to create .pipeline/ and a recursive watcher anywhere on disk.
+    let resolved;
+    try { resolved = path.resolve(projectPath); } catch { return null; }
+    if (projects.has(resolved)) return projects.get(resolved);
+    if (readKnownProjects().includes(resolved)) return getOrCreateProject(resolved);
     return null;
   }
   return getOrCreateProject(defaultRepoRoot);
@@ -748,10 +1144,23 @@ function isGuardedPost(pathname) {
 }
 
 const server = http.createServer((req, res) => {
+  req.res = res;
+  try { handleRequest(req, res); } catch (err) { failRequest(res, err); }
+});
+
+function handleRequest(req, res) {
   lastActivityAt = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
+  if (!isLoopbackHost(req.headers, PORT)) return json(res, { error: 'forbidden: unexpected Host header' }, 421);
   if (req.method === 'POST' && isGuardedPost(url.pathname) && !isTrustedRequest(req.headers, PORT)) {
     return json(res, { error: 'forbidden: untrusted origin' }, 403);
+  }
+  if (url.pathname.startsWith('/api/v1/')) return handleV1(req, res, url);
+  // The legacy POSTs start, cancel and merge runs just like /api/v1, so they
+  // take the same token, which the dashboard page carries in a meta tag. A
+  // local process can read that page too: see the note on API_TOKEN.
+  if (req.method === 'POST' && isGuardedPost(url.pathname) && !v1Authorized(req, url)) {
+    return json(res, { error: 'unauthorized: bearer token required (see ~/.orchestrator/servers/<instanceId>.json)' }, 401);
   }
   if (url.pathname === '/api/bridge' && req.method === 'GET') {
     const project = getProjectForRequest(req,url);
@@ -771,11 +1180,16 @@ const server = http.createServer((req, res) => {
   if (url.pathname === '/api/pool/action' && req.method === 'POST') {
     const project = getProjectForRequest(req,url);
     if (!project) return json(res,{error:'invalid project'},400);
-    return readBody(req, body => {
+    return readBody(req, async body => {
       try {
         const actions = {retry:pool.retryFeature,hold:pool.holdFeature,release:pool.releaseFeature,skip:pool.skipFeature};
+        if (body?.action === 'retry-ticket') return json(res, await underRoadmapLock(project, () => pool.retryTicket(project.paths, body.featureId, body.ticketId)));
+        if (body?.action === 'resume-run') {
+          const result = pool.requestRunResume(project.paths, body.runId);
+          return result.ok ? json(res, result) : json(res, { error: result.reason }, 409);
+        }
         if (!actions[body?.action]) throw new Error('Unknown action');
-        return json(res,actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action'));
+        return json(res, await underRoadmapLock(project, () => actions[body.action](project.paths,body.featureId,body.reason || 'Dashboard action')));
       } catch (err) { return json(res,{error:err.message},409); }
     });
   }
@@ -784,9 +1198,11 @@ const server = http.createServer((req, res) => {
       if (!body || typeof body.repoRoot !== 'string') {
         return json(res, { error: 'expected { repoRoot }' }, 400);
       }
-      const project = getOrCreateProject(body.repoRoot);
+      // Same rule as POST /api/v1/projects: only an installed pipeline project.
+      // An arbitrary path used to get a .pipeline/ created and watched recursively.
+      const project = fs.existsSync(path.join(path.resolve(body.repoRoot), '.pipeline')) ? getOrCreateProject(body.repoRoot) : null;
       if (!project) {
-        return json(res, { error: 'invalid repository path' }, 400);
+        return json(res, { error: 'not a pipeline project (no .pipeline/ directory)' }, 400);
       }
       json(res, { ok: true, repoRoot: project.repoRoot });
     });
@@ -803,11 +1219,20 @@ const server = http.createServer((req, res) => {
       if (!status) return json(res, { error: 'no run recorded at this path' }, 409);
       if (isArchivedStatus(status)) return json(res, { error: 'cannot note an archived run' }, 409);
       const active = activeStageName(status);
-      if (active && body.stage !== active) {
+      // The plan gate waits on plan_reviewer, but asking for changes there is a
+      // note for the Planner followed by --continue (the engine re-plans).
+      const planChange = status.overall === 'awaiting_plan_approval' && body.stage === 'planner';
+      if (active && body.stage !== active && !planChange) {
         return json(res, { error: `stage "${body.stage}" is not active on this run (active: ${active})` }, 409);
       }
       try {
-        json(res, status.bridgeRequired ? bridgeCommand('message.queue',{project:project.repoRoot,runId:body.run || null,stage:body.stage,text:body.text.trim(),priority:body.priority || 'priority',handoffId:body.handoffId,commandId:body.commandId}) : queueStageNote(runPaths, body.stage, body.text.trim()));
+        // Use the bridge only when a host session actually holds the run's
+        // lease. An unclaimed run is driven through the documented
+        // followups/<stage>.txt path; queueing a priority bridge message there
+        // enrolled the run in ownership, after which every plain --continue
+        // (and the dashboard's own Continue) failed for lack of credentials.
+        const leased = status.bridgeRequired && !!inspectBridge(project.repoRoot, body.run || null).owner;
+        json(res, leased ? bridgeCommand('message.queue',{project:project.repoRoot,runId:body.run || null,stage:body.stage,text:body.text.trim(),priority:body.priority || 'priority',handoffId:body.handoffId,commandId:body.commandId}) : queueStageNote(runPaths, body.stage, body.text.trim()));
       } catch (err) {
         json(res, { error: err.message }, 400);
       }
@@ -835,15 +1260,13 @@ const server = http.createServer((req, res) => {
     if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body) return json(res, { error: 'invalid JSON' }, 400);
-      const result = startRun(project, body);
-      json(res, result, result.code || 200);
+      settleSpawn(startRun(project, body)).then((result) => json(res, result, result.code || 200));
     });
   } else if (req.method === 'POST' && url.pathname === '/api/continue') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
-      const result = continueRun(project, body || {});
-      json(res, result, result.code || 200);
+      settleSpawn(continueRun(project, body || {})).then((result) => json(res, result, result.code || 200));
     });
   } else if (req.method === 'POST' && url.pathname === '/api/cancel') {
     const project = getProjectForRequest(req, url);
@@ -857,15 +1280,23 @@ const server = http.createServer((req, res) => {
     if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
       if (!body) return json(res, { error: 'invalid JSON' }, 400);
-      const result = extendRun(project, body);
-      json(res, result, result.code || 200);
+      settleSpawn(extendRun(project, body)).then((result) => json(res, result, result.code || 200));
     });
   } else if (req.method === 'POST' && url.pathname === '/api/resume') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
     readBody(req, (body) => {
-      const result = resumeInterruptedRunUi(project, body || {});
-      json(res, result, result.code || 200);
+      settleSpawn(resumeInterruptedRunUi(project, body || {})).then((result) => json(res, result, result.code || 200));
+    });
+  } else if (req.method === 'POST' && url.pathname === '/api/run/autonomy') {
+    const project = getProjectForRequest(req, url);
+    if (!project) return json(res, { error: 'invalid project' }, 400);
+    readBody(req, (body) => {
+      try {
+        json(res, pool.setRunAutonomy(project.paths, body?.run || null, body?.autonomy, { via: 'dashboard' }));
+      } catch (err) {
+        json(res, { error: err.message }, 400);
+      }
     });
   } else if (req.method === 'POST' && (url.pathname === '/api/run/dismiss' || url.pathname === '/api/dismiss')) {
     const project = getProjectForRequest(req, url);
@@ -874,19 +1305,19 @@ const server = http.createServer((req, res) => {
       try {
         const runId = body?.run || body?.runId || null;
         const reason = body?.reason || 'Dismissed from dashboard';
-        const result = bridgeCommand('run.dismiss', { project: project.repoRoot, runId, reason });
-        json(res, result);
+        json(res, pool.dismissRun(project.paths, runId, reason, { via: 'dashboard' }));
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
     });
   } else if (url.pathname === '/') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html')));
+    res.end(fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8')
+      .replace('<head>', `<head><meta name="pipeline-api-token" content="${API_TOKEN}"><meta name="pipeline-instance" content="${INSTANCE_ID}">`));
   } else if (url.pathname === '/api/state') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    const state = readState(project, url.searchParams.get('run'));
+    const state = readState(project, url.searchParams.get('run'), url.searchParams.get('stage'));
     json(res, state, state.error ? 404 : 200);
   } else if (url.pathname === '/api/runs') {
     const project = getProjectForRequest(req, url);
@@ -965,7 +1396,7 @@ const server = http.createServer((req, res) => {
   } else if (req.method === 'POST' && url.pathname === '/api/decisions/answer') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    readBody(req, (body) => {
+    readBody(req, async (body) => {
       if (!body?.decisionId || !body.answer) return json(res, { error: 'expected { decisionId, answer }' }, 400);
       try {
         const decision = pool.readDecisions(project.paths).find((row) => row.decisionId === body.decisionId);
@@ -973,7 +1404,7 @@ const server = http.createServer((req, res) => {
           const guard = selfGuardError(project);
           if (guard) return json(res, { error: guard.error }, guard.code);
         }
-        json(res, { ok: true, decision: pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' }) });
+        json(res, { ok: true, decision: await underRoadmapLock(project, () => pool.decide(project.paths, body.decisionId, String(body.answer), { via: 'dashboard' })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
@@ -983,17 +1414,10 @@ const server = http.createServer((req, res) => {
     if (!project) return json(res, { error: 'invalid project' }, 400);
     const guard = selfGuardError(project);
     if (guard) return json(res, { error: guard.error }, guard.code);
-    readBody(req, (body) => {
-      if (!body?.featureId) {
-        try {
-          json(res, { ok: true, ...pool.approveMerge(project.paths, null, { via: 'dashboard', note: body?.note ?? null }) });
-        } catch (err) {
-          json(res, { error: err.message }, 409);
-        }
-        return;
-      }
+    readBody(req, async (body) => {
+      // No featureId approves the roadmap-level merge.
       try {
-        json(res, { ok: true, ...pool.approveMerge(project.paths, body.featureId, { via: 'dashboard', note: body.note ?? null }) });
+        json(res, { ok: true, ...await underRoadmapLock(project, () => pool.approveMerge(project.paths, body?.featureId || null, { via: 'dashboard', note: body?.note ?? null })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
@@ -1001,10 +1425,10 @@ const server = http.createServer((req, res) => {
   } else if (req.method === 'POST' && url.pathname === '/api/merge/request-changes') {
     const project = getProjectForRequest(req, url);
     if (!project) return json(res, { error: 'invalid project' }, 400);
-    readBody(req, (body) => {
+    readBody(req, async (body) => {
       if (!body?.featureId || !body.text) return json(res, { error: 'expected { featureId, text }' }, 400);
       try {
-        json(res, { ok: true, ...pool.requestChanges(project.paths, body.featureId, String(body.text), { via: 'dashboard' }) });
+        json(res, { ok: true, ...await underRoadmapLock(project, () => pool.requestChanges(project.paths, body.featureId, String(body.text), { via: 'dashboard' })) });
       } catch (err) {
         json(res, { error: err.message }, 409);
       }
@@ -1025,26 +1449,73 @@ const server = http.createServer((req, res) => {
     project.sseClients.add(res);
     req.on('close', () => project.sseClients.delete(res));
   } else if (url.pathname === '/healthz') {
-    json(res, { ok: true, service: 'pipeline-ui', repoRoot: defaultRepoRoot });
+    json(res, {
+      // A project id, not a path: /healthz is unauthenticated, and discovery only
+      // needs to tell "is this the server for my repo" (compare projectIdOf).
+      ok: true, service: 'pipeline-ui', projectId: projectIdOf(defaultRepoRoot),
+      instanceId: INSTANCE_ID, pid: process.pid, port: PORT, startedAt: STARTED_AT,
+      serverVersion: HOST_ENGINE.version, apiVersions: [API_VERSION], contract: CONTRACT, capabilities: CAPABILITIES,
+    });
   } else {
     res.writeHead(404); res.end('not found');
   }
-});
+}
 
 function anySseClientsConnected() {
+  if (hub.size > 0) return true;
   for (const project of projects.values()) if (project.sseClients.size > 0) return true;
   return false;
 }
 function anyRunActive() {
-  for (const project of projects.values()) if (orchestratorAlive(project)) return true;
+  // A chat run parked between stages holds no lock but is very much active:
+  // shutting down then took the dashboard away mid-run.
+  for (const project of projects.values()) {
+    if (orchestratorAlive(project) || parkedPoolWork(project)) return true;
+    const root = loadRunStatus(project.paths.dir);
+    if (root && ['awaiting_chat', 'awaiting_plan_approval', 'running'].includes(root.overall)) return true;
+  }
   return false;
+}
+setInterval(() => hub.heartbeat(), 15000).unref?.();
+
+// Some of a summary depends only on the clock: a lease expiring, an agent going
+// quiet or stalled, a parked run becoming unattended. No file changes when that
+// happens, so recompute every run's summary on a timer while a v1 client is
+// listening. Only summaries that changed are sent.
+const CLOCK_REFRESH_MS = Number(process.env.PIPELINE_CLOCK_REFRESH_MS) || 30_000;
+function refreshClockStates() {
+  if (hub.size === 0) return;
+  for (const project of projects.values()) {
+    try { publishProjectChanges(project, ['*', 'status.json']); } catch (err) { console.error(`[ui-server] clock refresh failed for ${project.repoRoot}: ${err.message}`); }
+  }
+}
+setInterval(refreshClockStates, CLOCK_REFRESH_MS).unref?.();
+
+// The supervisor cannot report its own death, so the dashboard server (which is
+// usually awake when someone is looking) does. Writing the attention file is
+// enough: the file watcher publishes it to every client.
+const SUPERVISOR_WATCH_MS = Number(process.env.PIPELINE_SUPERVISOR_WATCH_MS) || 30000;
+function watchSupervisors() {
+  for (const project of projects.values()) {
+    try {
+      const plan = planSupervisorWatch({
+        state: pool.supervisorState(project.paths), pending: pool.pendingAttention(project.paths), now: Date.now(),
+      });
+      for (const id of plan.ack) pool.ackAttention(project.paths, id, { by: 'ui-server:supervisor-back' });
+      if (plan.raise) appendAttention(project.paths, plan.raise);
+    } catch { /* unreadable pool state: nothing to report */ }
+  }
+}
+function startSupervisorWatch() {
+  setInterval(watchSupervisors, SUPERVISOR_WATCH_MS).unref?.();
+  watchSupervisors();
 }
 
 setInterval(() => {
   for (const project of projects.values()) {
     const msg = `data: ${JSON.stringify({ type: 'ping' })}\n\n`;
     for (const res of project.sseClients) {
-      try { res.write(msg); } catch { project.sseClients.delete(res); }
+      writeOrDrop(project.sseClients, res, msg);
     }
   }
 
@@ -1059,9 +1530,13 @@ setInterval(() => {
 // after an idle shutdown (or any other exit) would make the next
 // orchestrate.sh invocation trust a stale ui.url until its health check fails.
 process.on('exit', () => {
+  try { fs.unlinkSync(SERVER_RECORD); } catch { /* already gone */ }
   // Only clear the records this process actually wrote. A second dashboard on
   // another port, or a restarted one, must not have its pid and url deleted by
   // an unrelated exit — the next orchestrate.sh would then fail to find it.
+  // A server that never bound its port wrote no ui.url, so any it finds belong to
+  // the live server on that port.
+  if (!listening) return;
   for (const project of new Set([defaultPaths, ...[...projects.values()].map((p) => p.paths)])) {
     try {
       if (Number(fs.readFileSync(path.join(project.dir, 'ui-server.pid'), 'utf8').trim()) === process.pid) {
@@ -1085,6 +1560,19 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
+let listening = false;
+// kill (SIGTERM) and Ctrl-C would otherwise skip the exit cleanup and leave a
+// stale server record, pid and url behind.
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => process.exit(0));
+// The dashboard holds no state of its own (it is all on disk), so one bad
+// callback is logged rather than taking every open tab down with it.
+process.on('uncaughtException', (err) => console.error(`[UI] uncaught: ${err?.stack || err}`));
+process.on('unhandledRejection', (err) => console.error(`[UI] unhandled rejection: ${err?.stack || err}`));
+
 server.listen(PORT, HOST, () => {
+  listening = true;
+  registerKnownProjects();
+  startSupervisorWatch();
+  writeServerRecord();
   console.log(`[UI] Pipeline dashboard running at http://${HOST}:${PORT} (repo: ${defaultRepoRoot})`);
 });

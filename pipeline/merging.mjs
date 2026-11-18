@@ -84,8 +84,12 @@ export function prBodyFrom({ report = null, feature = {}, verdict = null }) {
   return lines.join('\n');
 }
 
+// gh/glab can wait on the network or an auth prompt; never forever.
+const FORGE_TIMEOUT_MS = 120_000;
+
 function defaultExec(bin, args, cwd) {
-  const res = spawnSync(bin, args, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const res = spawnSync(bin, args, { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: FORGE_TIMEOUT_MS });
+  if (res.error?.code === 'ETIMEDOUT') return { status: 124, stdout: res.stdout || '', stderr: `${bin} ${args[0]} timed out after ${FORGE_TIMEOUT_MS / 1000}s` };
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 

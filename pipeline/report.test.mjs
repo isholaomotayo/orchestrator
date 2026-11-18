@@ -321,3 +321,61 @@ test('a halted host run reports its evidence and capture limits without a report
   assert.match(fs.readFileSync(path.join(paths.reports, 'work-done.html'), 'utf8'), /Drafted scope|Operational record/);
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test('coverage reads the table shapes real reviewers write', () => {
+  const specs = '## Failure Modes\n| ID | Case |\n|---|---|\n| E1 | Unauthorized access |\n| E2 | Empty feed |\n| E3 | Network drop |\n';
+  const boldNamed = [
+    '## Spec Coverage', '| Item | Requirement | Status |', '|---|---|---|',
+    '| **E1 (Unauthorized Access)** | Reject guests | Verified. Guarded in api/feed.ts:20 |',
+    '| E2 (Empty feed) | Show empty state | OK |',
+    '| E3 | Retry | Not covered |',
+  ].join('\n');
+  const rows = coverageTable(specs, boldNamed);
+  assert.deepEqual(rows.map((r) => [r.id, r.status]), [['E1', 'covered'], ['E2', 'covered'], ['E3', 'missing']]);
+  const fileFirst = '## Spec Coverage\n| ID | File | Test | Result |\n|---|---|---|---|\n| E1 (auth) | api.ts | auth.test.ts | OK |\n';
+  const r2 = coverageTable(specs, fileFirst);
+  assert.equal(r2.find((r) => r.id === 'E1').status, 'covered');
+  assert.match(r2.find((r) => r.id === 'E1').evidence, /api\.ts/);
+});
+
+test('a status the parser does not recognise is "unclear", never reported as missing', () => {
+  const specs = '| E1 | x |\n';
+  const rows = coverageTable(specs, '## Spec Coverage\n| ID | Status |\n|---|---|\n| E1 | see notes below |\n');
+  assert.equal(rows[0].status, 'unclear');
+});
+
+test('the terminal report keeps the Reporter title, narrative and diagrams it is given', async () => {
+  const fsMod = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { pipelinePaths, newStatus } = await import('./state.mjs');
+  const root = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'term-'));
+  const paths = pipelinePaths(root);
+  fsMod.mkdirSync(paths.dir, { recursive: true });
+  const status = { ...newStatus('Ship it'), overall: 'done', verdict: 'APPROVED' };
+  const res = writeTerminalReport(paths, status, null, [], { title: 'Work Done — Ship it', narrative: '## Summary\nNarrative body.\n', diagrams: [] });
+  assert.equal(res.ok, true, res.error);
+  const html = fsMod.readFileSync(pathMod.join(paths.reports, 'work-done.html'), 'utf8');
+  assert.match(html, /Work Done — Ship it/);
+  assert.match(html, /Narrative body\./);
+  fsMod.rmSync(root, { recursive: true, force: true });
+});
+
+test('a run report lists interventions and never shows unmeasured cost as $0', async () => {
+  const fsMod = await import('node:fs');
+  const os = await import('node:os');
+  const pathMod = await import('node:path');
+  const { pipelinePaths, newStatus, appendEvent } = await import('./state.mjs');
+  const root = fsMod.mkdtempSync(pathMod.join(os.tmpdir(), 'interv-'));
+  const paths = pipelinePaths(root);
+  fsMod.mkdirSync(paths.dir, { recursive: true });
+  appendEvent(paths, { stage: 'orchestrator', type: 'intervention', action: 'dismissed', by: 'operator', via: 'dashboard', detail: 'cleanup' });
+  const res = writeTerminalReport(paths, { ...newStatus('x'), overall: 'halted', haltReason: 'DISMISSED' });
+  assert.equal(res.ok, true, res.error);
+  const html = fsMod.readFileSync(pathMod.join(paths.reports, 'work-done.html'), 'utf8');
+  assert.match(html, /Interventions/);
+  assert.match(html, /dismissed/);
+  assert.match(html, /not measured/);
+  assert.doesNotMatch(html, /\$0\.00/);
+  fsMod.rmSync(root, { recursive: true, force: true });
+});

@@ -127,7 +127,7 @@ export function diffStats(patch) {
 /** Failure-mode ids the specification defined. */
 export function parseSpecItems(specs) {
   const text = String(specs || '');
-  const ids = [...text.matchAll(/^\|\s*(E\d+)\s*\|\s*([^|]*)\|/gim)].map((m) => ({ id: m[1], name: m[2].trim() }));
+  const ids = [...text.matchAll(/^\|\s*\**\s*(E\d+)\s*\**\s*\|\s*([^|]*)\|/gim)].map((m) => ({ id: m[1], name: m[2].trim() }));
   const tickets = [...text.matchAll(/^###\s*Ticket\s+(\d+)\s*:\s*(.+)$/gim)].map((m) => ({ id: `T${m[1]}`, title: m[2].trim() }));
   return { failureModes: dedupe(ids), tickets };
 }
@@ -138,26 +138,47 @@ function dedupe(rows) {
 }
 
 /** Rows of the reviewer's spec-coverage table. */
+// Reviewers write this table many ways: `| **E1 (Unauthorized Access)** | req |
+// Verified. ... |`, `| E1 (x) | file | test | OK |`. The old parser wanted a
+// bare `E1` in column 1 and the status in column 2, so every field report
+// rendered all-red and readers learned to ignore it.
 export function parseReviewCoverage(review) {
   const section = /##[^\n]*spec coverage[^\n]*\n([\s\S]*?)(?=\n##\s|(?![\s\S]))/i.exec(String(review || ''));
   if (!section) return [];
   const rows = [];
+  let statusCol = null;
+  let evidenceCols = null;
   for (const line of section[1].split('\n')) {
+    if (!line.includes('|')) continue;
     const cells = line.split('|').map((c) => c.trim()).filter((c, i, all) => !(i === 0 && !c) && !(i === all.length - 1 && !c));
-    if (cells.length < 2) continue;
-    if (/^-+$/.test(cells[0])) continue;
-    if (/^(id|ticket|item)$/i.test(cells[0])) continue;
-    rows.push({ id: cells[0], status: cells[1], evidence: cells[2] ?? '' });
+    if (cells.length < 2 || cells.every((c) => /^:?-+:?$/.test(c))) continue;
+    const id = /\b([ET]\d+)\b/i.exec(cells[0].replace(/[*_`]/g, ''))?.[1]?.toUpperCase();
+    if (!id) {
+      // A header row: remember which column holds the status.
+      const idx = cells.findIndex((c) => /status|verdict|result|covered|coverage|outcome/i.test(c));
+      if (idx > 0) statusCol = idx;
+      evidenceCols = cells.map((c, i) => (i > 0 && i !== idx && /evidence|test|file|where|location|notes|proof/i.test(c) ? i : -1)).filter((i) => i > 0);
+      continue;
+    }
+    const col = statusCol && statusCol < cells.length ? statusCol
+      : Math.max(1, cells.findIndex((c, i) => i > 0 && coverageStatus(c) !== 'unclear'));
+    const status = cells[col] ?? '';
+    const evidence = (evidenceCols?.length ? evidenceCols : cells.map((_, i) => i).filter((i) => i > 0 && i !== col))
+      .map((i) => cells[i]).filter(Boolean).join(' · ');
+    // "Verified. Guarded in api/feed.ts:20" carries its evidence after the verdict word.
+    const inline = /^[^.]*\.\s+(.+)$/.exec(status)?.[1] || '';
+    rows.push({ id, status, evidence: evidence || inline });
   }
   return rows;
 }
 
 /** Join what the spec asked for with what the review says was covered. */
 export function coverageStatus(value) {
-  const v = String(value).trim().toLowerCase().replace(/[*_]/g, '');
-  if (['covered', 'pass', 'passed', 'yes', 'done'].includes(v)) return 'covered';
-  if (['partial', 'partially covered'].includes(v)) return 'partial';
-  return 'missing';
+  const v = String(value).trim().toLowerCase().replace(/[*_`]/g, '');
+  if (/^(partial|partly)/.test(v)) return 'partial';
+  if (/^(not |no\b|missing|uncovered|fail|❌|✗|✘)/.test(v)) return 'missing';
+  if (/^(covered|pass(ed)?|ok\b|yes\b|done|verified|handled|tested|met\b|implemented|✅|✓|✔)/.test(v)) return 'covered';
+  return 'unclear';
 }
 
 export function coverageTable(specs, review) {
@@ -216,7 +237,7 @@ pre code{background:none;padding:0}
 table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px;display:block;overflow-x:auto}
 th,td{border:1px solid var(--border);padding:7px 10px;text-align:left;vertical-align:top}
 th{background:var(--code-bg);font-weight:600}
-.covered{color:var(--green-text)} .missing,.unmentioned{color:var(--red-text);font-weight:600}
+.covered{color:var(--green-text)} .missing{color:var(--red-text);font-weight:600} .unmentioned,.unclear{color:var(--muted, #777)}
 .partial{color:var(--amber-text)}
 figure{margin:20px 0;border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel)}
 .sequence-diagram{padding:12px;overflow-x:auto;background:#fff}.sequence-diagram svg{display:block;width:100%;min-width:620px;height:auto}
@@ -278,6 +299,12 @@ export function compileWorkDoneReport({
     legacyReport ? section('Prior completion report', `<p class="meta">Preserved from the earlier report at <code>${escapeHtml(legacyReport.path)}</code>. ${escapeHtml(legacyReport.reason || 'Its source run report was unavailable.')}</p>${renderMarkdownLite(legacyReport.markdown || '')}`) : '',
     section('Review guidance', narrativeSection(narrative, 'Review Guidance')),
     section('What changed', narrativeSection(narrative, 'What Changed')),
+    operations?.cost ? section('Cost', `<p>${operations.cost.usd != null ? `$${operations.cost.usd.toFixed(2)} (${escapeHtml(operations.cost.source)})` : '<span class="unclear">not measured</span> — the runner did not report cost'}</p>`) : '',
+    operations?.interventions?.length ? section('Interventions', [
+      '<table><thead><tr><th>When</th><th>Action</th><th>By</th><th>Via</th><th>Detail</th></tr></thead><tbody>',
+      ...operations.interventions.map((i) => `<tr><td>${escapeHtml(i.at || '')}</td><td>${escapeHtml(i.action || '')}</td><td>${escapeHtml(i.by || '')}</td><td>${escapeHtml(i.via || '')}</td><td>${escapeHtml(i.detail || '')}</td></tr>`),
+      '</tbody></table>',
+    ].join('')) : '',
     operations ? section('Operational record', `<pre>${escapeHtml(JSON.stringify(operations,null,2))}</pre>`) : '',
 
     files.length ? section('Files', [
@@ -288,7 +315,7 @@ export function compileWorkDoneReport({
 
     relatedRuns.length ? section('Related runs', [
       '<table><thead><tr><th>Run</th><th>Kind</th><th>Outcome</th><th>Recorded stages</th><th>Evidence</th></tr></thead><tbody>',
-      ...relatedRuns.map((r) => `<tr><td><button type="button" data-run-id="${escapeHtml(r.runId)}">${escapeHtml(r.runId)}</button></td><td>${escapeHtml([r.kind, r.ticketId].filter(Boolean).join(' · '))}</td><td>${escapeHtml(r.overall || 'unknown')}${r.haltReason ? ` · ${escapeHtml(r.haltReason)}` : ''}</td><td>${(r.stages || []).map((s) => `<button type="button" data-run-id="${escapeHtml(r.runId)}" data-stage="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join(' ') || 'No stages recorded'}</td><td><code>${escapeHtml(r.evidencePath || '')}</code>${r.reportError ? ` · ${escapeHtml(r.reportError)}` : ''}${r.captureGap ? ` · ${escapeHtml(r.captureGap)}` : ''}</td></tr>`),
+      ...relatedRuns.map((r) => `<tr><td><button type="button" data-run-id="${escapeHtml(r.runId)}">${escapeHtml(r.runId)}</button></td><td>${escapeHtml([r.kind, r.ticketId].filter(Boolean).join(' · '))}</td><td>${r.role === 'superseded' ? `superseded${r.supersededBy ? ` by ${escapeHtml(r.supersededBy)}` : ''} · ` : ''}${escapeHtml(r.overall || 'unknown')}${r.haltReason ? ` · ${escapeHtml(r.haltReason)}` : ''}</td><td>${(r.stages || []).map((s) => `<button type="button" data-run-id="${escapeHtml(r.runId)}" data-stage="${escapeHtml(s.name)}">${escapeHtml(s.name)}</button>`).join(' ') || 'No stages recorded'}</td><td><code>${escapeHtml(r.evidencePath || '')}</code>${r.reportError ? ` · ${escapeHtml(r.reportError)}` : ''}${r.captureGap ? ` · ${escapeHtml(r.captureGap)}` : ''}</td></tr>`),
       '</tbody></table>',
     ].join('\n')) : '',
     status.stages?.length ? section('Stages', [
@@ -347,7 +374,7 @@ export function compileWorkDoneReport({
       const reason = skipReason(s, status);
       return reason ? `- \`${s.name}\` — skipped (${reason})` : `- \`${s.name}\` — Model: ${stageModelLabel(s, status) || '-'}, Mode: ${stageExecutionLabel(s, status) || '-'}, Status: ${s.status}`;
     }).join('\n')}\n` : '',
-    relatedRuns.length ? `## Related runs\n\n${relatedRuns.map((r) => `- \`${r.runId}\` (${r.kind || 'run'}, ${r.overall || 'unknown'}) — ${(r.stages || []).map((s) => s.name).join(', ') || 'no recorded stages'}; evidence: \`${r.evidencePath || ''}\`${r.captureGap ? `; ${r.captureGap}` : ''}`).join('\n')}\n` : '',
+    relatedRuns.length ? `## Related runs\n\n${relatedRuns.map((r) => `- \`${r.runId}\` (${r.kind || 'run'}, ${r.role === 'superseded' ? `superseded${r.supersededBy ? ` by ${r.supersededBy}` : ''}, ` : ''}${r.overall || 'unknown'}) — ${(r.stages || []).map((s) => s.name).join(', ') || 'no recorded stages'}; evidence: \`${r.evidencePath || ''}\`${r.captureGap ? `; ${r.captureGap}` : ''}`).join('\n')}\n` : '',
     legacyReport ? `## Prior completion report\n\nPreserved at \`${legacyReport.path}\`.\n\n${legacyReport.markdown || ''}\n` : '',
     files.length ? `## Files\n\n${files.map((f) => `- \`${f.file}\` — ${STATUS_LABEL[f.status] || 'changed'} (+${f.added}/-${f.removed})`).join('\n')}\n` : '',
     coverage.length ? `## Specification coverage\n\n${coverage.map((c) => `- \`${c.id}\` — ${c.status}${c.evidence ? ` (${c.evidence})` : ''}`).join('\n')}\n` : '',
@@ -415,14 +442,19 @@ export function writeTerminalReport(paths, status, history = null, messages = []
     delivery:{branch:status.branch || null,baseRef:status.baseRef || null}, stages:status.stages,
     planApproval:{agentVerdict:status.planReviewVerdict || null,agentApproved:status.planAgentApproved ?? null,humanGateRequested:status.flags?.approvePlan === true},
     checks:[...(history?.coder || []),...(history?.postTester || [])],
-    activity:events.filter(e => ['agent_retry','agent_timeout','integrity_violation','check_end'].includes(e.type) || e.kind === 'err'), messages,
+    activity:events.filter(e => ['agent_retry','agent_timeout','integrity_violation','check_end','continue_rejected','artifact_retry','surface_changed'].includes(e.type) || e.kind === 'err'), messages,
+    interventions:events.filter(e => e.type === 'intervention' || e.type === 'policy_changed' || e.type === 'surface_changed' || /^pipeline_resume/.test(e.type || '')).map(e => ({ at:e.ts, action:e.action || e.type, by:e.by || null, via:e.via || null, detail:e.detail || e.reason || e.from || null })),
     decisions, evidence,
+    cost: (() => {
+      const costs = events.filter(e => typeof e.costUsd === 'number');
+      return costs.length ? { usd: costs.reduce((n, e) => n + e.costUsd, 0), source: 'measured' } : { usd: null, source: 'unknown' };
+    })(),
     capture: { visibleHostProgressEvents: hostProgress, privateReasoning: 'unavailable',
       transcript: status.executionSurface === 'host-handoff' ? 'checkpoint summaries only' : 'raw CLI stage logs' },
     limitations:['Coverage describes reviewer assertions; check results are recorded separately.',
       ...(status.executionSurface === 'host-handoff' && !hostProgress ? ['No host progress checkpoints were recorded.'] : []),
       ...(!events.some(e => e.host || e.type === 'agent_output') ? ['No agent activity was recorded.'] : [])] };
-  const written = writeWorkDoneReport(paths,{title:`Run report — ${String(status.task || 'Untitled').split('\n')[0]}`,status,runId:status.runId,feature:status.featureId ? {id:status.featureId}:null,narrative:read(paths.reporterDoc),specs:read(paths.specs),review:read(paths.reviewReport),testSuite:read(paths.testSuite),diff:read(paths.diff),history,decisions,operations,diagrams:options.diagrams || [],legacyReport:options.legacyReport || null});
+  const written = writeWorkDoneReport(paths,{title:options.title || `Run report — ${String(status.task || 'Untitled').split('\n')[0]}`,status,runId:status.runId,feature:status.featureId ? {id:status.featureId}:null,narrative:options.narrative ?? read(paths.reporterDoc),specs:read(paths.specs),review:read(paths.reviewReport),testSuite:read(paths.testSuite),diff:read(paths.diff),history,decisions,operations,diagrams:options.diagrams || [],legacyReport:options.legacyReport || null});
   if (written.ok) {
     try { atomicWrite(path.join(paths.reports,'operations.json'),JSON.stringify(operations,null,2)); }
     catch (error) { return { ok: false, error: `operations record could not be written: ${error.message}` }; }

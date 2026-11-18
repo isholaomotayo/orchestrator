@@ -5,6 +5,7 @@
 // the pipeline itself consumes — the Reviewer's verdict line above all, since an
 // unparsed verdict silently costs a full Coder+Tester+Reviewer fix pass.
 import fs from 'node:fs';
+import { parseTickets } from './tickets.mjs';
 
 export const VERDICTS = ['APPROVED', 'REQUEST_CHANGES', 'BLOCK'];
 
@@ -97,6 +98,14 @@ export function validateArtifact(stage, content) {
   if ((stage === 'reviewer' || stage === 'plan_reviewer') && !parseVerdict(text).ok) {
     return { ok: false, reason: `no parseable verdict — expected one of ${VERDICTS.join(' | ')} on a "## Verdict:" line` };
   }
+  // A malformed ticket section used to pass every gate and then crash the
+  // supervisor tick on every poll once tickets were scheduled. Fail it here,
+  // where the Planner (or host) is told exactly what to fix.
+  if (stage === 'planner') {
+    try { parseTickets(text); } catch (err) {
+      return { ok: false, reason: `the Tracer-Bullet Tickets section is invalid: ${err.message}` };
+    }
+  }
   return { ok: true, reason: null };
 }
 
@@ -182,4 +191,14 @@ export function detectTestWeakening(prev, current) {
   // suite size — comparing it would fire on every red-to-green transition.
   if (before <= 1 && after <= 1) return { weakened: false, before, after };
   return { weakened: after < before, before, after };
+}
+
+/**
+ * A cycle that passes fewer tests than the previous one. Unparsed counts
+ * (null) carry no information and never count as a drop.
+ */
+export function detectPassDrop(prev, current) {
+  const before = prev ? Number(prev.passedCount ?? NaN) : NaN;
+  const after = current ? Number(current.passedCount ?? NaN) : NaN;
+  return Number.isFinite(before) && Number.isFinite(after) && after < before;
 }

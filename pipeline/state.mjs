@@ -41,6 +41,7 @@ export function pipelinePaths(repoRoot, { runId = null } = {}) {
     controlLock: path.join(control, '.lock'),
     snapshot: path.join(control, 'snapshot.json'),
     roadmapJson: path.join(control, 'roadmap.json'),
+    roadmapLock: path.join(control, 'roadmap.lock'),
     decisions: path.join(control, 'decisions.jsonl'),
     attention: path.join(control, 'attention.jsonl'),
     briefs: path.join(control, 'briefs'),
@@ -141,6 +142,7 @@ export function loadConfig(paths) {
     },
     checkTimeoutMs: 300000,
     agentTimeoutMs: 1800000,
+    agentIdleTimeoutMs: 1200000, // no agent output for 20 min = hung; 0 disables
     repoScanDepth: 4,     // how deep to look for nested repos when scoping the diff
     maxDiffBytes: 2000000, // total .pipeline/diff.patch budget across all repos
     agentRetries: 2, // bounded retries for TRANSIENT agent failures only
@@ -251,6 +253,32 @@ export function atomicWrite(file, contents) {
 }
 
 /**
+ * Atomically write `value` as JSON only when it differs from what is on disk,
+ * ignoring the dotted `ignore` paths (timestamps that change on every write).
+ * Watchers on .pipeline/ treat every write as news, so an unchanged rewrite is
+ * not free: it makes every dashboard tab refetch. Returns true when written.
+ */
+export function writeJsonIfChanged(file, value, ignore = []) {
+  const strip = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj;
+    const copy = structuredClone(obj);
+    for (const dotted of ignore) {
+      const keys = dotted.split('.');
+      let node = copy;
+      for (const k of keys.slice(0, -1)) node = node?.[k];
+      if (node && typeof node === 'object') delete node[keys.at(-1)];
+    }
+    return copy;
+  };
+  try {
+    const current = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (JSON.stringify(strip(current)) === JSON.stringify(strip(value))) return false;
+  } catch { /* missing or unreadable: write it */ }
+  atomicWrite(file, JSON.stringify(value, null, 2));
+  return true;
+}
+
+/**
  * Take a lock file atomically, or report that someone live already holds it.
  *
  * The 'wx' flag is the whole point: two processes starting in the same tick
@@ -322,5 +350,50 @@ export function tailFile(file, maxLines = 200) {
     return lines.slice(Math.max(0, lines.length - maxLines)).join('\n');
   } catch {
     return '';
+  }
+}
+
+// Re-entrant within a process: the supervisor holds the roadmap lock for a
+// whole tick and calls pool verbs that take it too.
+const heldFileLocks = new Map();
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Run `fn` while holding an exclusive lock file, waiting up to `timeoutMs` for
+ * another process to release it. Synchronous, like the callers it guards.
+ */
+export function withFileLock(file, fn, { timeoutMs = 15_000, pollMs = 25 } = {}) {
+  if (heldFileLocks.has(file)) {
+    heldFileLocks.set(file, heldFileLocks.get(file) + 1);
+    try { return fn(); } finally { heldFileLocks.set(file, heldFileLocks.get(file) - 1); }
+  }
+  const deadline = Date.now() + timeoutMs;
+  while (!acquireLockFile(file, { pid: process.pid })) {
+    if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs}ms waiting for ${path.basename(file)}; another pipeline process is holding it.`);
+    Atomics.wait(sleepCell, 0, 0, pollMs);
+  }
+  heldFileLocks.set(file, 1);
+  try { return fn(); } finally {
+    heldFileLocks.delete(file);
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
+  }
+}
+
+/**
+ * withFileLock for a server: waits on timers instead of blocking the whole
+ * event loop, then runs the synchronous `fn` holding the lock. A withFileLock
+ * on the same file inside `fn` re-enters instead of waiting. `fn` must not be
+ * async: the re-entry mark is only valid while it runs.
+ */
+export async function withFileLockAsync(file, fn, { timeoutMs = 30_000, pollMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (heldFileLocks.has(file) || !acquireLockFile(file, { pid: process.pid })) {
+    if (Date.now() > deadline) throw new Error(`Timed out after ${timeoutMs}ms waiting for ${path.basename(file)}; another pipeline process is holding it.`);
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
+  }
+  heldFileLocks.set(file, 1);
+  try { return fn(); } finally {
+    heldFileLocks.delete(file);
+    try { fs.unlinkSync(file); } catch { /* already gone */ }
   }
 }

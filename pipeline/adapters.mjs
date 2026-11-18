@@ -6,8 +6,9 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendEvent, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { firstAuthenticatedRunner, probeRunnerAuth } from './invocation.mjs';
-import { modelNote, resolveModelId, normalizeEffort, fallbackModelId } from './models.mjs';
+import { modelNote, resolveModelId, normalizeEffort, fallbackModelId, CURRENT_CHAT_MODEL } from './models.mjs';
 import { createStreamParser, hostEventCommand } from './events.mjs';
+import { hookStatus } from './hook-install.mjs';
 
 export const RUNNER_BINS = {
   claude: 'claude',
@@ -122,6 +123,61 @@ export function agentEnv(base = process.env) {
   return env;
 }
 
+// Agent CLIs currently running for this engine, so a stop or signal can take
+// them down with it instead of leaving orphans editing the worktree.
+const liveAgents = new Set();
+let stopping = false;
+
+/** Time a timed-out agent gets between SIGTERM and SIGKILL. */
+export const KILL_GRACE_MS = 10_000;
+
+function killAgentTree(child, signal) {
+  try {
+    if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch { try { child.kill(signal); } catch { /* already gone */ } }
+}
+
+/** Whether anything in the agent's process group is still running. */
+function groupAlive(child) {
+  if (!child.pid) return false;
+  try { process.kill(process.platform === 'win32' ? child.pid : -child.pid, 0); return true; } catch { return false; }
+}
+
+/** Wait (up to `ms`) until nothing in the agent's process group is left; SIGKILL takes a moment to land. */
+async function untilGroupGone(child, ms = 2000) {
+  const deadline = Date.now() + ms;
+  while (groupAlive(child) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+}
+
+/** Signal every live agent's whole process group; returns how many were signalled. */
+export function killLiveAgents(signal = 'SIGTERM') {
+  let n = 0;
+  for (const child of liveAgents) { killAgentTree(child, signal); n += 1; }
+  return n;
+}
+
+/**
+ * Stop every live agent's process group: SIGTERM, up to `graceMs` for the
+ * groups to exit, then SIGKILL for whatever is left. Resolves once nothing is
+ * left running, so the caller can release the run lock knowing no old worker
+ * can overlap a resumed one. Returns how many groups were signalled.
+ */
+export async function stopLiveAgents({ graceMs = KILL_GRACE_MS, pollMs = 100 } = {}) {
+  // From here the engine is exiting: an agent that ends now reports nothing
+  // (the stage code must not retry or halt under another reason) and no new
+  // agent starts.
+  stopping = true;
+  const children = [...liveAgents];
+  for (const child of children) killAgentTree(child, 'SIGTERM');
+  const deadline = Date.now() + graceMs;
+  while (children.some(groupAlive) && Date.now() < deadline) await new Promise((r) => setTimeout(r, pollMs));
+  const left = children.filter(groupAlive);
+  for (const child of left) killAgentTree(child, 'SIGKILL');
+  await Promise.all(left.map((child) => untilGroupGone(child)));
+  return children.length;
+}
+
 export function binExists(bin) {
   const res = spawnSync(process.platform === 'win32' ? 'where' : 'which', [bin], { encoding: 'utf8' });
   return res.status === 0;
@@ -199,9 +255,9 @@ export function reconcileChatRunner({ runner, statusInvocationMode, statusExecut
 // just claude — otherwise the "read-only" review stage could mutate the repo or
 // weaken tests. Each branch sets `readOnlyEnforced` to signal whether the CLI can
 // hard-guarantee read-only at the process level. When it cannot, we drop the
-// auto-approve/write flags (--force / --full-auto / --dangerously-skip-permissions) so the agent cannot
+// auto-approve/write flags (--force / --dangerously-skip-permissions; codex instead gets a read-only sandbox) so the agent cannot
 // silently apply edits — a best-effort constraint the caller can still reject.
-export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null }) {
+export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride = null, skills = null, resumeSession = null }) {
   // Verified skill instructions sit AFTER the stage prompt (so the trust
   // boundary is read first) and are still system prompt, never task input.
   const promptWithSkills = skills?.promptSection
@@ -221,6 +277,9 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         '--verbose',
         '--output-format', 'stream-json',
       ];
+      // A fix cycle continues the conversation that wrote the code, so the agent
+      // keeps what it already read instead of re-exploring the repo cold.
+      if (resumeSession) args.push('--resume', resumeSession);
       if (modelId) args.push('--model', modelId);
       if (level) args.push('--effort', level);
       // Capacity/entitlement failures degrade a tier instead of halting the run.
@@ -253,15 +312,20 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
       return { bin: 'cursor-agent', args, parse: 'stream-json', readOnlyEnforced: false };
     }
     case 'codex': {
-      // codex exec supports a hard read-only sandbox.
-      const args = ['exec'];
-      if (readOnly) args.push('--sandbox', 'read-only');
-      else args.push('--full-auto');
+      // codex exec supports a hard read-only sandbox. Writing stages use the
+      // workspace-write sandbox (current codex rejects the old --full-auto).
+      const sandbox = readOnly ? 'read-only' : 'workspace-write';
+      // `exec resume` takes no --sandbox flag; the same policy goes in as config.
+      const args = resumeSession
+        ? ['exec', 'resume', '-c', `sandbox_mode="${sandbox}"`]
+        : ['exec', '--sandbox', sandbox];
       args.push('--json');
       if (modelId) args.push('--model', modelId);
       // Effort is a config override rather than a flag on `codex exec`.
       if (level) args.push('-c', `model_reasoning_effort="${level}"`);
-      args.push(combined);
+      // A resumed thread already holds the stage prompt; send only the new task.
+      if (resumeSession) args.push(resumeSession, task);
+      else args.push(combined);
       return { bin: 'codex', args, parse: 'stream-json', readOnlyEnforced: !!readOnly };
     }
     case 'antigravity':
@@ -276,13 +340,26 @@ export function buildInvocation({ runner, stage, systemPrompt, task, readOnly, c
         .replaceAll('{model}', modelId || '')
         .replaceAll('{effort}', level || '')
         .replaceAll('{readOnly}', String(!!readOnly));
-      return { bin: custom.command, args: (custom.args || []).map(sub), parse: 'text', readOnlyEnforced: false };
+      // A custom runner may stream agent JSON events (a wrapper around a real
+      // CLI) or print plain text; it says which with `parse`. Without it,
+      // JSON event lines are read as events and every other line as text.
+      return { bin: custom.command, args: (custom.args || []).map(sub), parse: custom.parse === 'text' ? 'text' : 'stream-json', readOnlyEnforced: false };
     }
   }
 }
 
-function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null }) {
+/** Shape of stage-handoff.json; SKILL.md documents the matching protocol. */
+export const HANDOFF_VERSION = 3;
+
+// Hosts whose installed hooks write a tool event after every tool call
+// (host-hooks.mjs) and inject queued operator notes. Antigravity's hook runs
+// before an invocation, not after a tool, so it reports no tool events.
+const HOOK_PROGRESS_HOSTS = new Set(['claude', 'codex', 'cursor']);
+
+function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient = null, skills = null, handoffId = null, runId = null }) {
   const handoff = {
+    version: HANDOFF_VERSION,
+    ...(handoffId ? { handoffId, runId } : {}),
     stage,
     cycle: cycle || 1,
     task,
@@ -299,28 +376,40 @@ function writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, path
     handoff.modelNote = modelNote(model, normalizeEffort(effort));
   }
   if (normalizeEffort(effort)) handoff.effort = normalizeEffort(effort);
+  // A chat session cannot switch its own model mid-conversation, so every stage
+  // used to run on the (usually frontier) chat model. Low-effort stages are
+  // summarisation work: a host with model-scoped subagents can run them there.
+  if (model && model !== CURRENT_CHAT_MODEL && normalizeEffort(effort) === 'low') {
+    handoff.delegate = {
+      model,
+      note: `Low-effort ${stage} stage. If this host can run a subagent on a chosen model, do this stage in one on ${model} (it writes ${STAGE_ARTIFACT_FILES[stage]}), then record ${model} as actualModel. Otherwise do it here.`,
+    };
+  }
   if (skills?.active?.length) {
     // A chat host reads the same verified instructions a CLI runner would.
     handoff.skills = skills.active.map((a) => ({ name: a.skill.name, dir: a.dir, entry: a.skill.entry }));
     handoff.skillsPromptSection = skills.promptSection;
   }
-  if (hostClient) {
-    handoff.hostClient = hostClient;
-    handoff.hostNote = `Complete this stage in the current ${hostClient} chat session. Do NOT spawn or delegate to another agent CLI.`;
-  }
-  handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, instructions: 'Register your host conversation, run.claim this handoff, run.checkpoint before work and after tool batches, acknowledge and resolve operator messages, then stage.complete. Never edit control state directly.', command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
+  // The brief carries only what differs per stage. The fixed protocol (never
+  // spawn another CLI, how to report progress, the bridge lease steps) lives in
+  // skills/orchestrate/SKILL.md, versioned by HANDOFF_VERSION, instead of being
+  // repeated in every brief.
+  if (hostClient) handoff.hostClient = hostClient;
+  // With hooks connected, a claimed run's progress and operator notes flow
+  // through the hooks, so the per-tool host-event calls SKILL.md asks for
+  // would only duplicate them (one process and one model turn each).
+  // A host settings file the user broke must not break the handoff: then the
+  // agent just reports progress by hand.
+  let hooked = false;
+  try { hooked = HOOK_PROGRESS_HOSTS.has(hostClient) && hookStatus(paths.root, hostClient) === 'connected'; } catch { /* unreadable settings */ }
+  if (hooked) handoff.hookProgress = true;
+  handoff.bridge = { version: 2, project: paths.root, runId: paths.runId, command: 'node pipeline/bridge-cli.mjs <command> --input-file <json-file>' };
   handoff.eventCommand = hostEventCommand({ runId: paths.runId, stage });
-  const runFlag = paths.runId ? ` --run-id ${paths.runId}` : '';
-  handoff.progressStream = {
-    heartbeat: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind text --text "<action_summary>"`,
-    toolCall: `node pipeline/host-event.mjs${runFlag} --stage ${stage} --kind tool --tool <tool_name> --file <file_path>`,
-    frequency: 'Run heartbeat immediately upon starting stage, after each major tool batch or file edit, and before stage completion.',
-  };
   fs.writeFileSync(paths.stageHandoff, JSON.stringify(handoff, null, 2));
   appendEvent(paths, { stage, cycle, type: 'chat_handoff', artifact: handoff.artifact, ...(hostClient ? { hostClient } : {}) });
 }
 
-export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
+export function runAgent({ runner, stage, cycle = 0, attempt = 1, appendLog = false, handoffId = null, runIdForHandoff = null, resumeSession = null, task, systemPromptFile, cwd, readOnly = false, paths, config, model, effort, modelSelection, hostClient = null, artifactOverride = null, skills = null }) {
   if (runner === 'host') {
     fs.mkdirSync(paths.logs, { recursive: true });
     const logFile = path.join(paths.logs, `${stage}.log`);
@@ -328,17 +417,18 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
     const hostLabel = hostClient ? ` (IDE chat: ${hostClient})` : ' (IDE chat)';
     fs.appendFileSync(logFile, `\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — host${hostLabel}${modelLabel} — ${new Date().toISOString()} =====\n`);
     appendEvent(paths, { stage, cycle, type: 'agent_start', runner: 'host', model: model || undefined, effort: normalizeEffort(effort) || undefined, hostClient: hostClient || undefined });
-    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills });
+    writeHostHandoff({ stage, cycle, task, systemPromptFile, readOnly, paths, model, effort, modelSelection, hostClient, skills, handoffId, runId: runIdForHandoff });
     appendEvent(paths, { stage, cycle, type: 'agent_parked', ok: true, hostHandoff: true });
     return Promise.resolve({ ok: false, hostHandoff: true });
   }
 
   const systemPrompt = fs.readFileSync(systemPromptFile, 'utf8');
-  const { bin, args, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills });
+  const { bin, args, parse, readOnlyEnforced } = buildInvocation({ runner, stage, systemPrompt, task, readOnly, config, model, effort, artifactOverride, skills, resumeSession });
 
   fs.mkdirSync(paths.logs, { recursive: true });
   const logFile = path.join(paths.logs, `${stage}.log`);
-  const log = fs.createWriteStream(logFile, { flags: cycle > 1 ? 'a' : 'w' });
+  // A retry (attempt > 1) appends, so the failed attempt's output survives for diagnosis.
+  const log = fs.createWriteStream(logFile, { flags: cycle > 1 || attempt > 1 || appendLog ? 'a' : 'w' });
   const level = normalizeEffort(effort);
   const modelLabel = model ? ` · model ${model}${level ? ` · effort ${level}` : ''}` : '';
   log.write(`\n===== ${stage.toUpperCase()} (cycle ${cycle || 1}) — ${runner}${modelLabel} — ${new Date().toISOString()} =====\n`);
@@ -349,32 +439,78 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
   }
   appendEvent(paths, { stage, cycle, type: 'agent_start', runner, model: model || undefined, effort: level || undefined });
 
+  if (stopping) return new Promise(() => {});
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd, env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    // Own process group, so a stop/timeout reaches everything the agent
+    // started (test runners, dev servers), not just the CLI itself. No forge
+    // tokens: stages never push or merge; the supervisor does.
+    const child = spawn(bin, args, { cwd, env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    liveAgents.add(child);
+    const stderrLines = [];
+    const outputLines = [];
 
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       appendEvent(paths, { stage, cycle, type: 'agent_timeout', timeoutMs: config.agentTimeoutMs });
-      child.kill('SIGKILL');
+      // Ask first so the agent's own children (test runners, servers) can shut down.
+      killAgentTree(child, 'SIGTERM');
+      killAt = Date.now() + KILL_GRACE_MS;
+      killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
     }, config.agentTimeoutMs);
+    let killTimer = null;
+    let killAt = 0;
+    // No output at all for agentIdleTimeoutMs means a hung CLI, not a slow one:
+    // its own tool calls time out well before that. Stop it then instead of
+    // waiting out the whole wall-clock budget.
+    let lastOutputAt = Date.now();
+    let idledOut = false;
+    const idleMs = Number(config.agentIdleTimeoutMs) || 0;
+    const idleTimer = idleMs > 0 ? setInterval(() => {
+      if (timedOut || Date.now() - lastOutputAt < idleMs) return;
+      timedOut = true;
+      idledOut = true;
+      appendEvent(paths, { stage, cycle, type: 'agent_timeout', idle: true, idleTimeoutMs: idleMs });
+      killAgentTree(child, 'SIGTERM');
+      killAt = Date.now() + KILL_GRACE_MS;
+      killTimer = setTimeout(() => killAgentTree(child, 'SIGKILL'), KILL_GRACE_MS);
+    }, Math.min(15_000, idleMs)) : null;
 
     let buffer = '';
-    const parser = createStreamParser();
+    const parser = createStreamParser({ format: parse });
+    // What the CLI itself reports, as opposed to what was requested: the session
+    // to resume next cycle, the model that actually ran (a --fallback-model
+    // switch shows here), and whether its final result was an error.
+    const observed = { sessionId: null, model: null, resultError: false };
+    // A text runner prints no such events: a JSON line it prints is output.
+    const observe = (line) => {
+      if (parse === 'text' || !line.startsWith('{') || !/"type":\s*"(system|result|thread\.started)"/.test(line)) return;
+      try {
+        const ev = JSON.parse(line);
+        if (ev.session_id) observed.sessionId = ev.session_id;
+        if (ev.type === 'thread.started' && ev.thread_id) observed.sessionId = ev.thread_id; // codex
+        if (ev.type === 'system' && ev.subtype === 'init' && ev.model) observed.model = ev.model;
+        if (ev.type === 'result' && ev.is_error === true) observed.resultError = true;
+      } catch { /* not a complete event */ }
+    };
     const emit = (b) => {
       appendEvent(paths, { stage, cycle, type: 'agent_output', ...b });
     };
     const handleChunk = (chunk, isErr) => {
+      lastOutputAt = Date.now();
       buffer += chunk.toString();
       let idx;
       while ((idx = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, idx);
         buffer = buffer.slice(idx + 1);
         log.write(`${line}\n`);
+        const keep = isErr ? stderrLines : outputLines;
+        if (line.trim()) { keep.push(line); if (keep.length > (isErr ? 40 : 5)) keep.shift(); }
         if (isErr) {
           if (line.trim()) emit({ kind: 'err', text: line });
           continue;
         }
+        observe(line.trim());
         parser.pushLine(line).forEach(emit);
       }
     };
@@ -383,23 +519,48 @@ export function runAgent({ runner, stage, cycle = 0, task, systemPromptFile, cwd
 
     child.on('error', (err) => {
       clearTimeout(timer);
+      clearInterval(idleTimer);
+      liveAgents.delete(child);
       log.write(`[error] failed to spawn ${bin}: ${err.message}\n`);
       appendEvent(paths, { stage, cycle, type: 'agent_end', ok: false, error: err.message });
-      log.end();
-      resolve({ ok: false, exitCode: -1, error: err.message });
+      log.end(() => resolve({ ok: false, exitCode: -1, error: err.message }));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
+      clearInterval(idleTimer);
+      // The CLI exited, but after a timeout something in its group may still be
+      // ignoring SIGTERM. Let the pending SIGKILL land before reporting the
+      // stage over, so a rerun cannot overlap an old worker.
+      if (killTimer && groupAlive(child)) {
+        clearTimeout(killTimer);
+        const wait = Math.max(0, killAt - Date.now());
+        setTimeout(() => { killAgentTree(child, 'SIGKILL'); untilGroupGone(child).then(() => finish(code)); }, wait);
+        return;
+      }
+      clearTimeout(killTimer);
+      finish(code);
+    });
+    const finish = (code) => {
+      liveAgents.delete(child);
+      if (stopping) { log.end(); return; }
       if (buffer.trim()) {
         log.write(buffer.endsWith('\n') ? buffer : `${buffer}\n`);
+        observe(buffer.trim());
         parser.pushLine(buffer).forEach(emit);
       }
       parser.flush().forEach(emit);
-      if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
-      appendEvent(paths, { stage, cycle, type: 'agent_end', ok: code === 0, exitCode: code, timedOut: timedOut || undefined });
-      log.end();
-      resolve({ ok: code === 0, exitCode: code, timedOut });
-    });
+      if (idledOut) log.write(`[error] agent produced no output for agentIdleTimeoutMs (${idleMs}ms) and was stopped\n`);
+      else if (timedOut) log.write(`[error] agent exceeded agentTimeoutMs (${config.agentTimeoutMs}ms) and was killed\n`);
+      // Exit 0 with an error result (e.g. max turns, a refused permission) did
+      // not do the work; treating it as success sent an empty stage downstream.
+      // A stopped agent did not finish, whatever its SIGTERM handler exits with.
+      const ok = code === 0 && !observed.resultError && !timedOut;
+      if (code === 0 && observed.resultError) log.write('[error] agent exited 0 but reported an error result\n');
+      appendEvent(paths, { stage, cycle, type: 'agent_end', ok, exitCode: code, timedOut: timedOut || undefined, resultError: observed.resultError || undefined, model: observed.model || undefined });
+      // Resolve once the log is on disk: on a failure the engine reads its tail
+      // straight away to classify it.
+      log.end(() => resolve({ ok, exitCode: code, timedOut, stderrTail: stderrLines.join('\n'), outputTail: outputLines.join('\n'), sessionId: observed.sessionId, observedModel: observed.model, resultError: observed.resultError }));
+    };
   });
 }
 
@@ -413,7 +574,8 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
     args = ['-p', prompt];
     if (model) args.push('--model', model);
   } else if (runner === 'codex') {
-    args = ['exec', '--full-auto', prompt];
+    // A one-shot classifies text; it never needs to write.
+    args = ['exec', '--sandbox', 'read-only', prompt];
     if (model) args.push('--model', model);
   } else {
     const custom = config?.customRunners?.[runner];
@@ -429,12 +591,12 @@ export function runOneShot({ runner, prompt, config, model, timeoutMs = 15000 })
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { env: { ...process.env, FORCE_COLOR: '0' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { env: agentEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let stdout = '';
     let stderr = '';
     
     const timer = setTimeout(() => {
-      child.kill('SIGKILL');
+      killAgentTree(child, 'SIGKILL');
       reject(new Error(`runOneShot timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 

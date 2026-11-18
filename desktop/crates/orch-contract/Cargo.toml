@@ -1,0 +1,11 @@
+[package]
+name = "orch-contract"
+description = "Typed /api/v1 contract shared with pipeline/contract/v1/*.schema.json"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

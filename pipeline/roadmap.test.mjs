@@ -276,3 +276,19 @@ Fix it.
   assert.equal(json.features.length, 1);
   assert.equal(json.merge, 'local-only');
 });
+
+test('a renamed roadmap keeps features that already landed instead of planning them again', () => {
+  const v1 = compileRoadmap({ title: 'Plan A', base: 'main', merge: 'local-only', features: [
+    { id: 'P1', title: 'Accounts', description: '', acceptance: [], dependsOn: [] },
+    { id: 'P2', title: 'Billing', description: '', acceptance: [], dependsOn: [] },
+  ] });
+  v1.features[0].status = 'landed'; v1.features[0].landedSha = 'abc';
+  v1.features[1].status = 'executing';
+  const v2 = compileRoadmap({ title: 'Plan B', base: 'main', merge: 'local-only', features: [
+    { id: 'P1', title: 'Accounts', description: '', acceptance: [], dependsOn: [] },
+    { id: 'P2', title: 'Billing', description: '', acceptance: [], dependsOn: [] },
+  ] }, v1);
+  assert.equal(v2.features[0].status, 'landed');
+  assert.equal(v2.features[0].landedSha, 'abc');
+  assert.equal(v2.features[1].status, 'queued', 'in-flight work from the old roadmap still restarts');
+});

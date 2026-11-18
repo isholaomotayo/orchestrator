@@ -270,6 +270,8 @@ function validateStageMap(stages, label = 'models') {
   out.designer = typeof stages.designer === 'string' && stages.designer.trim() ? stages.designer.trim() : out.planner;
   out.plan_reviewer = typeof stages.plan_reviewer === 'string' && stages.plan_reviewer.trim() ? stages.plan_reviewer.trim() : out.reviewer;
   out.handoff = typeof stages.handoff === 'string' && stages.handoff.trim() ? stages.handoff.trim() : out.reviewer;
+  // The reporter writes the run summary, like the handoff: same tier when omitted.
+  out.reporter = typeof stages.reporter === 'string' && stages.reporter.trim() ? stages.reporter.trim() : out.handoff;
   return out;
 }
 

@@ -55,3 +55,17 @@ export function skipReason(stage, status) {
   if (reasonFn) return reasonFn(status) ?? 'Skipped for this run (reason not recorded).';
   return 'Skipped for this run (see status.json for details).';
 }
+
+/**
+ * The stage a run view opens on: the one the person picked, else the one the
+ * run is waiting on or running, else the last one that finished. The server
+ * uses the same rule to send only that stage's events.
+ */
+export function activeStageOf(status, picked = null) {
+  const stages = status?.stages || [];
+  return picked
+    || status?.awaitingStage
+    || stages.find((s) => ['running', 'awaiting_host'].includes(s.status))?.name
+    || [...stages].reverse().find((s) => ['passed', 'failed', 'blocked', 'interrupted'].includes(s.status))?.name
+    || 'planner';
+}

@@ -162,8 +162,24 @@ export function parseAgentEvent(line) {
     const text = stringField(nested) || 'agent error';
     return [{ kind: 'err', text }];
   }
-  if (ev.type === 'item.completed' && stringField(ev.item?.text)) {
-    return [{ kind: 'text', role: 'assistant', text: ev.item.text.trim() }];
+  // codex exec --json: commands, file edits and tool calls arrive as items.
+  if ((ev.type === 'item.started' || ev.type === 'item.completed') && ev.item && typeof ev.item === 'object') {
+    const item = ev.item;
+    const done = ev.type === 'item.completed';
+    if (item.type === 'command_execution') {
+      const failed = done && typeof item.exit_code === 'number' && item.exit_code !== 0;
+      return [{ kind: 'tool', tool: 'shell', status: failed ? 'failed' : done ? 'completed' : 'started', cmd: stringField(item.command) || undefined }];
+    }
+    if (item.type === 'file_change') {
+      if (!done) return [];
+      return (Array.isArray(item.changes) ? item.changes : []).map((c) => ({ kind: 'tool', tool: c.kind === 'add' ? 'write' : 'edit', status: 'completed', file: stringField(c.path) || undefined }));
+    }
+    if (item.type === 'mcp_tool_call' || item.type === 'web_search') {
+      return [{ kind: 'tool', tool: stringField(item.tool) || item.type, status: done ? 'completed' : 'started' }];
+    }
+    if (item.type === 'reasoning') return [];
+    if (done && stringField(item.text)) return [{ kind: 'text', role: 'assistant', text: item.text.trim() }];
+    return [];
   }
 
   const text = stringField(ev.text) || stringField(ev.message) || stringField(ev.content);
@@ -171,8 +187,21 @@ export function parseAgentEvent(line) {
   return [];
 }
 
-/** Line-oriented parser that coalesces token-sized assistant fragments. */
-export function createStreamParser() {
+/**
+ * Line-oriented parser that coalesces token-sized assistant fragments.
+ * `format` is the runner's `parse` field: a 'text' runner's lines are its
+ * output as written, never agent events, even when one happens to be JSON.
+ */
+export function createStreamParser({ format = 'stream-json' } = {}) {
+  if (format === 'text') {
+    return {
+      pushLine(line) {
+        const text = String(line || '').trim();
+        return text && !isPromptEcho(text) ? [{ kind: 'text', role: 'assistant', text }] : [];
+      },
+      flush: () => [],
+    };
+  }
   let pending = '';
   const flushPending = () => {
     const text = pending.trim();

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { pipelinePaths, readLock, pidAlive, acquireLockFile, STAGE_ARTIFACT_FILES } from './state.mjs';
+import { pipelinePaths, readLock, pidAlive, acquireLockFile, loadConfig, STAGE_ARTIFACT_FILES } from './state.mjs';
 import { isValidRunId } from './run-registry.mjs';
 import { validateArtifactFile } from './artifacts.mjs';
 import { transact, commandState, recoverCommands } from './commands.mjs';
@@ -42,16 +42,27 @@ function owned(state, args, status, now) {
 }
 function relevant(m, args, status) { return m.runId === (args.runId || null) && m.handoffId === status.handoffId; }
 function messageView(m) { return { ...m }; }
-export function inspectBridge(project, runId = null, { now = Date.now() } = {}) {
-  const state = readBridge(project), p = bridgePaths(project, runId);
-  let status = null; try { status = loadStatus(p); } catch {}
+/** Who holds a run's lease, from an already-read bridge state. */
+export function ownerView(state, runId = null, now = Date.now()) {
   const owner = state.runs[keyOf(runId)];
   const session = owner && state.sessions[owner.sessionId];
   const capability = !owner ? 'disconnected' : Date.parse(owner.expiresAt) <= now ? 'disconnected'
     : session?.capabilities?.hooks ? 'connected' : 'checkpoint-only';
-  return { revision: state.revision, status, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null,
+  return { capability, owner: owner ? { sessionId: owner.sessionId, handoffId: owner.handoffId, expiresAt: owner.expiresAt, lastActivityAt: owner.lastActivityAt, lastCheckpointAt: owner.lastCheckpointAt, host: session?.host, conversationId: session?.conversationId, actualModel: session?.actualModel, capability } : null };
+}
+export function inspectBridge(project, runId = null, { now = Date.now() } = {}) {
+  const state = readBridge(project), p = bridgePaths(project, runId);
+  let status = null; try { status = loadStatus(p); } catch {}
+  const { owner, capability } = ownerView(state, runId, now);
+  return { revision: state.revision, status, owner,
     capability, ownershipRequired: !!(owner || state.managedRuns?.[keyOf(runId)]), messages: state.messages.filter(m => m.runId === (runId || null)).map(messageView) };
 }
+/** The stable id a host conversation registers under (no write needed). */
+export function sessionIdFor(project, host, conversationId) {
+  const p = bridgePaths(project, null);
+  return crypto.createHash('sha256').update(`${p.root}\0${host}\0${conversationId}`).digest('hex').slice(0, 24);
+}
+
 export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   const p = bridgePaths(args.project, args.runId);
   if (command === 'run.inspect') return inspectBridge(args.project, args.runId, { now });
@@ -65,7 +76,7 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
   return transact(p.control, command, input, (state, stageFile) => {
     if (command === 'session.register') {
       if (!validHost(args.host) || !args.conversationId?.trim()) throw new Error('host and conversationId are required.');
-      const sessionId = crypto.createHash('sha256').update(`${p.root}\0${args.host}\0${args.conversationId}`).digest('hex').slice(0, 24);
+      const sessionId = sessionIdFor(args.project, args.host, args.conversationId);
       const prev = state.sessions[sessionId];
       state.sessions[sessionId] = { ...prev, sessionId, host: args.host, conversationId: args.conversationId, project: p.root, capabilities: args.capabilities || prev?.capabilities || {}, actualModel: args.actualModel || prev?.actualModel || null, modelSource: args.actualModel ? 'host-observed' : prev?.modelSource || 'unknown', registeredAt: prev?.registeredAt || stamp, connectedAt: stamp };
       return { sessionId, capabilities: state.sessions[sessionId].capabilities };
@@ -75,11 +86,20 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
       const reason = args.reason || 'Dismissed by operator';
       let statusObj = null;
       try { statusObj = JSON.parse(fs.readFileSync(p.status, 'utf8')); } catch {}
+      // Idempotent: a second click must neither fail nor rewrite the record.
+      if (statusObj?.dismissed || state.dismissedRuns?.[key]) {
+        return { ok: true, runId: args.runId, dismissed: true, alreadyDismissed: true, reason: statusObj?.dismissReason || state.dismissedRuns?.[key]?.reason || reason };
+      }
+      if (pidAlive(readLock(p)?.pid)) throw new Error('Run engine is still running; stop it before dismissing.');
       if (statusObj) {
-        statusObj.overall = 'halted';
-        statusObj.haltReason = reason;
+        // A finished run keeps its outcome; dismissing only hides it.
+        if (statusObj.overall !== 'done') {
+          statusObj.overall = 'halted';
+          statusObj.haltReason = 'DISMISSED';
+        }
         statusObj.dismissed = true;
         statusObj.dismissedAt = stamp;
+        statusObj.dismissReason = reason;
         stageFile(p.status, JSON.stringify(statusObj, null, 2) + '\n');
       } else {
         try {
@@ -90,7 +110,8 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
             } else {
               const fallback = {
                 overall: 'halted',
-                haltReason: reason,
+                haltReason: 'DISMISSED',
+                dismissReason: reason,
                 dismissed: true,
                 dismissedAt: stamp,
               };
@@ -99,9 +120,20 @@ export function bridgeCommand(command, args, { now = Date.now() } = {}) {
           }
         } catch {}
       }
+      // A dormant resume/extend request would otherwise make the supervisor
+      // respawn the run it was just told to drop.
+      if (p.runMeta) {
+        try {
+          const meta = JSON.parse(fs.readFileSync(p.runMeta, 'utf8'));
+          if (meta.requests) {
+            delete meta.requests;
+            stageFile(p.runMeta, JSON.stringify({ ...meta, dismissed: true }, null, 2));
+          }
+        } catch { /* no run.json */ }
+      }
       delete state.runs[key];
       (state.dismissedRuns ||= {})[key] = { at: stamp, reason };
-      return { ok: true, runId: args.runId, dismissed: true, reason };
+      return { ok: true, runId: args.runId, dismissed: true, alreadyDismissed: false, reason };
     }
     const status = loadStatus(p);
     const key = keyOf(args.runId);
@@ -179,6 +211,13 @@ export function validateCompletion(project, runId, status, credentials) {
   const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (!owner.completion || owner.completion.id !== credentials.completionId || owner.completion.artifactHash !== hash) throw new Error('Stage completion was not prepared for this artifact.');
 }
+// stage.complete runs the engine's verification synchronously: every configured
+// check may take up to checkTimeoutMs, so a fixed budget would kill a slow but
+// healthy check run mid-way. Allow all of them plus a margin for the engine itself.
+export function completionTimeoutMs(config) {
+  const checks = Object.values(config?.checks || {}).filter(Boolean).length;
+  return Math.max(600000, checks * (config?.checkTimeoutMs || 300000) + 120000);
+}
 export function completeStage(args) {
   const p = bridgePaths(args.project, args.runId);
   recoverCommands(p.control);
@@ -189,7 +228,7 @@ export function completeStage(args) {
   if (before.completedHandoffs?.[args.handoffId]) return before.completedHandoffs[args.handoffId];
   const prepared = bridgeCommand('stage.prepare', { ...args, commandId });
   const credentials = { sessionId: args.sessionId, leaseToken: args.leaseToken, handoffId: args.handoffId, completionId: prepared.completion.id };
-  const result = spawnSync(process.execPath, [path.join(p.root, 'pipeline/orchestrator.mjs'), '--continue', ...(args.runId ? ['--run-id', args.runId] : [])], { cwd: p.root, encoding: 'utf8', timeout: 600000, maxBuffer: 1024 * 1024, env: { ...process.env, ORCHESTRATOR_COMPLETION: JSON.stringify(credentials) } });
+  const result = spawnSync(process.execPath, [path.join(p.root, 'pipeline/orchestrator.mjs'), '--continue', ...(args.runId ? ['--run-id', args.runId] : [])], { cwd: p.root, encoding: 'utf8', timeout: completionTimeoutMs(loadConfig(p)), maxBuffer: 1024 * 1024, env: { ...process.env, ORCHESTRATOR_COMPLETION: JSON.stringify(credentials) } });
   const after = loadStatus(p);
   if (after.completedHandoffs?.[args.handoffId]) return after.completedHandoffs[args.handoffId];
   return { ok: false, overall: after.overall, error: result.error?.message || result.stderr?.slice(-2000) || 'Stage did not advance; inspect run state.' };
@@ -230,6 +269,10 @@ export function commitCompletion(project, runId, previous, credentials, next) {
     if (!owner || owner.token !== credentials.leaseToken || owner.sessionId !== credentials.sessionId || owner.handoffId !== previous.handoffId) throw new Error('Completion ownership changed.');
     owned(state, { ...credentials, runId }, previous, Date.now());
     assertMessagesSettled(state, runId, previous.handoffId);
+    // The prepared completion carries a full copy of the old status and handoff
+    // for crash recovery; once committed it is dead weight that every later
+    // journal record would otherwise copy.
+    delete owner.completion;
     const result = { ok: true, runId, handoffId: previous.handoffId, completedAt: new Date().toISOString() };
     next.completedHandoffs = { ...next.completedHandoffs, [previous.handoffId]: result };
     next.handoffId = null;

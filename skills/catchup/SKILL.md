@@ -2,7 +2,7 @@
 name: catchup
 description: Recap what happened while the user was away and what is still waiting on them. Use at the start of a session, when the user asks "what did I miss", or invokes /catchup.
 when_to_use: A session starts against a project with an orchestrator pool, or the user asks what they missed or what is outstanding.
-allowed-tools: Bash(node pipeline/pool.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read
+allowed-tools: Bash(node pipeline/pool-cli.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read
 ---
 
 # Catch up

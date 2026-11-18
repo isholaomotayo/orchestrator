@@ -5,7 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pipelinePaths, writeStatus, newStatus } from './state.mjs';
-import { writeRunMeta } from './run-registry.mjs';
+import { writeRunMeta, readRunMeta } from './run-registry.mjs';
+import { writePolicyOverride, readPolicyOverride } from './mode.mjs';
 import { createSupervisor } from './supervisor.mjs';
 import { main as poolCli } from './pool-cli.mjs';
 import { compile, writeRoadmap, readRoadmap, listRunStates, pendingAttention } from './pool.mjs';
@@ -91,6 +92,37 @@ test('independent features share one host slot across supervisor restarts', () =
   assert.equal(listRunStates(paths).filter((r) => r.status?.overall === 'awaiting_chat').length, 1);
   createSupervisor({ repoRoot: root, spawnSync: spawnHost }).tick();
   assert.equal(listRunStates(paths).filter((r) => r.status?.overall === 'awaiting_chat').length, 1);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a tick builds the run list once unless it changes a run, and still counts a run it spawned', () => {
+  const { root, paths } = tmpRepo();
+  fs.appendFileSync(paths.roadmapMd, '\n## F2: Second\n\n- depends_on: none\n\n### Description\n\nDo another thing.\n\n### Acceptance\n\n- it works\n');
+  fs.appendFileSync(paths.roadmapMd, '\n## F3: Third\n\n- depends_on: none\n\n### Description\n\nAnd another.\n\n### Acceptance\n\n- it works\n');
+  compile(paths);
+  let spawns = 0;
+  const spawnHost = (_bin, args) => {
+    spawns++;
+    const runPaths = pipelinePaths(root, { runId: args[args.indexOf('--run-id') + 1] });
+    const status = newStatus('plan');
+    Object.assign(status, { overall: 'awaiting_chat', awaitingStage: 'planner', runner: 'host', executionSurface: 'host-handoff' });
+    writeStatus(runPaths, status);
+    return { status: 0 };
+  };
+  // Every build of the run list reads the runs directory once.
+  const builds = () => {
+    let n = 0;
+    const real = fs.readdirSync;
+    fs.readdirSync = function (dir, ...rest) { if (dir === paths.runs) n++; return real.call(this, dir, ...rest); };
+    return { count: () => n, restore: () => { fs.readdirSync = real; } };
+  };
+  const sup = createSupervisor({ repoRoot: root, spawnSync: spawnHost });
+  sup.tick();
+  assert.equal(spawns, 1, 'one host slot: the run spawned this tick filled it');
+  const quiet = builds();
+  try { sup.tick(); } finally { quiet.restore(); }
+  assert.equal(spawns, 1, 'the slot is still taken');
+  assert.equal(quiet.count(), 1, 'a tick that changes no run builds the list once');
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -337,6 +369,113 @@ test('a fatal AGENT_ERROR is not auto-resumed; a transient one is', () => {
   fs.rmSync(transient.root, { recursive: true, force: true });
 });
 
+test('an automatic resume leaves a recovered event saying what it did and why', () => {
+  const repo = tmpRepo();
+  compile(repo.paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaac';
+  seedHalted(repo.root, runId, { haltTransient: true });
+  const rm = readRoadmap(repo.paths);
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(repo.paths, rm);
+  createSupervisor({
+    repoRoot: repo.root,
+    spawn: () => ({ pid: 1, unref() {} }),
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  const events = fs.readFileSync(pipelinePaths(repo.root, { runId }).events, 'utf8')
+    .split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  const recovered = events.find((e) => e.type === 'recovered');
+  assert.ok(recovered, 'the auto-resume must be on the record');
+  assert.equal(recovered.via, 'self-heal');
+  assert.equal(recovered.action, 'auto-resume');
+  assert.equal(recovered.cause, 'AGENT_ERROR');
+  fs.rmSync(repo.root, { recursive: true, force: true });
+});
+
+// ---- self-heal: a run whose engine process is gone ---------------------------
+
+function seedDeadEngine(root, runId, { autonomy, autoResumes = 0 }) {
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('coder'), overall: 'running', featureId: 'F1' });
+  writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'ticket', runner: 'cursor', phase: 'running', autoResumes, pid: null });
+  writePolicyOverride(runPaths.dir, { autonomy });
+  fs.writeFileSync(runPaths.events, '');
+  return runPaths;
+}
+
+function healRig(autonomy, { autoResumes = 0 } = {}) {
+  const repo = tmpRepo();
+  compile(repo.paths);
+  const runId = '20260909T000000Z-F1-ticket-dddddd';
+  const runPaths = seedDeadEngine(repo.root, runId, { autonomy, autoResumes });
+  const spawned = [];
+  let clock = Date.now();
+  const sup = createSupervisor({
+    repoRoot: repo.root, now: () => clock,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  });
+  const advance = (ms) => { clock += ms; };
+  const events = () => fs.readFileSync(runPaths.events, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  return { ...repo, runId, runPaths, spawned, sup, advance, events, done: () => fs.rmSync(repo.root, { recursive: true, force: true }) };
+}
+
+test('self-heal: an autonomous run whose engine died is restarted once it has stayed dead past the grace period', () => {
+  const r = healRig('autonomous');
+  r.sup.tick();
+  assert.equal(r.spawned.length, 0, 'first sight only starts the clock');
+  r.advance(20_000); r.sup.tick();
+  assert.equal(r.spawned.length, 0, 'still inside the grace period');
+  r.advance(15_000); r.sup.tick();
+  assert.equal(r.spawned.length, 1);
+  assert.ok(r.spawned[0].includes('--resume'));
+  const recovered = r.events().find((e) => e.type === 'recovered');
+  assert.equal(recovered.action, 'auto-respawn');
+  assert.equal(recovered.via, 'self-heal');
+  assert.equal(recovered.cause, 'engine-gone');
+  const meta = readRunMeta(r.runPaths);
+  assert.equal(meta.autoResumes, 1);
+  assert.ok(meta.lastHealAt);
+  r.done();
+});
+
+test('self-heal: a run that keeps dying is restarted within its budget, then handed back to a person once', () => {
+  const r = healRig('autonomous');
+  r.sup.tick(); r.advance(31_000); r.sup.tick();           // restart 1
+  assert.equal(r.spawned.length, 1);
+  r.advance(1_000); r.sup.tick();
+  assert.equal(r.spawned.length, 1, 'a freshly restarted engine gets the grace period before it is judged');
+  r.advance(40_000); r.sup.tick();                          // restart 2
+  assert.equal(r.spawned.length, 2);
+  r.advance(60_000); r.sup.tick(); r.advance(60_000); r.sup.tick(); // budget spent: twice, to prove it escalates once
+  assert.equal(r.spawned.length, 2, 'no restart past the budget');
+  assert.equal(readPolicyOverride(r.runPaths.dir).autonomy, 'guided', 'the run is handed back');
+  assert.equal(readPolicyOverride(r.runPaths.dir).by, 'self-heal');
+  const items = pendingAttention(r.paths).filter((a) => a.kind === 'self-heal-exhausted' && a.runId === r.runId);
+  assert.equal(items.length, 1, 'one alert, not one per tick');
+  assert.equal(items[0].escalate, true);
+  assert.match(items[0].summary, /guided/);
+  r.done();
+});
+
+test('self-heal: a guided run is never restarted on its own', () => {
+  const r = healRig('guided');
+  for (let i = 0; i < 6; i++) { r.advance(60_000); r.sup.tick(); }
+  assert.equal(r.spawned.length, 0);
+  assert.equal(readRunMeta(r.runPaths).autoResumes, 0);
+  r.done();
+});
+
+test('self-heal: a run whose engine is alive is left alone', () => {
+  const r = healRig('autonomous');
+  fs.writeFileSync(r.runPaths.lock, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  for (let i = 0; i < 4; i++) { r.advance(60_000); r.sup.tick(); }
+  assert.equal(r.spawned.length, 0);
+  r.done();
+});
+
 function seedHalted(root, runId, { haltTransient }) {
   const runPaths = pipelinePaths(root, { runId });
   fs.mkdirSync(runPaths.dir, { recursive: true });
@@ -460,5 +599,192 @@ test('a moved roadmap target starts combined validation and requires a fresh app
   assert.equal(rm.mergeApproval, null);
   assert.equal(git('rev-parse', 'main'), target);
   assert.equal(rm.workingSha, git('rev-parse', 'pipeline/combined'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a respawn keeps the run.json identity it was spawned with', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaac';
+  seedHalted(root, runId, { haltTransient: true });
+  const runPaths = pipelinePaths(root, { runId });
+  writeRunMeta(runPaths, { branch: 'pipeline/feature/F1', baseRef: 'abc123', brief: '.pipeline/control/briefs/x.md' });
+  const rm = readRoadmap(paths);
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(paths, rm);
+  const spawned = [];
+  createSupervisor({
+    repoRoot: root,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  assert.ok(spawned.some((args) => args.includes('--resume')));
+  const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
+  assert.equal(meta.kind, 'plan');
+  assert.equal(meta.featureId, 'F1');
+  assert.equal(meta.branch, 'pipeline/feature/F1');
+  assert.equal(meta.baseRef, 'abc123');
+  assert.equal(meta.brief, '.pipeline/control/briefs/x.md');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a run with no recorded feature is never respawned blind', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-integration-aaaaad';
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('x'), overall: 'halted', haltReason: 'AGENT_ERROR', haltTransient: true });
+  writeRunMeta(runPaths, { runId, phase: 'failed', pid: null, requests: { resume: { at: new Date().toISOString(), why: 'dormant' } } });
+  const spawned = [];
+  createSupervisor({
+    repoRoot: root,
+    spawn: (_bin, args) => { spawned.push(args); return { pid: 1, unref() {} }; },
+    spawnSync: () => ({ status: 0 }),
+  }).tick();
+  assert.equal(spawned.length, 0, 'an unidentified run must not be respawned as a default ticket');
+  assert.ok(readAttention(paths).some((a) => a.runId === runId && a.kind === 'respawn-refused'));
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('stopping the supervisor queues a resume for each live worker', async () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runId = '20260909T000000Z-F1-plan-aaaaae';
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  const { spawn } = await import('node:child_process');
+  const worker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+  try {
+    writeStatus(runPaths, { ...newStatus('plan'), overall: 'running', featureId: 'F1' });
+    writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'plan', runner: 'cursor', phase: 'spawned', pid: worker.pid });
+    createSupervisor({ repoRoot: root, spawn: () => { throw new Error('no spawn'); }, spawnSync: () => ({ status: 0 }) }).stop();
+    const meta = JSON.parse(fs.readFileSync(runPaths.runMeta, 'utf8'));
+    assert.ok(meta.requests?.resume, 'a worker interrupted by supervisor stop must be resumed on restart');
+    assert.equal(JSON.parse(fs.readFileSync(paths.snapshot, 'utf8')).supervisor.alive, false, 'the snapshot left behind says the supervisor stopped');
+  } finally {
+    worker.kill('SIGKILL');
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a parked host run raises one alert that escalates, then clears when picked up', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const rm = readRoadmap(paths);
+  const runId = '20260912T000000Z-F1-plan-park';
+  rm.features[0].status = 'planning';
+  rm.features[0].specRunId = runId;
+  writeRoadmap(paths, rm);
+  const runPaths = pipelinePaths(root, { runId });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  const t0 = Date.parse('2026-09-30T10:00:00Z');
+  let clock = t0;
+  const status = newStatus('plan');
+  status.overall = 'awaiting_chat'; status.awaitingStage = 'planner'; status.handoffId = 'h1';
+  status.runner = 'host'; status.executionSurface = 'host-handoff';
+  status.stages.find((s) => s.name === 'planner').startedAt = new Date(t0).toISOString();
+  writeStatus(runPaths, status);
+  writeRunMeta(runPaths, { runId, featureId: 'F1', kind: 'plan', runner: 'host', spawnedAt: new Date(t0).toISOString() });
+  const sup = createSupervisor({ repoRoot: root, now: () => clock, spawnSync: () => ({ status: 0 }) });
+  const parked = () => pendingAttention(paths).filter((a) => a.kind === 'awaiting-agent');
+
+  clock = t0 + 2 * 60_000; sup.tick();
+  assert.equal(parked().length, 0, 'quiet during a normal pickup window');
+  clock = t0 + 11 * 60_000; sup.tick(); sup.tick();
+  assert.equal(parked().length, 1);
+  assert.equal(parked()[0].level, 1);
+  clock = t0 + 61 * 60_000; sup.tick();
+  assert.equal(parked().length, 1, 'escalation replaces, never stacks');
+  assert.equal(parked()[0].level, 2);
+
+  status.overall = 'running';
+  writeStatus(runPaths, status);
+  sup.tick();
+  assert.equal(parked().length, 0, 'cleared once the run moved on');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a failing tick raises one supervisor-error alert, backs off, and clears on recovery', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const runPaths = pipelinePaths(root, { runId: '20260930T000000Z-F1-plan-err1' });
+  fs.mkdirSync(runPaths.dir, { recursive: true });
+  writeStatus(runPaths, { ...newStatus('plan'), overall: 'awaiting_chat', featureId: 'F1' });
+  const journal = path.join(paths.control, 'bridge.journal.jsonl');
+  let clock = Date.parse('2026-09-30T10:00:00Z');
+  const sup = createSupervisor({ repoRoot: root, now: () => clock, spawnSync: () => ({ status: 0 }) });
+  fs.writeFileSync(journal, '{ not json\n');
+  assert.equal(sup.runTick(), false);
+  clock += 1_000;
+  assert.equal(sup.runTick(), null, 'backs off instead of retrying every poll');
+  clock += 120_000;
+  assert.equal(sup.runTick(), false);
+  const errors = pendingAttention(paths).filter((a) => a.kind === 'supervisor-error');
+  assert.equal(errors.length, 1, 'the same failure is one alert, not one per tick');
+  assert.match(errors[0].summary, /tick/i);
+  fs.rmSync(journal);
+  clock += 120_000;
+  assert.equal(sup.runTick(), true);
+  assert.equal(pendingAttention(paths).filter((a) => a.kind === 'supervisor-error').length, 0);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('undeclaredFiles flags edits outside a ticket scope, honouring directory scopes', async () => {
+  const { undeclaredFiles } = await import('./supervisor.mjs');
+  assert.deepEqual(undeclaredFiles(['src/a.ts', 'src/ui/b.ts', 'api/use-content.ts', '.pipeline/changes.md'], ['src/a.ts', 'src/ui']), ['api/use-content.ts']);
+  assert.deepEqual(undeclaredFiles(['x.ts'], []), [], 'no declared scope means nothing to compare against');
+});
+
+test('a feature report marks earlier attempts as superseded, with what replaced them', async () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  const rm = readRoadmap(paths);
+  const feature = rm.features[0];
+  feature.status = 'accepted'; feature.specRunId = 'run-plan';
+  feature.tickets = [{ id: 'T1', title: 'Ticket', status: 'committed', runId: 'run-new', previousRunIds: ['run-old'] }];
+  writeRoadmap(paths, rm);
+  for (const runId of ['run-plan', 'run-old', 'run-new']) {
+    const runPaths = pipelinePaths(root, { runId });
+    fs.mkdirSync(runPaths.reports, { recursive: true });
+    const status = newStatus(runId); status.runId = runId; status.featureId = 'F1';
+    status.overall = runId === 'run-old' ? 'halted' : 'done';
+    writeStatus(runPaths, status);
+    writeRunMeta(runPaths, { runId, featureId: 'F1', kind: runId === 'run-plan' ? 'plan' : 'ticket', runner: 'host' });
+  }
+  assert.equal(await poolCli(['reports', 'rebuild'], { cwd: root }), 0);
+  const index = JSON.parse(fs.readFileSync(path.join(paths.controlReports, 'F1', 'report.json'), 'utf8'));
+  const old = index.relatedRuns.find((r) => r.runId === 'run-old');
+  assert.equal(old.role, 'superseded');
+  assert.equal(old.supersededBy, 'run-new');
+  assert.equal(index.relatedRuns.find((r) => r.runId === 'run-new').role, 'current');
+  assert.match(fs.readFileSync(path.join(paths.controlReports, 'F1', 'work-done.html'), 'utf8'), /superseded by run-new/);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('a tick that changes nothing rewrites neither the snapshot nor the status mirror', () => {
+  const { root, paths } = tmpRepo();
+  compile(paths);
+  let clock = Date.now();
+  const sup = createSupervisor({
+    repoRoot: root, now: () => clock,
+    spawn: () => ({ pid: 1, unref() {} }),
+    spawnSync: (bin, args) => {
+      const runId = args[args.indexOf('--run-id') + 1];
+      const runPaths = pipelinePaths(root, { runId });
+      fs.mkdirSync(runPaths.dir, { recursive: true });
+      writeStatus(runPaths, { ...newStatus('plan'), overall: 'awaiting_chat', awaitingStage: 'planner', runner: 'host', invocationMode: 'chat', executionSurface: 'host-handoff' });
+      writeRunMeta(runPaths, { runId, runner: 'host', phase: 'awaiting_chat', pid: null });
+      return { status: 0 };
+    },
+  });
+  sup.tick();
+  sup.tick();
+  const before = [fs.statSync(paths.snapshot).mtimeMs, fs.statSync(paths.status).mtimeMs, fs.readFileSync(paths.status, 'utf8')];
+  clock += 2000;
+  sup.tick();
+  const after = [fs.statSync(paths.snapshot).mtimeMs, fs.statSync(paths.status).mtimeMs, fs.readFileSync(paths.status, 'utf8')];
+  assert.deepEqual(after, before);
   fs.rmSync(root, { recursive: true, force: true });
 });

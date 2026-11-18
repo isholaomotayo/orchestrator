@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orchestrator-api.v1/events",
+  "title": "Server-sent event payloads (the `data:` of each `event:` type)",
+  "$defs": {
+    "hello": { "type": "object", "required": ["instanceId", "cursor", "heartbeatMs", "api"] },
+    "reset": { "type": "object", "required": ["reason"], "properties": { "reason": { "enum": ["server_restarted", "cursor_expired", "cursor_invalid"] } } },
+    "run.upserted": { "type": "object", "required": ["projectId", "run"] },
+    "run.event": { "type": "object", "required": ["projectId", "runId", "seq", "event"], "properties": { "seq": { "type": "number" } } },
+    "attention.updated": { "type": "object", "required": ["projectId", "items"], "properties": { "items": { "type": "array" } } },
+    "pool.updated": { "type": "object", "required": ["projectId", "snapshot"] }
+  }
+}

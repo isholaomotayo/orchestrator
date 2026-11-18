@@ -8,14 +8,14 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { readUsage } from './usage.mjs';
-import { inspectBridge, bridgeCommand, readBridge } from './bridge.mjs';
+import { inspectBridge, bridgeCommand, readBridge, ownerView } from './bridge.mjs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {
-  pipelinePaths, loadConfig, atomicWrite, pidAlive, readLock,
-  newStatus, ensureStageEntries, appendLine,
+  pipelinePaths, loadConfig, atomicWrite, writeJsonIfChanged, pidAlive, readLock, withFileLock,
+  newStatus, ensureStageEntries, appendLine, appendEvent,
 } from './state.mjs';
-import { readRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
+import { readRunMeta, updateRunMeta, readStatusLog, latestVerb, isValidRunId, appendRunVerb } from './run-registry.mjs';
 import {
   parseRoadmapMd, compileRoadmap, setFeatureStatus, setRoadmapStatus, nextFeature, FEATURE_STATUSES,
 } from './roadmap.mjs';
@@ -26,6 +26,10 @@ import { classifyRun, DEFAULT_THRESHOLDS,
 } from './attention.mjs';
 import { buildSnapshot, renderDigest } from './snapshot.mjs';
 import { queueStageNote } from './events.mjs';
+import { recoveryFor, haltedArtifactCheck } from './recoverability.mjs';
+import { writePolicyOverride } from './mode.mjs';
+import { recordIntervention } from './interventions.mjs';
+import { memoByStat } from './file-cache.mjs';
 
 export function poolConfig(config) {
   const raw = config.pool || {};
@@ -37,6 +41,7 @@ export function poolConfig(config) {
     staleAfterMs: raw.staleAfterMs ?? DEFAULT_THRESHOLDS.staleAfterMs,
     staleEscalateMs: raw.staleEscalateMs ?? DEFAULT_THRESHOLDS.staleEscalateMs,
     pauseResurfaceMs: raw.pauseResurfaceMs ?? DEFAULT_THRESHOLDS.pauseResurfaceMs,
+    parkedEscalateMs: raw.parkedEscalateMs ?? DEFAULT_THRESHOLDS.parkedEscalateMs,
     autoResumeMax: raw.autoResumeMax ?? 2,
     serializeOnFileOverlap: raw.serializeOnFileOverlap !== false,
     featurePlanApproval: raw.featurePlanApproval === true,
@@ -79,18 +84,43 @@ export function writeRoadmap(paths, roadmap) {
  * Compile `.pipeline/roadmap.md` into control state, preserving progress.
  * Returns errors rather than throwing so a CLI can print them with line numbers.
  */
-export function compile(paths, { now = new Date() } = {}) {
+function compileUnlocked(paths, { now = new Date() } = {}) {
   let source;
   try { source = fs.readFileSync(paths.roadmapMd, 'utf8'); }
   catch { return { ok: false, errors: [{ line: 0, message: `No roadmap at ${path.relative(paths.root, paths.roadmapMd)}. Write one, or run "roadmap plan".` }] }; }
 
   const { roadmap, errors } = parseRoadmapMd(source);
   if (errors.length) return { ok: false, errors };
+  const baseCheck = checkRoadmapBase(paths, roadmap);
+  if (baseCheck.errors.length) return { ok: false, errors: baseCheck.errors };
 
   const sourceSha256 = crypto.createHash('sha256').update(source).digest('hex');
   const compiled = compileRoadmap(roadmap, readRoadmap(paths), { sourceSha256, now });
   writeRoadmap(paths, compiled);
-  return { ok: true, roadmap: compiled, errors: [], warnings: [] };
+  return { ok: true, roadmap: compiled, errors: [], warnings: baseCheck.warnings };
+}
+
+// A base branch that does not exist used to surface only at landing time, as
+// a supervisor tick that failed on every poll (petra: 27 times). Check it when
+// the roadmap is compiled, where the fix is one push away.
+function checkRoadmapBase(paths, roadmap) {
+  const errors = [], warnings = [];
+  const git = (args) => spawnSync('git', args, { cwd: paths.root, encoding: 'utf8', timeout: 15_000 });
+  if (git(['rev-parse', '--is-inside-work-tree']).status !== 0) return { errors, warnings };
+  const base = roadmap.base;
+  if (git(['rev-parse', '--verify', '--quiet', `${base}^{commit}`]).status !== 0) {
+    errors.push({ line: 0, message: `Base branch "${base}" does not exist in this repository. Create it, or set "base:" in the roadmap front matter.` });
+  }
+  if (roadmap.merge && roadmap.merge !== 'local-only') {
+    const remote = mergeConfig(loadConfig(paths)).remote;
+    const res = git(['ls-remote', '--exit-code', '--heads', remote, base]);
+    if (res.status === 2) {
+      errors.push({ line: 0, message: `Base branch "${base}" is not on remote "${remote}", so merge: ${roadmap.merge} cannot land. Push it first: git push -u ${remote} ${base}` });
+    } else if (res.status !== 0) {
+      warnings.push({ message: `Could not reach remote "${remote}" to confirm base branch "${base}" exists there (${(res.stderr || res.error?.message || 'unknown error').trim().split('\n')[0]}).` });
+    }
+  }
+  return { errors, warnings };
 }
 
 function parseRunSpawnTime(runId) {
@@ -102,21 +132,28 @@ function parseRunSpawnTime(runId) {
 // ---- run inventory ---------------------------------------------------------
 
 /** Every run directory, newest first, with enough state to classify it. */
+const cloneOrNull = (v) => (v == null ? null : structuredClone(v));
+
 export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date.now()) {
   let ids = [];
   try { ids = fs.readdirSync(paths.runs).filter((d) => isValidRunId(d)); } catch { /* no runs dir */ }
-  let dismissedMap = {};
-  try { dismissedMap = readBridge(paths.root)?.dismissedRuns || {}; } catch {}
+  // One bridge read for every run, instead of one (plus a status parse) per run.
+  // A corrupt journal still throws, as the per-run reads did: the supervisor
+  // must see it and raise an alert rather than list runs with no owners.
+  const bridgeState = ids.length ? readBridge(paths.root) : null;
+  const dismissedMap = bridgeState?.dismissedRuns || {};
   const runs = [];
   for (const runId of ids.sort().reverse()) {
     const runPaths = pipelinePaths(paths.root, { runId });
-    let status = null;
-    try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* unreadable stays unknown */ }
-    const meta = readRunMeta(runPaths);
+    // Parsed once per change of each file: the supervisor lists every run
+    // several times a tick and the dashboard on every request. Copies, because
+    // callers annotate the rows they are handed.
+    const status = cloneOrNull(memoByStat(runPaths.status, () => { try { return JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { return null; } }));
+    const meta = cloneOrNull(memoByStat(runPaths.runMeta, () => readRunMeta(runPaths)));
     const isDismissed = !!(status?.dismissed || meta?.dismissed || dismissedMap[runId]);
     if (isDismissed && status) status.dismissed = true;
     const lock = readLock(runPaths);
-    const verbs = readStatusLog(runPaths);
+    const verbs = memoByStat(runPaths.runStatusLog, () => readStatusLog(runPaths));
     // `note` is informational by definition. Letting it become the current verb
     // would make every recorded aside look like a state change and re-raise
     // events that were already handled.
@@ -154,7 +191,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
         now,
       }, thresholds),
       ...readUsage(runPaths.events),
-      owner: inspectBridge(paths.root, runId).owner,
+      owner: bridgeState ? ownerView(bridgeState, runId, now).owner : null,
       handoffId: status?.handoffId ?? null,
       runner: meta?.runner ?? status?.runner ?? null,
       hostClient: status?.hostClient ?? null,
@@ -223,7 +260,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
             state: ['done', 'halted'].includes(entry.overall) ? 'idle' : 'unknown',
             costUsd: null,
             tokens: null,
-            owner: inspectBridge(paths.root, entry.runId).owner,
+            owner: bridgeState ? ownerView(bridgeState, entry.runId, now).owner : null,
             handoffId: null,
             runner: entry.runner ?? null,
             hostClient: entry.hostClient ?? null,
@@ -292,7 +329,7 @@ export function listRunStates(paths, thresholds = DEFAULT_THRESHOLDS, now = Date
           state: isDone ? 'idle' : 'unknown',
           costUsd: null,
           tokens: null,
-          owner: inspectBridge(paths.root, item.runId).owner,
+          owner: bridgeState ? ownerView(bridgeState, item.runId, now).owner : null,
           handoffId: null,
           runner: feature.runner ?? 'host',
           hostClient: null,
@@ -336,10 +373,10 @@ export function supervisorState(paths) {
 
 // ---- snapshot --------------------------------------------------------------
 
-export function snapshot(paths, { config = null, now = new Date() } = {}) {
+export function snapshot(paths, { config = null, now = new Date(), runs = null } = {}) {
   const cfg = config || loadConfig(paths);
   const pool = poolConfig(cfg);
-  const runs = listRunStates(paths, pool, now.getTime());
+  runs ??= listRunStates(paths, pool, now.getTime());
   const roadmap = readRoadmap(paths);
   const snap = buildSnapshot({
     roadmap,
@@ -364,7 +401,7 @@ export function snapshot(paths, { config = null, now = new Date() } = {}) {
 
 export function writeSnapshot(paths, snap) {
   fs.mkdirSync(paths.control, { recursive: true });
-  atomicWrite(paths.snapshot, JSON.stringify(snap, null, 2));
+  writeJsonIfChanged(paths.snapshot, snap, ['generatedAt', 'supervisor.heartbeatAt']);
   return snap;
 }
 
@@ -420,6 +457,21 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
   else if (awaitingChat) status.overall = 'awaiting_chat';
   else if (awaitingPlan) status.overall = 'awaiting_plan_approval';
   else status.overall = 'running';
+  // With no run in flight there is no stage to mirror: say so instead of
+  // showing a "done" pool whose every stage is still "pending".
+  if (!primary?.status?.stages) {
+    for (const st of status.stages) {
+      st.status = 'skipped';
+      st.detail = 'Pool mirror: stage state lives in each run under .pipeline/runs/<runId>/.';
+    }
+  }
+  if (['done', 'halted'].includes(status.overall)) {
+    // Keep the first end time: a fresh stamp every tick would make the mirror
+    // look changed forever after the pool settles.
+    let previous = null;
+    try { previous = JSON.parse(fs.readFileSync(paths.status, 'utf8')); } catch { /* first write */ }
+    status.endedAt = (previous?.overall === status.overall && previous?.endedAt) || new Date().toISOString();
+  }
 
   status.pool = {
     snapshot: path.relative(paths.root, paths.snapshot),
@@ -429,7 +481,7 @@ export function writePrimaryMirror(paths, { snap, runs, config }) {
     decisions: snap.needsDecision.length,
     gate: awaitingFinal ? 'roadmap-merge' : awaitingPlan ? 'plan-approval' : null,
   };
-  atomicWrite(paths.status, JSON.stringify(status, null, 2));
+  writeJsonIfChanged(paths.status, status, ['startedAt']);
   return status;
 }
 
@@ -461,6 +513,7 @@ export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli'
     return approveRoadmapMerge(paths, { by, via, note: answer });
   }
   const resolved = resolveDecision(paths, decisionId, { decision: answer, by, via });
+  if (decision.runId) recordIntervention(paths.root, decision.runId, { action: `answered ${decision.kind || 'decision'}`, by, via, detail: String(answer).slice(0, 500) });
   if (decision.runId && decision.stage) {
     queueFollowup(paths, decision.runId, decision.stage, `Decision from the operator: ${answer}`);
   }
@@ -476,22 +529,50 @@ export function decide(paths, decisionId, answer, { by = 'operator', via = 'cli'
  * Ask the supervisor to move a run forward. The supervisor owns spawning, so a
  * verb never starts a process itself: it records intent and returns.
  */
+/**
+ * Operator verb: ask the supervisor to resume one halted run in place. Checks
+ * the same recoverability table the engine will apply, so the operator gets
+ * the refusal now instead of a silent failed respawn later.
+ */
+export function requestRunResume(paths, runId) {
+  if (!isValidRunId(runId)) return { ok: false, reason: `invalid run id: ${runId}` };
+  const runPaths = pipelinePaths(paths.root, { runId });
+  let status = null;
+  try { status = JSON.parse(fs.readFileSync(runPaths.status, 'utf8')); } catch { /* reported below */ }
+  if (!status) return { ok: false, reason: `run ${runId} has no status.json` };
+  const recovery = recoveryFor(status, { engineAlive: false });
+  if (!recovery.resume) return { ok: false, reason: recovery.reason };
+  if (recovery.needsValidArtifact) {
+    const check = haltedArtifactCheck(status, runPaths.dir);
+    if (!check.ok) return { ok: false, reason: `${check.file ? path.relative(paths.root, check.file) : 'the artifact'} is still unusable (${check.reason})` };
+  }
+  recordIntervention(paths.root, runId, { action: 'resume requested', via: 'operator' });
+  return { ok: true, request: markResumeRequested(paths, runId, 'operator resume-run') };
+}
+
+/** Operator verb: change a run's autonomy; it applies at the run's next gate. */
+export function setRunAutonomy(paths, runId, autonomy, { by = 'operator', via = 'cli' } = {}) {
+  if (runId && !isValidRunId(runId)) throw new Error(`invalid run id: ${runId}`);
+  const runPaths = pipelinePaths(paths.root, runId ? { runId } : {});
+  if (!fs.existsSync(runPaths.status)) throw new Error(`run ${runId || '(root)'} has no status.json`);
+  const record = writePolicyOverride(runPaths.dir, { autonomy, by, via });
+  appendEvent(runPaths, { stage: 'orchestrator', type: 'policy_changed', autonomy, by, via });
+  recordIntervention(paths.root, runId, { action: `set autonomy ${autonomy}`, by, via });
+  return { runId: runId || null, ...record };
+}
+
 export function markResumeRequested(paths, runId, why) {
   const runPaths = pipelinePaths(paths.root, { runId });
-  const meta = readRunMeta(runPaths) || {};
-  const requests = { ...(meta.requests || {}), resume: { at: new Date().toISOString(), why } };
-  if (runPaths.runMeta) {
-    atomicWrite(runPaths.runMeta, JSON.stringify({ ...meta, requests }, null, 2));
-  }
-  return requests.resume;
+  const resume = { at: new Date().toISOString(), why };
+  updateRunMeta(runPaths, (meta) => ({ ...meta, requests: { ...(meta.requests || {}), resume } }));
+  return resume;
 }
 
 export function requestExtend(paths, runId, cycles) {
   const runPaths = pipelinePaths(paths.root, { runId });
-  const meta = readRunMeta(runPaths) || {};
-  const requests = { ...(meta.requests || {}), extend: { at: new Date().toISOString(), cycles: Number(cycles) } };
-  if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify({ ...meta, requests }, null, 2));
-  return requests.extend;
+  const extend = { at: new Date().toISOString(), cycles: Number(cycles) };
+  updateRunMeta(runPaths, (meta) => ({ ...meta, requests: { ...(meta.requests || {}), extend } }));
+  return extend;
 }
 
 export function approvePlan(paths, runId, { by = 'operator', via = 'cli' } = {}) {
@@ -507,7 +588,7 @@ export function approvePlan(paths, runId, { by = 'operator', via = 'cli' } = {})
  * the final irreversible step. This records consent only; the supervisor still
  * performs a live mergeability read before anything is merged.
  */
-export function approveMerge(paths, featureId, { by = 'operator', via = 'cli', note = null } = {}) {
+function approveMergeUnlocked(paths, featureId, { by = 'operator', via = 'cli', note = null } = {}) {
   const roadmap = readRoadmap(paths);
   if (!roadmap) throw new Error('No compiled roadmap.');
   if (!featureId || featureId === 'roadmap') {
@@ -530,7 +611,7 @@ export function landRoadmap(paths, opts = {}) {
   return approveRoadmapMerge(paths, opts);
 }
 
-export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note = null } = {}) {
+function approveRoadmapMergeUnlocked(paths, { by = 'operator', via = 'cli', note = null } = {}) {
   const roadmap = readRoadmap(paths);
   if (!roadmap) throw new Error('No compiled roadmap.');
   if (roadmap.review !== 'end') {
@@ -552,7 +633,7 @@ export function approveRoadmapMerge(paths, { by = 'operator', via = 'cli', note 
  * baseRef. Tickets and runs are discarded; landed work on earlier features is
  * not touched.
  */
-export function retryFeature(paths, featureId) {
+function retryFeatureUnlocked(paths, featureId) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -570,7 +651,33 @@ export function retryFeature(paths, featureId) {
   return { featureId, status: 'queued' };
 }
 
-export function requestChanges(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
+/**
+ * Rerun one failed or held ticket without replanning the feature. Committed
+ * tickets and the approved plan are kept; the superseded run id is recorded
+ * on the ticket for lineage.
+ */
+function retryTicketUnlocked(paths, featureId, ticketId) {
+  const roadmap = readRoadmap(paths);
+  const feature = roadmap?.features?.find((f) => f.id === featureId);
+  if (!feature) throw new Error(`Unknown feature "${featureId}".`);
+  if (!['failed', 'executing'].includes(feature.status)) {
+    throw new Error(`Feature "${featureId}" is ${feature.status}; only an executing or failed feature's tickets can be retried.`);
+  }
+  const ticket = feature.tickets?.find((t) => t.id === ticketId);
+  if (!ticket) throw new Error(`Feature "${featureId}" has no ticket "${ticketId}".`);
+  if (!['failed', 'held'].includes(ticket.status)) {
+    throw new Error(`Ticket "${ticketId}" is ${ticket.status}; only a failed or held ticket can be retried.`);
+  }
+  const tickets = feature.tickets.map((t) => (t.id !== ticketId ? t : {
+    ...t, status: 'queued', runId: null,
+    previousRunIds: [...(t.previousRunIds || []), t.runId].filter(Boolean),
+  }));
+  writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'executing', { tickets }));
+  if (ticket.runId) recordIntervention(paths.root, ticket.runId, { action: 'retry-ticket', detail: `${featureId}/${ticketId} requeued; this run is superseded` });
+  return { featureId, ticketId, status: 'queued', supersedes: ticket.runId || null };
+}
+
+function requestChangesUnlocked(paths, featureId, text, { by = 'operator', via = 'cli' } = {}) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -588,14 +695,14 @@ export function requestChanges(paths, featureId, text, { by = 'operator', via = 
   return { featureId, runId: runId ?? null };
 }
 
-export function holdFeature(paths, featureId, why = '') {
+function holdFeatureUnlocked(paths, featureId, why = '') {
   const roadmap = readRoadmap(paths);
   if (!roadmap?.features?.some((f) => f.id === featureId)) throw new Error(`Unknown feature "${featureId}".`);
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'held', { heldReason: why || null }));
   return { featureId, status: 'held' };
 }
 
-export function releaseFeature(paths, featureId) {
+function releaseFeatureUnlocked(paths, featureId) {
   const roadmap = readRoadmap(paths);
   const feature = roadmap?.features?.find((f) => f.id === featureId);
   if (!feature) throw new Error(`Unknown feature "${featureId}".`);
@@ -604,7 +711,7 @@ export function releaseFeature(paths, featureId) {
   return { featureId, status: 'queued' };
 }
 
-export function skipFeature(paths, featureId, why = '') {
+function skipFeatureUnlocked(paths, featureId, why = '') {
   const roadmap = readRoadmap(paths);
   if (!roadmap?.features?.some((f) => f.id === featureId)) throw new Error(`Unknown feature "${featureId}".`);
   writeRoadmap(paths, setFeatureStatus(roadmap, featureId, 'skipped', { skipReason: why || null }));
@@ -646,7 +753,8 @@ export function claim(paths, runId, credentials = null) {
     worktree: path.relative(paths.root, runPaths.worktree),
     brief: meta?.brief ?? null,
     stageHandoff: path.relative(paths.root, runPaths.stageHandoff),
-    continueCmd: `node pipeline/orchestrator.mjs --continue --run-id ${runId}`,
+    handoffId: status.handoffId ?? null,
+    continueCmd: `node pipeline/orchestrator.mjs --continue --run-id ${runId}${status.handoffId ? ` --handoff-id ${status.handoffId}` : ''}`,
   };
 }
 
@@ -661,41 +769,87 @@ export function resume(paths) {
   return { paused: false };
 }
 
-export function dismissRun(paths, runId, reason = 'Dismissed by operator') {
-  return bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
+export function dismissRun(paths, runId, reason = 'Dismissed by operator', { via = 'cli' } = {}) {
+  const res = bridgeCommand('run.dismiss', { project: paths.root, runId, reason });
+  if (!res.alreadyDismissed) recordIntervention(paths.root, runId, { action: 'dismissed', via, detail: reason });
+  return res;
 }
 
-export function reset(paths, { archive = true, hard = false } = {}) {
-  spawnSync('git', ['worktree', 'prune'], { cwd: paths.root, encoding: 'utf8' });
+// Uncommitted changes, or commits not yet on the base: work that exists
+// nowhere else. A git error counts as "has work" — never guess towards deleting.
+function worktreeHasUnsavedWork(worktree, base) {
+  const git = (args) => spawnSync('git', ['-C', worktree, ...args], { encoding: 'utf8', timeout: 30_000 });
+  const dirty = git(['status', '--porcelain']);
+  if (dirty.status !== 0) return true;
+  if (dirty.stdout.trim()) return true;
+  const ahead = git(['rev-list', '--count', `${base}..HEAD`]);
+  if (ahead.status !== 0) return true;
+  return Number(ahead.stdout.trim()) > 0;
+}
+
+export function reset(paths, { archive = true, hard = false, discardUnmerged = false } = {}) {
+  // Never reset under live work: the old reset removed the lock and every
+  // worktree of a running pool.
+  const supervisorPid = (() => { try { return Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim()); } catch { return null; } })();
+  if (supervisorPid && pidAlive(supervisorPid)) throw new Error(`The supervisor is running (pid ${supervisorPid}); stop it first with \`pool stop\`.`);
   const runsDir = paths.runs;
+  const runIds = fs.existsSync(runsDir) ? fs.readdirSync(runsDir).filter((d) => isValidRunId(d)) : [];
+  for (const id of [null, ...runIds]) {
+    const lock = readLock(pipelinePaths(paths.root, id ? { runId: id } : {}));
+    if (lock && pidAlive(lock.pid)) throw new Error(`${id ? `Run ${id}` : 'A run'} is active (pid ${lock.pid}); stop it before resetting the pool.`);
+  }
+
+  spawnSync('git', ['worktree', 'prune'], { cwd: paths.root, encoding: 'utf8' });
+  // Resolve the base in the main repository: inside a worktree, "HEAD" is the
+  // worktree's own tip, which would make every commit look already merged.
+  const baseName = readRoadmap(paths)?.base || 'HEAD';
+  const resolvedBase = spawnSync('git', ['rev-parse', '--verify', '--quiet', `${baseName}^{commit}`], { cwd: paths.root, encoding: 'utf8' });
+  const base = resolvedBase.status === 0 ? resolvedBase.stdout.trim() : baseName;
+  const kept = [];
   const worktreesDir = paths.worktrees;
   if (fs.existsSync(worktreesDir)) {
-    fs.rmSync(worktreesDir, { recursive: true, force: true });
+    for (const name of fs.readdirSync(worktreesDir)) {
+      const wt = path.join(worktreesDir, name);
+      if (!discardUnmerged && fs.existsSync(path.join(wt, '.git')) && worktreeHasUnsavedWork(wt, base)) { kept.push(name); continue; }
+      spawnSync('git', ['worktree', 'remove', '--force', wt], { cwd: paths.root, encoding: 'utf8', timeout: 60_000 });
+      fs.rmSync(wt, { recursive: true, force: true });
+    }
+    if (!kept.length) fs.rmSync(worktreesDir, { recursive: true, force: true });
   }
-  if (fs.existsSync(runsDir)) {
-    for (const dir of fs.readdirSync(runsDir)) {
-      if (!isValidRunId(dir)) continue;
-      const p = path.join(runsDir, dir);
-      if (hard) {
-        fs.rmSync(p, { recursive: true, force: true });
-      } else if (archive) {
-        fs.mkdirSync(path.join(runsDir, 'archived'), { recursive: true });
-        fs.renameSync(p, path.join(runsDir, 'archived', dir));
-      }
+  for (const dir of runIds) {
+    if (kept.includes(dir)) continue; // its worktree still holds work
+    const p = path.join(runsDir, dir);
+    if (hard) {
+      fs.rmSync(p, { recursive: true, force: true });
+    } else if (archive) {
+      fs.mkdirSync(path.join(runsDir, 'archived'), { recursive: true });
+      fs.renameSync(p, path.join(runsDir, 'archived', dir));
     }
   }
-  fs.rmSync(paths.lock, { force: true });
+  const rootLock = readLock(paths);
+  if (!(rootLock && pidAlive(rootLock.pid))) fs.rmSync(paths.lock, { force: true });
   fs.rmSync(path.join(paths.control, 'snapshot.json'), { force: true });
   fs.rmSync(path.join(paths.control, 'supervisor.log'), { force: true });
   if (hard) {
     fs.rmSync(path.join(paths.control, 'attention.jsonl'), { force: true });
     fs.rmSync(path.join(paths.control, 'decisions.jsonl'), { force: true });
   }
-  if (fs.existsSync(paths.supervisorPid)) {
-    const pid = Number(fs.readFileSync(paths.supervisorPid, 'utf8').trim());
-    if (!pidAlive(pid)) fs.rmSync(paths.supervisorPid, { force: true });
-  }
-  return { reset: true };
+  if (supervisorPid && !pidAlive(supervisorPid)) fs.rmSync(paths.supervisorPid, { force: true });
+  return { reset: true, keptWorktrees: kept };
 }
 
 export { pendingAttention, ackAttention, openDecisions, readDecisions, renderDigest, nextFeature, FEATURE_STATUSES, setRoadmapStatus };
+
+// Operator verbs and the supervisor tick both read-modify-write roadmap.json;
+// without one lock an operator's retry could be overwritten by a tick that
+// started before it (lost update).
+const underRoadmapLock = (fn) => (paths, ...rest) => withFileLock(paths.roadmapLock, () => fn(paths, ...rest));
+export const compile = underRoadmapLock(compileUnlocked);
+export const approveMerge = underRoadmapLock(approveMergeUnlocked);
+export const approveRoadmapMerge = underRoadmapLock(approveRoadmapMergeUnlocked);
+export const retryFeature = underRoadmapLock(retryFeatureUnlocked);
+export const retryTicket = underRoadmapLock(retryTicketUnlocked);
+export const requestChanges = underRoadmapLock(requestChangesUnlocked);
+export const holdFeature = underRoadmapLock(holdFeatureUnlocked);
+export const releaseFeature = underRoadmapLock(releaseFeatureUnlocked);
+export const skipFeature = underRoadmapLock(skipFeatureUnlocked);

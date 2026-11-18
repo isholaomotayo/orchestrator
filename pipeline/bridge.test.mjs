@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { pipelinePaths } from './state.mjs';
 import {
   bridgeCommand, inspectBridge, readBridge, assertMessagesSettled,
-  validateCompletion, commitCompletion, bindHandoff, bridgePaths,
+  validateCompletion, commitCompletion, bindHandoff, bridgePaths, completionTimeoutMs,
 } from './bridge.mjs';
 
 function project() {
@@ -453,7 +453,8 @@ test('run.dismiss halts and dismisses an active or waiting run and clears owner'
 
   const updatedStatus = JSON.parse(fs.readFileSync(p.status, 'utf8'));
   assert.equal(updatedStatus.overall, 'halted');
-  assert.equal(updatedStatus.haltReason, 'Operator dismissed test run');
+  assert.equal(updatedStatus.haltReason, 'DISMISSED');
+  assert.equal(updatedStatus.dismissReason, 'Operator dismissed test run');
   assert.equal(updatedStatus.dismissed, true);
   assert.ok(updatedStatus.dismissedAt);
 
@@ -471,4 +472,53 @@ test('run.dismiss safely handles a run without status.json or with an empty dir'
   assert.equal(res.ok, true);
   assert.equal(res.dismissed, true);
   assert.equal(fs.existsSync(p.dir), false); // empty dir was cleaned up
+});
+
+test('dismissing a finished run keeps its outcome', () => {
+  const root = project(), runId = 'r1';
+  const { p, status } = awaitingRun(root, runId);
+  fs.writeFileSync(p.status, JSON.stringify({ ...status, overall: 'done', verdict: 'APPROVED' }));
+  bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup' });
+  const after = JSON.parse(fs.readFileSync(p.status, 'utf8'));
+  assert.equal(after.overall, 'done');
+  assert.equal(after.verdict, 'APPROVED');
+  assert.equal(after.dismissed, true);
+});
+
+test('dismiss is idempotent and clears dormant resume requests', () => {
+  const root = project(), runId = 'r1';
+  const { p } = awaitingRun(root, runId);
+  fs.writeFileSync(p.runMeta, JSON.stringify({ runId, featureId: 'F1', kind: 'ticket', requests: { resume: { at: 'x', why: 'old decision' } } }));
+  const first = bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup' });
+  assert.equal(first.alreadyDismissed, false);
+  assert.equal(JSON.parse(fs.readFileSync(p.runMeta, 'utf8')).requests, undefined, 'a dormant resume must not respawn a dismissed run');
+  const second = bridgeCommand('run.dismiss', { project: root, runId, reason: 'cleanup again' });
+  assert.equal(second.alreadyDismissed, true);
+  assert.equal(JSON.parse(fs.readFileSync(p.status, 'utf8')).dismissReason, 'cleanup');
+});
+
+test('dismiss refuses while the run engine is alive', () => {
+  const root = project(), runId = 'r1';
+  const { p } = awaitingRun(root, runId);
+  fs.writeFileSync(p.lock, JSON.stringify({ pid: process.pid }));
+  assert.throws(() => bridgeCommand('run.dismiss', { project: root, runId, reason: 'x' }), /engine is still running/);
+});
+
+test('commitCompletion drops the prepared completion so later journal records stop copying it', () => {
+  const root = project();
+  const runId = 'r1';
+  const { status } = awaitingRun(root, runId, { stage: 'coder', handoffId: 'h1' });
+  const session = register(root);
+  const claimed = claim(root, runId, session.sessionId);
+  writeArtifact(root, runId, 'changes');
+  bridgeCommand('stage.prepare', { project: root, runId, sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId });
+  assert.ok(readBridge(root).runs[runId].completion.previousStatus);
+  const credentials = { sessionId: session.sessionId, leaseToken: claimed.leaseToken, handoffId: claimed.handoffId };
+  commitCompletion(root, runId, status, credentials, { ...status });
+  assert.equal(readBridge(root).runs[runId].completion, undefined);
+});
+
+test('completionTimeoutMs covers every configured check', () => {
+  assert.equal(completionTimeoutMs({ checks: { a: 'x' }, checkTimeoutMs: 1000 }), 600000);
+  assert.equal(completionTimeoutMs({ checks: { a: 'x', b: 'y', c: 'z', d: null }, checkTimeoutMs: 300000 }), 1020000);
 });

@@ -25,15 +25,20 @@ import path from 'node:path';
 import { spawn as nodeSpawn, spawnSync as nodeSpawnSync } from 'node:child_process';
 import {
   pipelinePaths, loadConfig, acquireLockFile, atomicWrite, pidAlive, appendLine,
-  writeStatus, newStatus, appendEvent,
+  writeStatus as writeStatusFile, newStatus, appendEvent, withFileLock,
 } from './state.mjs';
-import { newRunId, writeRunMeta, readRunMeta, appendRunVerb, renderBrief } from './run-registry.mjs';
+import { newRunId, writeRunMeta as writeRunMetaFile, readRunMeta, updateRunMeta as updateRunMetaFile, appendRunVerb as appendRunVerbFile, renderBrief } from './run-registry.mjs';
+import { recordRecovery } from './interventions.mjs';
+import { planHeal } from './self-heal.mjs';
+import { readRunSummary } from './run-reader.mjs';
 import { writeTerminalReport, writeWorkDoneReport } from './report.mjs';
 import { resolvePoolRunner, checkRunnerAvailable, resolveExecutionSurface } from './adapters.mjs';
 import { parseTickets, sliceSpecForTicket, scheduleTickets } from './tickets.mjs';
 import { setFeatureStatus, nextFeature, featureBriefContext, setRoadmapStatus } from './roadmap.mjs';
 import { classifyEvent, appendAttention, ackAttention, readAttention, openDecision, openDecisions, readDecisions, resolveDecision } from './attention.mjs';
 import * as pool from './pool.mjs';
+import { recoveryFor } from './recoverability.mjs';
+import { policyOf, readPolicyOverride } from './mode.mjs';
 import {
   createRunWorktree, removeRunWorktree, commitRunWork, currentSha, changedFiles, branchExists,
 } from './worktrees.mjs';
@@ -53,6 +58,21 @@ export function createSupervisor({
   const paths = pipelinePaths(repoRoot);
   const config = loadConfig(paths);
   const poolCfg = pool.poolConfig(config);
+
+  // The run list, built once per tick: building it copies every run's status,
+  // and a tick consults it many times. Any write to a run forgets it, so a run
+  // spawned mid-tick still counts against the free slots. Outside a tick
+  // (undefined) every call builds a fresh list.
+  let tickRuns;
+  function runStates() {
+    if (tickRuns === undefined) return pool.listRunStates(paths, poolCfg, now());
+    return (tickRuns ??= pool.listRunStates(paths, poolCfg, now()));
+  }
+  function forgetRuns() { if (tickRuns !== undefined) tickRuns = null; }
+  const writeStatus = (...args) => { forgetRuns(); return writeStatusFile(...args); };
+  const writeRunMeta = (...args) => { forgetRuns(); return writeRunMetaFile(...args); };
+  const updateRunMeta = (...args) => { forgetRuns(); return updateRunMetaFile(...args); };
+  const appendRunVerb = (...args) => { forgetRuns(); return appendRunVerbFile(...args); };
   const mergeCfg = pool.mergeConfig(config);
   // Per-run memory of what we last saw, so an unchanged state does not
   // re-escalate on every tick.
@@ -161,7 +181,7 @@ export function createSupervisor({
   // in chat, exactly like single-run mode already works). Only the former
   // needs an authenticated CLI on the machine; the latter is the zero-setup
   // default a roadmap runs under with nothing authenticated anywhere.
-  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, runner, extra = [] }) {
+  function spawnWorker({ runId, featureId, ticketId, kind, brief, branch, baseRef, runner, extra = [], resume = false }) {
     const runPaths = pipelinePaths(repoRoot, { runId });
     fs.mkdirSync(runPaths.dir, { recursive: true });
 
@@ -190,9 +210,11 @@ export function createSupervisor({
       '--runner', runner,
       '--feature-id', featureId,
       ...(ticketId ? ['--ticket-id', ticketId] : []),
-      ...(brief ? ['--brief-file', brief] : []),
-      ...(branch ? ['--branch', branch] : []),
-      ...(baseRef ? ['--base-ref', baseRef] : []),
+      // A respawn re-enters an existing run from its own status.json; these
+      // identify the run for run.json only, never as fresh-run flags.
+      ...(!resume && brief ? ['--brief-file', brief] : []),
+      ...(!resume && branch ? ['--branch', branch] : []),
+      ...(!resume && baseRef ? ['--base-ref', baseRef] : []),
       ...extra,
     ];
     const outFile = path.join(runPaths.dir, 'orchestrator.out');
@@ -257,12 +279,12 @@ export function createSupervisor({
 
   // ---- feature lifecycle ---------------------------------------------------
 
-  function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).length); }
+  function availableSlots() { return Math.max(0, poolCfg.maxParallel - pool.activeRuns(runStates()).length); }
 
   function canStartRunner(runner) {
     if (!availableSlots()) return false;
     if (runner !== 'host') return true;
-    const occupied = pool.activeRuns(pool.listRunStates(paths, poolCfg, now()))
+    const occupied = pool.activeRuns(runStates())
       .filter((run) => run.runner === 'host').length;
     return occupied < poolCfg.hostConcurrency;
   }
@@ -318,7 +340,10 @@ export function createSupervisor({
       .filter((t) => t.status === 'running' && t.runId)
       .map((t) => [t.runId, tickets.find((x) => x.id === t.id)?.files || []]));
 
-    const wave = scheduleTickets(tickets, {
+    // A held ticket waits for repair: never reschedule it (its dependents wait
+    // with it), but it does not occupy a parallel slot either.
+    const held = new Set(recorded.filter((t) => t.status === 'held').map((t) => t.id));
+    const wave = scheduleTickets(tickets.filter((t) => !held.has(t.id)), {
       done, running,
       maxParallel: Math.min(feature.maxParallel || poolCfg.maxParallel, running.length + availableSlots()),
       runningFiles,
@@ -330,7 +355,7 @@ export function createSupervisor({
     for (const ticket of wave) {
       const runner = resolvePoolRunner(pickRunner(ticket.runner, feature.runner, poolCfg.defaultRunner));
       if (!canStartRunner(runner)) continue;
-      const foreign = pool.activeRuns(pool.listRunStates(paths,poolCfg,now())).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
+      const foreign = pool.activeRuns(runStates()).filter(r => r.featureId !== feature.id && r.kind === 'ticket');
       if (poolCfg.serializeOnFileOverlap && foreign.some(r => !ticket.files.length || !r.meta?.files?.length || ticket.files.some(f => r.meta.files.some(b => f === b || f.startsWith(b + '/') || b.startsWith(f + '/'))))) continue;
       const runId = newRunId({ featureId: feature.id, ticketId: ticket.id, kind: 'ticket' });
       const sliceFile = path.join(paths.briefs, `${runId}.specs.md`);
@@ -357,6 +382,11 @@ export function createSupervisor({
       const runPaths = pipelinePaths(repoRoot,{runId});
       fs.mkdirSync(runPaths.dir, {recursive:true});
       writeRunMeta(runPaths,{files:ticket.files,inputShas});
+      const previous = (recorded.find((t) => t.id === ticket.id)?.previousRunIds || []).at(-1);
+      if (previous) {
+        writeRunMeta(runPaths, { supersedes: previous });
+        writeRunMeta(pipelinePaths(repoRoot, { runId: previous }), { supersededBy: runId });
+      }
       const spawned = spawnWorker({
         runId, featureId: feature.id, ticketId: ticket.id, kind: 'ticket',
         brief, branch: `pipeline/work/${feature.id}/${runId}`, baseRef: ticketBase,
@@ -387,8 +417,18 @@ export function createSupervisor({
       worktreePath: worktree,
       message: `feat(${feature.id}${ticketRow.id ? `/${ticketRow.id}` : ''}): ${ticketRow.title}\n\nRun: ${run.runId}`,
     });
-    writeRunMeta(runPaths, { phase: 'committed', committedSha: res.sha, changedFiles: files });
+    const undeclared = undeclaredFiles(files, run.meta?.files);
+    writeRunMeta(runPaths, { phase: 'committed', committedSha: res.sha, changedFiles: files, undeclaredFiles: undeclared });
     appendRunVerb(runPaths, 'note', res.nothingToCommit ? 'no changes to commit' : `committed ${res.sha?.slice(0, 8)}`);
+    // Edits outside the ticket's declared files are how parallel tickets
+    // collide at integration (petra P8/T3). Say so at commit time, while it
+    // is still cheap to look, instead of as a merge conflict later.
+    if (undeclared.length) {
+      raiseAttention({
+        runId: run.runId, featureId: feature.id, kind: 'scope-drift', escalate: false,
+        summary: `${feature.id}/${ticketRow.id} changed ${undeclared.length} file(s) outside its declared scope: ${undeclared.slice(0, 8).join(', ')}${undeclared.length > 8 ? ', …' : ''}. Other tickets touching them may conflict at integration.`,
+      });
+    }
     return { ok: true, ...res };
   }
 
@@ -650,7 +690,7 @@ export function createSupervisor({
   function revalidateRoadmap(rm) {
     const previous = rm.finalValidation;
     if (previous?.state === 'running') {
-      const run = pool.listRunStates(paths, poolCfg, now()).find(r => r.runId === previous.runId);
+      const run = runStates().find(r => r.runId === previous.runId);
       if (!run || run.status?.overall !== 'done' || run.status?.verdict !== 'APPROVED') return;
       const p = pipelinePaths(repoRoot, { runId: previous.runId });
       try {
@@ -726,10 +766,15 @@ export function createSupervisor({
       const bodyFile = path.join(paths.control, 'roadmap_pr_body.md');
       fs.mkdirSync(paths.control, { recursive: true });
       fs.writeFileSync(bodyFile, `# ${rm.title}\n\nLand the working branch \`${branch}\` onto \`${rm.base}\`.\n`);
-      const pr = openPullRequest({
+      let pr = openPullRequest({
         cwd: repoRoot, provider, base: rm.base, head: branch,
         title: `${rm.title}: land roadmap`, bodyFile,
       });
+      // The PR already exists (a retry, or opened by hand): adopt it and carry
+      // on to the mergeability check, instead of escalating and resetting to
+      // awaiting_final_review on every pass (petra needed a restart).
+      const existing = !pr.ok && /already exists/.test(pr.error || '') && (pr.error || '').match(/https:\/\/[^\s]+/);
+      if (existing) pr = { ok: true, provider, url: existing[0], head: null, adopted: true };
       if (!pr.ok) {
         const err = pr.error || '';
         if (err.includes('No commits between')) {
@@ -741,13 +786,8 @@ export function createSupervisor({
           log(`landed roadmap onto ${rm.base} (no commits)`);
           return;
         }
-        let fallbackPr = null;
-        if (err.includes('already exists') || err.includes('A pull request already exists')) {
-          const m = err.match(/https:\/\/[^\s]+/);
-          if (m) fallbackPr = { url: m[0] };
-        }
         escalate(fakeFeature, null, 'pr_failed', `Could not open a pull request: ${pr.error}`);
-        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr: fallbackPr }));
+        saveRoadmap(setRoadmapStatus(roadmap(), 'awaiting_final_review', { mergeState: 'pr_failed', pr: null }));
         return;
       }
       const check = checkMergeable({
@@ -825,11 +865,17 @@ export function createSupervisor({
   function archiveFeatureReport(feature, landedSha) {
     const controlReportsDir = path.join(paths.control, 'reports', feature.id);
     fs.mkdirSync(controlReportsDir, { recursive: true });
-    const related = pool.listRunStates(paths, poolCfg, now())
+    const related = runStates()
       .filter((r) => r.featureId === feature.id)
       .sort((a, b) => String(a.spawnedAt || '').localeCompare(String(b.spawnedAt || '')));
+    // Lineage: a run the feature no longer points at was an earlier attempt.
+    // Field reports listed those as plain "done", hiding every retry.
+    const current = new Set([feature.specRunId, feature.integrationRunId, ...(feature.tickets || []).map((t) => t.runId)].filter(Boolean));
+    const replacedBy = new Map((feature.tickets || []).flatMap((t) => (t.previousRunIds || []).map((old) => [old, t.runId || `${t.id} (queued)`])));
     const relatedRuns = related.map((r) => ({
       runId: r.runId, kind: r.kind, ticketId: r.ticketId,
+      role: current.has(r.runId) ? 'current' : 'superseded',
+      supersededBy: current.has(r.runId) ? null : (replacedBy.get(r.runId) || r.meta?.supersededBy || null),
       overall: r.status?.overall || r.overall || 'unknown',
       haltReason: r.status?.haltReason || null,
       stages: (r.status?.stages || []).filter((s) => s.status !== 'pending').map((s) => ({ name: s.name, status: s.status })),
@@ -949,10 +995,15 @@ export function createSupervisor({
   // ---- one pass ------------------------------------------------------------
 
   function tick() {
+    tickRuns = null;
+    try { return tickOnce(); } finally { tickRuns = undefined; }
+  }
+
+  function tickOnce() {
     const rm = roadmap();
     if (!rm) return { ok: false, reason: 'no compiled roadmap' };
 
-    const runs = pool.listRunStates(paths, poolCfg, now());
+    const runs = runStates();
     const paused = fs.existsSync(paths.paused);
     resumingThisTick = new Set();
 
@@ -975,12 +1026,20 @@ export function createSupervisor({
     for (const run of runs) {
       for (const item of pendingAtTickStart) {
         if (item.runId !== run.runId) continue;
+        // A parked-run alert stays up while that same handoff is still waiting.
+        if (item.kind === 'awaiting-agent' && run.status?.overall === 'awaiting_chat'
+          && item.handoffId === (run.status?.handoffId ?? null)) continue;
+        if (item.kind === 'awaiting-agent') {
+          ackAttention(paths, item.id, { by: 'supervisor:state-advanced' });
+          continue;
+        }
         if (run.status?.overall === 'awaiting_chat' &&
           (['claim-run', 'awaiting-chat'].includes(item.kind) ||
             (item.kind === 'needs-decision' && /awaiting-chat:/i.test(item.summary || '')))) {
           ackAttention(paths, item.id, { by: 'supervisor:agent-queue' });
           continue;
         }
+        if (item.kind === 'ticket-held' && run.status?.overall === 'halted') continue;
         if (item.kind === 'halted' && run.status?.overall === 'halted') {
           const featureStatus = rm.features?.find((feature) => feature.id === item.featureId)?.status;
           if (!item.featureId || ['failed', 'held'].includes(featureStatus)) continue;
@@ -1005,8 +1064,17 @@ export function createSupervisor({
       }, poolCfg);
       if (event) {
         const episodeKey = [run.runId, event.kind, run.status?.endedAt || run.meta?.spawnedAt || '',
-          event.kind === 'stale' ? run.lastOutputAt : run.verbSince || '', event.handoffId || ''].join('|');
+          event.kind === 'stale' ? run.lastOutputAt : run.verbSince || '', event.handoffId || '',
+          event.level ?? ''].join('|');
         const alreadyRaised = historicalAttention.some((item) => item.type === 'item' && item.episodeKey === episodeKey);
+        if (event.kind === 'awaiting-agent' && !alreadyRaised) {
+          // Escalation replaces the lower-level alert rather than stacking.
+          for (const item of pool.pendingAttention(paths)) {
+            if (item.runId === run.runId && item.kind === 'awaiting-agent' && Number(item.level || 0) < event.level) {
+              ackAttention(paths, item.id, { by: 'supervisor:escalated' });
+            }
+          }
+        }
         if (event.escalate && !alreadyRaised && !alreadyPending(run.runId, event.kind, event.handoffId)) {
           const decisionId = event.kind === 'plan-approval'
             ? openDecision(paths, {
@@ -1038,7 +1106,19 @@ export function createSupervisor({
           // `pool claim`), never by the supervisor respawning it — and
           // orchestrator.mjs's own --resume guard does not accept that state
           // anyway.
-          respawn(run, run.status.overall === 'awaiting_plan_approval' ? ['--continue'] : ['--resume']);
+          const approval = run.status.overall === 'awaiting_plan_approval';
+          // A dormant request must not resurrect a run the engine would refuse
+          // (a dismissal, a regression halt): drop it instead of respawning.
+          if (approval || recoveryFor(run.status, { engineAlive: run.pidAlive }).resume) {
+            respawn(run, approval ? ['--continue'] : ['--resume']);
+            resumingThisTick.add(run.runId);
+          } else {
+            log(`dropped resume request for ${run.runId}: ${recoveryFor(run.status).reason}`);
+          }
+          clearRequests(run);
+        } else if (requests.resume && run.status?.overall === 'running' && !run.pidAlive) {
+          // The worker died without recording a halt (SIGKILL, crash): stale.
+          respawn(run, ['--resume']);
           resumingThisTick.add(run.runId);
           clearRequests(run);
         }
@@ -1051,17 +1131,23 @@ export function createSupervisor({
           ? ['--resume', '--extend', String(config.maxCoderCycles ?? 5)]
           : ['--resume'];
         recordAutoResume(run, reason);
+        recordRecovery(repoRoot, run.runId, {
+          action: reason === 'MAX_CYCLES' ? 'auto-extend' : 'auto-resume',
+          cause: reason,
+          detail: reason === 'MAX_CYCLES' ? `added ${config.maxCoderCycles ?? 5} cycles` : null,
+        });
         respawn(run, extra);
         resumingThisTick.add(run.runId);
         log(`auto-resumed ${run.runId} (${reason})`);
       }
+      healDeadEngines(runs);
     }
 
     // 3. Advance the feature currently in flight.
     if (!paused) advanceFeatures();
 
     // 4. Publish state for the dashboard and the coordinator.
-    const snap = pool.snapshot(paths, { config, now: new Date(now()) });
+    const snap = pool.snapshot(paths, { config, now: new Date(now()), runs: runStates() });
     pool.writeSnapshot(paths, snap);
     pool.writePrimaryMirror(paths, { snap, runs, config });
     touchHeartbeat();
@@ -1076,7 +1162,7 @@ export function createSupervisor({
     const active = rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status));
     const ordered = active.slice(schedulingOffset % Math.max(1,active.length)).concat(active.slice(0,schedulingOffset % Math.max(1,active.length)));
     schedulingOffset++;
-    for (const feature of ordered) advanceFeature({...roadmap(),currentFeatureId:feature.id},pool.listRunStates(paths,poolCfg,now()));
+    for (const feature of ordered) advanceFeature({...roadmap(),currentFeatureId:feature.id},runStates());
     rm = roadmap();
     let slots = poolCfg.maxActiveFeatures - rm.features.filter(f => !['queued','accepted','landed','skipped','held','failed'].includes(f.status)).length;
     for (const feature of rm.features) {
@@ -1122,18 +1208,48 @@ export function createSupervisor({
         let changed = false;
         const tickets = (current.tickets || []).map((t) => ({ ...t }));
         for (const ticket of tickets) {
-          if (ticket.status !== 'running' || !ticket.runId) continue;
+          if (!['running', 'held'].includes(ticket.status) || !ticket.runId) continue;
           const run = byRun(ticket.runId);
           if (!run) continue;
           if (run.status?.overall === 'done') {
+            // Includes adopting a held ticket whose run was repaired and finished.
             const committed = commitTicket(current, ticket, run);
             ticket.status = committed.ok ? 'committed' : 'failed';
             if (!committed.ok) escalate(current, run, 'commit-failed', committed.reason);
             changed = true;
           } else if (run.status?.overall === 'halted' && !isRetrying(run)) {
-            ticket.status = 'failed';
+            const autonomous = policyOf(run.status, config, readPolicyOverride(pipelinePaths(repoRoot, { runId: run.runId }).dir)).autonomy === 'autonomous';
+            if (autonomous && recoveryFor(run.status).resume && Number(ticket.autoRetries || 0) < 1) {
+              // Autonomous policy: rerun the ticket once on its own instead of
+              // waiting for a person; a second failure is held as usual.
+              ticket.previousRunIds = [...(ticket.previousRunIds || []), ticket.runId];
+              ticket.autoRetries = Number(ticket.autoRetries || 0) + 1;
+              appendRunVerb(pipelinePaths(repoRoot, { runId: run.runId }), 'note', `superseded by autonomous retry of ${current.id}/${ticket.id}`);
+              recordRecovery(repoRoot, run.runId, { action: 'auto-retry', cause: run.status.haltReason, detail: `${current.id}/${ticket.id} rerun as a new run` });
+              raiseAttention({ runId: run.runId, featureId: current.id, kind: 'auto-retried', escalate: false,
+                summary: `${current.id}/${ticket.id} halted (${run.status.haltReason}); autonomous policy retried it once.` });
+              ticket.status = 'queued';
+              ticket.runId = null;
+              changed = true;
+            } else if (recoveryFor(run.status).resume) {
+              // Fixable in place (missing section, unparseable verdict, a
+              // non-transient CLI error once its cause is fixed): hold this
+              // ticket instead of failing the feature and replanning from
+              // scratch — that discarded committed work in the field.
+              if (ticket.status !== 'held') {
+                ticket.status = 'held';
+                changed = true;
+                escalate(current, run, 'ticket-held',
+                  `${current.id}/${ticket.id} halted (${run.status.haltReason}) and is held for repair; other tickets continue. Fix it and run \`pool resume-run ${run.runId}\`, or \`pool retry-ticket ${current.id} ${ticket.id}\` to rerun just this ticket.`);
+              }
+            } else {
+              ticket.status = 'failed';
+              changed = true;
+              escalate(current, run, 'halted', `${current.id}/${ticket.id} halted: ${run.status.haltReason}. Rerun just this ticket with \`pool retry-ticket ${current.id} ${ticket.id}\`.`);
+            }
+          } else if (ticket.status === 'held' && ['running', 'awaiting_chat'].includes(run.status?.overall)) {
+            ticket.status = 'running';
             changed = true;
-            escalate(current, run, 'halted', `${current.id}/${ticket.id} halted: ${run.status.haltReason}`);
           }
         }
         if (changed) saveRoadmap(setFeatureStatus(roadmap(), current.id, 'executing', { tickets }));
@@ -1211,25 +1327,33 @@ export function createSupervisor({
 
   function respawn(run, extra) {
     const meta = run.meta || {};
+    // Without a recorded feature the run cannot be re-entered safely: the old
+    // fallback respawned it as a default 'ticket' and rewrote its run.json.
+    if (!meta.featureId || !meta.kind) {
+      raiseAttention({
+        runId: run.runId, kind: 'respawn-refused', escalate: true,
+        summary: `Run ${run.runId} was not resumed: its run.json does not record which feature it belongs to. Inspect it, then retry the feature or dismiss the run.`,
+      });
+      log(`respawn refused for ${run.runId}: no recorded featureId/kind`);
+      return null;
+    }
     // Reuse whatever runner this run was actually spawned with — never
     // re-derive from the feature, which may have been edited since.
-    spawnWorker({
+    return spawnWorker({
       runId: run.runId, featureId: meta.featureId, ticketId: meta.ticketId,
-      kind: meta.kind || 'ticket', brief: null, branch: null, baseRef: null,
+      kind: meta.kind, branch: meta.branch, baseRef: meta.baseRef,
+      brief: meta.brief ? path.resolve(repoRoot, meta.brief) : null,
       runner: resolvePoolRunner(meta.runner),
-      extra,
+      extra, resume: true,
     });
   }
 
   function resumableHalt(run) {
     if (run.status?.overall !== 'halted') return false;
-    const reason = run.status.haltReason;
     if (Number(run.meta?.autoResumes || 0) >= poolCfg.autoResumeMax) return false;
-    if (reason === 'MAX_CYCLES') {
-      if (Number(run.meta?.autoCycleExtends || 0) >= 1) return false;
-      return true;
-    }
-    return reason === 'AGENT_ERROR' && run.status.haltTransient === true;
+    const recovery = recoveryFor(run.status);
+    if (recovery.extend) return Number(run.meta?.autoCycleExtends || 0) < 1;
+    return recovery.autoResume;
   }
 
   function isRetrying(run) {
@@ -1239,22 +1363,56 @@ export function createSupervisor({
     return resumableHalt(run);
   }
 
-  function recordAutoResume(run, reason) {
+  // Self-heal for the one case nobody else handles: the run says it is running
+  // but its engine process is gone (a crash or SIGKILL records no halt), so no
+  // resume request exists and the run just sits there. Autonomous runs only,
+  // after a grace period, within a budget; see self-heal.mjs.
+  const deadSince = new Map();
+  function healDeadEngines(runs) {
+    for (const run of runs) {
+      if (resumingThisTick.has(run.runId)) { deadSince.delete(run.runId); continue; }
+      const read = readRunSummary(repoRoot, run.runId, { config, now: now() });
+      // This code is the supervisor: "the supervisor is not running" cannot be the
+      // news here, so look through that overlay to what is actually wrong with the run.
+      const shown = read?.summary.diagnosis;
+      const diagnosis = shown?.state === 'supervisor-dead' ? shown.underlying : shown;
+      if (diagnosis?.state !== 'dead-engine') { deadSince.delete(run.runId); continue; }
+      if (!deadSince.has(run.runId)) deadSince.set(run.runId, now());
+      const plan = planHeal({
+        diagnosis, autonomy: read.summary.autonomy, meta: run.meta || {}, now: now(),
+        observedSince: deadSince.get(run.runId), maxResumes: poolCfg.autoResumeMax,
+      });
+      if (plan.action === 'respawn') {
+        recordAutoResume(run, 'ENGINE_GONE', { lastHealAt: new Date(now()).toISOString() });
+        recordRecovery(repoRoot, run.runId, {
+          action: 'auto-respawn', cause: 'engine-gone',
+          detail: `engine process was gone for ${Math.round((now() - deadSince.get(run.runId)) / 1000)}s`,
+        });
+        respawn(run, ['--resume']);
+        resumingThisTick.add(run.runId);
+        log(`self-heal: restarted ${run.runId} (engine was gone)`);
+      } else if (plan.action === 'escalate') {
+        // Hand the run back before saying so, so the alert is true when it is read.
+        pool.setRunAutonomy(paths, run.runId, 'guided', { by: 'self-heal', via: 'self-heal' });
+        raiseAttention({ runId: run.runId, featureId: run.featureId, kind: plan.kind, escalate: true, summary: plan.summary });
+        log(`self-heal: gave up on ${run.runId}: ${plan.reason}`);
+      }
+    }
+  }
+
+  function recordAutoResume(run, reason, extra = {}) {
     const runPaths = pipelinePaths(repoRoot, { runId: run.runId });
-    const meta = readRunMeta(runPaths) || {};
-    const next = {
+    updateRunMeta(runPaths, (meta) => ({
       ...meta,
+      ...extra,
       autoResumes: Number(meta.autoResumes || 0) + 1,
       ...(reason === 'MAX_CYCLES' ? { autoCycleExtends: Number(meta.autoCycleExtends || 0) + 1 } : {}),
-    };
-    if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify(next, null, 2));
+    }));
   }
 
   function clearRequests(run) {
     const runPaths = pipelinePaths(repoRoot, { runId: run.runId });
-    const meta = readRunMeta(runPaths) || {};
-    delete meta.requests;
-    if (runPaths.runMeta) atomicWrite(runPaths.runMeta, JSON.stringify(meta, null, 2));
+    updateRunMeta(runPaths, (meta) => { const next = { ...meta }; delete next.requests; return next; });
   }
 
   function touchHeartbeat() {
@@ -1274,19 +1432,61 @@ export function createSupervisor({
     acquireLockFile(paths.lock, { pid: process.pid, role: 'supervisor' });
     fs.writeFileSync(paths.supervisorPid, String(process.pid));
     log(`supervisor started (pid ${process.pid})`);
-    const loop = () => { try { tick(); } catch (err) { log(`tick failed: ${err.stack || err.message}`); } };
+    const loop = () => { runTick(); };
     loop();
     timer = setInterval(loop, poolCfg.pollMs);
     for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => stop(signal));
     return { pid: process.pid };
   }
 
+  // A tick that throws used to be logged and retried every poll forever —
+  // petra logged 56 identical failures while the pool silently stood still.
+  // Now: one deduped alert per distinct failure, exponential backoff, and the
+  // alert clears on the first clean tick. Returns true/false, or null when the
+  // tick was skipped for backoff.
+  let tickFailures = 0;
+  let nextTickAt = 0;
+  function runTick() {
+    if (now() < nextTickAt) return null;
+    try {
+      // Held for the whole tick so an operator verb never interleaves with it.
+      withFileLock(paths.roadmapLock, () => tick());
+    } catch (err) {
+      tickFailures += 1;
+      nextTickAt = now() + Math.min(poolCfg.pollMs * 2 ** tickFailures, 60_000);
+      const message = String(err?.message || err).split('\n')[0].slice(0, 300);
+      const signature = message.replace(/\d+/g, '#');
+      log(`tick failed (${tickFailures}x): ${err?.stack || message}`);
+      const open = pool.pendingAttention(paths).some((a) => a.kind === 'supervisor-error' && a.signature === signature);
+      if (!open) {
+        appendAttention(paths, {
+          kind: 'supervisor-error', escalate: true, runId: null, featureId: null, signature,
+          summary: `The supervisor tick is failing, so the pool is not advancing: ${message}. See .pipeline/control/supervisor.log.`,
+          at: new Date(now()).toISOString(),
+        });
+      }
+      return false;
+    }
+    if (tickFailures) {
+      log(`tick recovered after ${tickFailures} failure(s)`);
+      for (const item of pool.pendingAttention(paths)) {
+        if (item.kind === 'supervisor-error') ackAttention(paths, item.id, { by: 'supervisor:recovered' });
+      }
+    }
+    tickFailures = 0;
+    nextTickAt = 0;
+    return true;
+  }
+
   function stop(signal = null) {
     if (timer) clearInterval(timer);
     // Workers are asked to stop, never killed outright: the engine's own signal
     // handler marks them INTERRUPTED so they can be resumed rather than lost.
-    for (const run of pool.listRunStates(paths, poolCfg, now())) {
+    for (const run of runStates()) {
       if (run.pidAlive && run.pid) {
+        // Queue the resume first: the worker halts as INTERRUPTED, and the next
+        // supervisor picks it back up instead of failing its ticket.
+        pool.markResumeRequested(paths, run.runId, 'supervisor stopped');
         try { process.kill(run.pid, 'SIGTERM'); } catch { /* already gone */ }
         appendRunVerb(pipelinePaths(repoRoot, { runId: run.runId }), 'paused', 'supervisor stopping');
       }
@@ -1298,16 +1498,26 @@ export function createSupervisor({
       } catch { /* not ours */ }
     }
     try { fs.unlinkSync(paths.supervisorPid); } catch { /* already gone */ }
+    // Leave a truthful snapshot behind: the last tick's copy still said alive.
+    try { pool.writeSnapshot(paths, pool.snapshot(paths, { config, now: new Date(now()) })); } catch { /* best effort */ }
     log(`supervisor stopped${signal ? ` (${signal})` : ''}`);
     if (signal) process.exit(0);
   }
 
-  return { tick, start, stop, archiveFeatureReport, paths, config, poolCfg, mergeCfg };
+  return { tick, runTick, start, stop, archiveFeatureReport, paths, config, poolCfg, mergeCfg };
 }
 
 // Small helpers kept at the bottom so the lifecycle above reads top to bottom.
+export function undeclaredFiles(changed = [], declared = []) {
+  if (!declared?.length) return [];
+  const within = (f) => declared.some((d) => f === d || f.startsWith(d.replace(/\/$/, '') + '/'));
+  return (changed || []).filter((f) => !f.startsWith('.pipeline/') && !within(f));
+}
 function gitIn(cwd, args) {
-  const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  // A hung push/fetch must not freeze the (synchronous) supervisor tick for
+  // every other run; on timeout the call fails like any other git error.
+  const res = nodeSpawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 180_000 });
+  if (res.error?.code === 'ETIMEDOUT') return { status: 124, stdout: res.stdout || '', stderr: `git ${args[0]} timed out after 180s` };
   return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 

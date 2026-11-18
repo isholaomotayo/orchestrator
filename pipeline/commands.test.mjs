@@ -156,3 +156,37 @@ test('valid JSON without a trailing newline is not a committed receipt or state'
   assert.equal(commandState(dir).runs.count, 2);
   assert.equal(readJournal(journal).length, 2);
 });
+
+test('the journal is compacted once it grows large, keeping state and recent receipts', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'journal-'));
+  const blob = 'x'.repeat(8_000);
+  let lastId = null;
+  for (let i = 0; i < 200; i++) {
+    lastId = `cmd-${i}`;
+    transact(dir, 'note.add', { i }, (state) => {
+      (state.notes ||= []).push({ i, blob });
+      if (state.notes.length > 5) state.notes.shift();
+      return { ok: true, i };
+    }, { commandId: lastId });
+  }
+  const journal = path.join(dir, 'bridge.journal.jsonl');
+  assert.ok(fs.statSync(journal).size < 2 * 1024 * 1024, `journal stayed bounded (${fs.statSync(journal).size} bytes)`);
+  assert.ok(readJournal(journal).length < 200, 'older records were folded away');
+  const state = commandState(dir);
+  assert.equal(state.revision, 200);
+  assert.equal(state.notes.at(-1).i, 199);
+  // A retried recent command still returns its original result.
+  const again = transact(dir, 'note.add', { i: 199 }, () => { throw new Error('must not re-run'); }, { commandId: lastId });
+  assert.equal(again.i, 199);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('commandState hands out a copy, so a caller mutating it cannot poison later reads', () => {
+  const dir = tmpDir();
+  transact(dir, 'seed', {}, (state) => { state.runs.n = 1; return {}; });
+  const first = commandState(dir);
+  first.runs.n = 99;
+  assert.equal(commandState(dir).runs.n, 1);
+  transact(dir, 'bump', {}, (state) => { state.runs.n = 2; return {}; });
+  assert.equal(commandState(dir).runs.n, 2, 'a new record is seen immediately');
+});

@@ -4,17 +4,10 @@
 // the agent CLI itself. compileHaltHandoff is pure so it can be unit-tested
 // without running a pipeline.
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { hintFor } from './recoverability.mjs';
 
-const RESUME_HINTS = {
-  MAX_CYCLES: 'Extend the same fix loop: `node pipeline/orchestrator.mjs --resume --extend <n>` (or the dashboard "Extend" button).',
-  REGRESSION_BLOCKED: 'A change broke previously passing tests. Inspect the diff and `.pipeline/checker_report.md` BEFORE any resume — regression halts are intentionally not extendable.',
-  MISSING_ARTIFACT: 'A stage exited without producing its artifact. Inspect that stage\'s log under `.pipeline/logs/`, then start a fresh run (or `node pipeline/orchestrator.mjs --resume` if the run is stale/interrupted).',
-  AGENT_ERROR: 'The agent CLI failed. Check authentication and the stage log under `.pipeline/logs/`, then `node pipeline/orchestrator.mjs --resume`.',
-  INTEGRITY_VIOLATION: 'A stage wrote pipeline control-plane files it does not own, or a read-only stage mutated the working tree. Its output is untrusted: review the listed files and `git status` BEFORE resuming, and prefer a runner that hard-enforces read-only (claude, codex) for audit stages.',
-  INVALID_VERDICT: 'The reviewer produced a report with no parseable verdict line. Read `.pipeline/review_report.md`; if the audit is sound, add "## Verdict: APPROVED|REQUEST_CHANGES|BLOCK" and `node pipeline/orchestrator.mjs --resume`.',
-  INTERRUPTED: 'The run was interrupted. Resume it: `node pipeline/orchestrator.mjs --resume`.',
-};
 
 export function collectGitInfo(cwd) {
   const git = (args) => spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -24,7 +17,22 @@ export function collectGitInfo(cwd) {
   return { branch, dirty };
 }
 
-export function compileHaltHandoff({ status, history = null, git = null }) {
+// Pool runs live under .pipeline/runs/<id>/ and are resumed through the
+// supervisor, so the classic `.pipeline/...` paths and engine commands would
+// send a reader (or agent) to another run's stale files.
+function localize(text, { dir, runId }) {
+  let out = text.replaceAll('`.pipeline/', `\`${dir}/`);
+  if (runId) {
+    out = out
+      .replaceAll('`node pipeline/orchestrator.mjs --resume --extend <n>`', `\`bash .pipeline/orchestrate.sh pool extend ${runId} <n>\``)
+      .replaceAll('`node pipeline/orchestrator.mjs --resume`', `\`bash .pipeline/orchestrate.sh pool resume-run ${runId}\``);
+  }
+  return out;
+}
+
+export function compileHaltHandoff({ status, history = null, git = null, dir = '.pipeline' }) {
+  // Pool briefs already lead the task with "- **Goal:**".
+  const goal = String(status.task || '').replace(/^\s*-?\s*\*\*Goal:\*\*\s*/, '') || '(unknown)';
   const reason = status.haltReason || 'UNKNOWN';
   const halted = Boolean(status.haltReason);
   const phase = status.haltedPhase || status.resumePoint?.step || '(unknown)';
@@ -35,7 +43,7 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
     '> **CRITICAL RESUME DIRECTION:** Do not start planning from scratch. Read `.pipeline/status.json` for the machine state, skim the artifacts below, then follow the resume command at the end. This document was compiled deterministically (no agent call) — it is necessarily less detailed than an agent-authored handoff, so read the stage artifacts below in full rather than relying on this summary alone.',
     '',
     halted ? '## 1. Summary of Blocked State' : '## 1. Summary of Final State',
-    `- **Goal:** ${status.task || '(unknown)'}`,
+    `- **Goal:** ${goal}`,
     halted
       ? `- **Outcome:** halted — ${reason}${status.haltTransient ? ' (classified as transient — a bare `--resume` may simply succeed)' : ''}`
       : `- **Outcome:** completed — verdict ${status.verdict || 'UNKNOWN'} (handoff agent failed; deterministic summary written instead)`,
@@ -88,17 +96,18 @@ export function compileHaltHandoff({ status, history = null, git = null }) {
   }
   lines.push('', '## 6. How to Resume');
   if (halted) {
-    lines.push(`- ${RESUME_HINTS[reason] || 'Inspect `.pipeline/status.json` and the stage logs, then `node pipeline/orchestrator.mjs --resume`.'}`);
-    lines.push('- Chat mode: `bash .pipeline/orchestrate.sh --continue` when a stage handoff is pending.', '');
+    lines.push(`- ${hintFor(reason)}`);
+    lines.push(`- Chat mode: \`bash .pipeline/orchestrate.sh --continue${status.runId ? ` --run-id ${status.runId}` : ''}\` when a stage handoff is pending.`, '');
   } else {
     lines.push('- The run completed — no resume needed. Read `.pipeline/review_report.md` for the verdict and follow-ups, and `.pipeline/status.json` for final state.', '');
   }
-  return lines.join('\n');
+  return localize(lines.join('\n'), { dir, runId: status.runId || null });
 }
 
 export function writeHaltHandoff({ paths, status, history = null, cwd = paths.root }) {
   try {
-    fs.writeFileSync(paths.handoffDoc, compileHaltHandoff({ status, history, git: collectGitInfo(cwd) }));
+    const dir = paths.dir && paths.root ? path.relative(paths.root, paths.dir) || '.pipeline' : '.pipeline';
+    fs.writeFileSync(paths.handoffDoc, compileHaltHandoff({ status, history, git: collectGitInfo(cwd), dir }));
     return true;
   } catch {
     return false; // best-effort; never mask the original halt

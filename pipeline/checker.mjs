@@ -2,7 +2,11 @@
 // parses pass/fail counts, and writes .pipeline/checker_report.md for the Coder.
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { appendEvent } from './state.mjs';
+import { appendEvent, atomicWrite } from './state.mjs';
+import { fileURLToPath } from 'node:url';
+
+const GROUP_RUNNER = fileURLToPath(new URL('./run-group.mjs', import.meta.url));
+const TIMEOUT_MARKER = '[checker] command timed out after';
 
 // Trust boundary: `cmd` comes from config.checks.{lint,typecheck,test} in
 // .pipeline/config.json, a project-level file the repo owner controls — never
@@ -12,20 +16,23 @@ import { appendEvent } from './state.mjs';
 function runCommand(cmd, cwd, timeoutMs) {
   const started = Date.now();
   const revision = spawnSync('git', ['rev-parse', 'HEAD'], {cwd, encoding:'utf8'}).stdout?.trim() || null;
-  const res = spawnSync(cmd, {
-    cwd,
-    shell: true,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, CI: 'true', FORCE_COLOR: '0' },
-  });
+  const env = { ...process.env, CI: 'true', FORCE_COLOR: '0' };
+  const grouped = process.platform !== 'win32';
+  // POSIX: run through run-group.mjs so a timeout kills the command's whole
+  // process tree. Its own timeout is a backstop in case the helper hangs.
+  const res = grouped
+    ? spawnSync(process.execPath, [GROUP_RUNNER, String(timeoutMs || 0)], {
+      cwd, encoding: 'utf8', timeout: timeoutMs ? timeoutMs + 15_000 : undefined, maxBuffer: 16 * 1024 * 1024,
+      env: { ...env, PIPELINE_CHECK_CMD: cmd },
+    })
+    : spawnSync(cmd, { cwd, shell: true, encoding: 'utf8', timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env });
   const output = [res.stdout || '', res.stderr || ''].filter(Boolean).join('\n').trim();
+  const timedOut = res.error?.code === 'ETIMEDOUT' || (grouped && res.status === 124 && (res.stderr || '').includes(TIMEOUT_MARKER));
   return {
     command: cmd, cwd, revision, startedAt: new Date(started).toISOString(), durationMs: Date.now() - started, skipped: false,
     ok: res.status === 0 && !res.error,
     exitCode: res.status,
-    timedOut: res.error?.code === 'ETIMEDOUT',
+    timedOut,
     output,
   };
 }
@@ -42,9 +49,15 @@ function lastMatch(output, re) {
 // Extract passed/failed test counts from common runner outputs.
 // Supports: node --test (TAP), jest, vitest, mocha, pytest.
 export function parseTestCounts(output) {
+  // node --test TAP: "# pass 3" / "# fail 1". These lines are only ever the
+  // end-of-run summary, so every one is a real suite total — a multi-suite
+  // `npm test` prints one per suite and they must be summed, not last-matched.
+  const tapPass = [...output.matchAll(/^#\s*pass\s+(\d+)/gm)];
+  if (tapPass.length) {
+    const sum = (ms) => ms.reduce((n, m) => n + parseInt(m[1], 10), 0);
+    return { passedCount: sum(tapPass), failedCount: sum([...output.matchAll(/^#\s*fail\s+(\d+)/gm)]) };
+  }
   const patterns = [
-    // node --test TAP: "# pass 3" / "# fail 1"
-    { pass: /^#\s*pass\s+(\d+)/m, fail: /^#\s*fail\s+(\d+)/m },
     // jest/pytest style: "3 passed" / "1 failed"
     { pass: /(\d+)\s+passed/, fail: /(\d+)\s+failed/ },
     // mocha: "3 passing" / "1 failing"
@@ -114,6 +127,6 @@ export function runChecks({ cwd, config, paths, stage = 'coder' }) {
     '',
   ].join('\n');
 
-  fs.writeFileSync(paths.checkerReport, report);
+  atomicWrite(paths.checkerReport, report);
   return { isPassed, passedCount, failedCount, results };
 }

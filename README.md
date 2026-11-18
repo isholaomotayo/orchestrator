@@ -62,8 +62,32 @@ bash .pipeline/orchestrate.sh "Your task" --approve-plan
 bash .pipeline/orchestrate.sh "Your task" --design
 
 # Check pipeline status and continue a paused run
+# (use the exact command the handoff prints: it carries --handoff-id)
 bash .pipeline/orchestrate.sh --continue
+
+# Guided (default) or autonomous: autonomous retries recoverable failures once
+bash .pipeline/orchestrate.sh "Your task" --autonomy autonomous
+
+# A halt with a fixable artifact: fix the file, then resume the same step
+bash .pipeline/orchestrate.sh --resume
+
+# Roadmap mode: repair one ticket instead of replanning the whole feature
+bash .pipeline/orchestrate.sh pool resume-run <runId>
+bash .pipeline/orchestrate.sh pool retry-ticket <featureId> <ticketId>
+bash .pipeline/orchestrate.sh pool set-autonomy <runId> guided|autonomous
+
+# Find or start this project's dashboard (prints JSON for tools)
+bash .pipeline/orchestrate.sh ui --ensure --json
 ```
+
+Two independent "mode" settings describe every run:
+
+| Setting | Values | Changes? |
+|---|---|---|
+| **surface** — who executes stages | `host` (a chat session completes each stage) · `cli` (the engine runs an agent CLI) | Fixed when the run starts; only an explicit `--mode` changes it, and that is recorded |
+| **autonomy** — who decides at gates | `guided` (recoverable failures wait for you) · `autonomous` (retried once automatically) | Any time, from the dashboard or `pool set-autonomy`; applies at the next gate. Merges always need a human |
+
+The versioned API that the dashboard and the desktop app use is documented in [docs/api-v1.md](docs/api-v1.md).
 
 ---
 
@@ -339,7 +363,7 @@ The pipeline auto-detects whichever **CLI** runner is authenticated on your `PAT
 | `host`   | _(none — IDE chat)_                                                                   | —                                          | **Chat mode only.** Hands each stage to the IDE session via `stage-handoff.json`. Dashboard labels the run with `status.hostClient` when set.                                                                                 |
 | `claude` | [Claude Code](https://docs.claude.com/en/docs/claude-code)                            | `npm install -g @anthropic-ai/claude-code` | Richest integration: streams structured `stream-json` events (tool calls, file edits, cost) that power the dashboard's file chips and cost rollup. The Reviewer stage uses `--allowedTools` to enforce true read-only access. |
 | `cursor` | [Cursor CLI](https://cursor.com/cli) (`cursor-agent`)                                 | see Cursor docs                            | Headless `-p` mode with `--output-format stream-json`.                                                                                                                                                                        |
-| `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --full-auto`.                                                                                                                                                                                     |
+| `codex`  | [OpenAI Codex CLI](https://github.com/openai/codex)                                   | `npm install -g @openai/codex`             | Non-interactive `codex exec --sandbox workspace-write` (read-only stages: `--sandbox read-only`).                                                                                                                                                                                     |
 | `antigravity` | [Antigravity CLI](https://antigravity.google/docs/cli/headless/) (`agy`) | Install Antigravity, then authenticate with an interactive `agy` session | Headless `agy -p` with `--dangerously-skip-permissions` when writing. `gemini` is a deprecated alias for this runner. |
 
 You can also point the pipeline at **any** CLI-shaped agent (a wrapper script, an internal tool, a stub for testing) via `customRunners` in `.pipeline/config.json` — see [Configuration reference](#configuration-reference).
@@ -523,6 +547,7 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
   },
   "checkTimeoutMs": 300000, // kill a check command after this long
   "agentTimeoutMs": 1800000, // kill an agent invocation after this long
+  "agentIdleTimeoutMs": 1200000, // stop an agent that has printed nothing for this long (0 disables)
   "repoScanDepth": 4, // how deep to look for nested repos when scoping the review diff
   "maxDiffBytes": 2000000, // total diff.patch budget across all repos in scope
   "modelProfiles": {
@@ -596,12 +621,13 @@ bash .pipeline/orchestrate.sh --resume [--extend N] [--runner ...] [--no-ui]
     "my-agent": {
       "command": "bash",
       "args": ["scripts/my-agent.sh", "{task}", "{systemPrompt}", "{model}", "{effort}", "{readOnly}"],
+      "parse": "text", // optional: the agent prints plain text, so never read its lines as agent JSON events
     },
   },
 }
 ```
 
-`customRunners` placeholders: `{task}` (the stage's instructions), `{systemPrompt}` (the role prompt file's contents), `{readOnly}` (`"true"`/`"false"`, set for the Reviewer stage).
+`customRunners` placeholders: `{task}` (the stage's instructions), `{systemPrompt}` (the role prompt file's contents), `{readOnly}` (`"true"`/`"false"`, set for the Reviewer stage). Set `"parse": "text"` when the agent prints plain text. Without it, a line that is a JSON agent event (Claude or Cursor stream-json, Codex `--json`) is read as one, so a plain-text agent that prints a JSON line, for example a result with `is_error`, could be misread.
 
 In **chat/host mode**, auto profiles are selected from the `--host-client` ecosystem (e.g. Antigravity → Gemini-family). When the host client is unknown or absent, every stage suggests the `current-chat` sentinel — "use whatever model this chat session is running" — rather than assuming Claude models exist. Manual `--models` still wins when you set `--model-profile manual`.
 
@@ -733,8 +759,8 @@ A stage can be given a capability the pipeline does not implement itself. Skills
 are declared in `.pipeline/config.json` and **pinned by content**:
 
 ```bash
-node pipeline/skills.mjs pin archify     # after reviewing it
-node pipeline/skills.mjs list
+node pipeline/skills-cli.mjs pin archify     # after reviewing it
+node pipeline/skills-cli.mjs list
 ```
 
 A skill whose bytes no longer match its pin is refused for that run and

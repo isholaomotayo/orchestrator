@@ -2,7 +2,7 @@
 name: unattended
 description: Set or explain the policy for what may be handled without the operator while they are away, and what must wait for them. Use when the user says they are stepping away, asks what can run unattended, or invokes /unattended.
 when_to_use: The user is leaving a roadmap run going and wants to say what may proceed without them.
-allowed-tools: Bash(node pipeline/pool.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read Write(.pipeline/control/notes/*)
+allowed-tools: Bash(node pipeline/pool-cli.mjs *) Bash(bash .pipeline/orchestrate.sh pool *) Read Write(.pipeline/control/notes/*)
 ---
 
 # Unattended

@@ -37,7 +37,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 7. **Chat handoff loop** (while `.pipeline/stage-handoff.json` exists):
    - Read the handoff + stage prompt file.
    - If `handoff.model` is set, **switch to that model in Cursor** before completing the stage.
-   - Complete the stage (write the required artifact). While doing so, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box writes live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. If it has content, apply it immediately and delete the file. Publish concise progress with `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one) so the dashboard transcript stays current.
+   - Complete the stage (write the required artifact). While doing so, periodically check `.pipeline/followups/<stage>.txt` — the dashboard's chat box writes live notes there for whichever stage is active, and the orchestrator process has already exited for this handoff so nothing else will pick them up. If it has content, apply it immediately and delete the file. Publish concise progress with `handoff.eventCommand` (or `node pipeline/host-event.mjs --stage <stage> --kind text --text "..."`; add `--run-id` when the handoff names one) so the dashboard transcript stays current. Exception: when `stage-handoff.json` has `"hookProgress": true` and you claimed the run through the bridge, the host hooks record tool progress, so skip the per-tool events — but keep checking the followups file, since some notes are written only there (see SKILL.md).
    - Run `bash .pipeline/orchestrate.sh --continue`
    - Repeat until done or halted.
 8. **Report**: Read `.pipeline/review_report.md` and summarize the audit verdict.
@@ -53,7 +53,7 @@ Delegate the user's request to the self-healing multi-agent pipeline (Planner �
 
 **The attending chat owns host stages.** In single-run chat mode complete each stage from `stage-handoff.json` and run `--continue`. In roadmap mode, CLI workers run only when explicitly opted in. Everything else defaults to `runner: host`. Read `pool status --json` or `pool digest`, take `agentQueue.current`, run `bash .pipeline/orchestrate.sh pool claim <runId>`, complete that handoff, then `bash .pipeline/orchestrate.sh --continue --run-id <runId>`. Repeat without asking the user after each stage until the queue is empty or a genuine human decision blocks progress. Respect existing bridge ownership and leases. Routine host work belongs in Agent queue, not Needs attention.
 
-**Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
+**Self-invocation guard** — check before every invocation: read `.pipeline/status.json` and, when `.pipeline/control/` exists, `node pipeline/pool-cli.mjs status --json`. If `overall` is `running`, `awaiting_chat`, or `awaiting_plan_approval`, or a supervisor pid in `.pipeline/control/supervisor.pid` is alive, work is already in flight — drain it (`/digest`) instead of starting anything. If `status.json` has a `pool` field, add work with `roadmap add`, never a fresh `--task`. `.pipeline/.lock` alone is NOT a reliable signal: chat handoffs release it while a run is still active.
 
 **Workspace isolation.** Treat `.pipeline/`, `.pipeline_sandbox/` (legacy), `.pipeline/runs/`, `.pipeline/worktrees/` and `.pipeline/control/` as READ-ONLY unless you are completing an assigned stage. Never `cd` into or edit anything under `.pipeline/worktrees/<runId>` — a worker owns that tree. Change pool state only through `pool` verbs.
 
@@ -72,4 +72,4 @@ explicitly agreed to, even when a review is APPROVED.
 
 **Third-party skills** are declared in `.pipeline/config.json` and pinned by
 hash. A skill whose bytes changed is refused for that run and reported — pin it
-again with `node pipeline/skills.mjs pin <name>` only after reviewing the change.
+again with `node pipeline/skills-cli.mjs pin <name>` only after reviewing the change.

@@ -17,10 +17,14 @@ export function createApi(projectRef) {
     return res.json();
   }
 
+  // The server embeds its API token in the page it serves; every state-changing
+  // call presents it.
+  const token = () => globalThis.document?.querySelector?.('meta[name="pipeline-api-token"]')?.content || '';
+
   async function post(path, body = {}) {
     const res = await fetch(`${path}?${q()}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
       body: JSON.stringify(body),
     });
     const data = await res.json().catch(() => ({}));
@@ -30,7 +34,8 @@ export function createApi(projectRef) {
 
   return {
     projects: () => get('/api/projects'),
-    state: (run) => get('/api/state', run ? { run } : {}),
+    // `stage` narrows the events to that stage (the server picks the active one otherwise).
+    state: (run, stage) => get('/api/state', { ...(run ? { run } : {}), ...(stage ? { stage } : {}) }),
     runs: () => get('/api/runs'),
     pool: () => get('/api/pool'),
     decisions: (status) => get('/api/decisions', status ? { status } : {}),
@@ -43,13 +48,15 @@ export function createApi(projectRef) {
     approveMerge: (featureId, note) => post('/api/merge/approve', { featureId, note }),
     requestChanges: (featureId, text) => post('/api/merge/request-changes', { featureId, text }),
     followup: (stage, text, run) => post('/api/followup', { stage, text, run }),
-    poolAction: (action, featureId, reason) => post('/api/pool/action', { action, featureId, reason }),
+    poolAction: (action, featureId, reason, extra = {}) => post('/api/pool/action', { action, featureId, reason, ...extra }),
     pausePool: (why) => post('/api/pool/pause', { why }),
     resumePool: () => post('/api/pool/resume', {}),
-    continueRun: (approve, run) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}) }),
+    continueRun: (approve, run, handoffId) => post('/api/continue', { ...(approve ? { approve: true } : {}), ...(run ? { run } : {}), ...(handoffId ? { handoffId } : {}) }),
     cancelRun: (run) => post('/api/cancel', run ? { run } : {}),
     resumeRun: (run) => post('/api/resume', run ? { run } : {}),
-    extendRun: (cycles, run) => post('/api/extend', { cycles, ...(run ? { run } : {}) }),
+    extendRun: (cycles, run) => post('/api/extend', { extend: cycles, ...(run ? { run } : {}) }),
     dismissRun: (run, reason) => post('/api/run/dismiss', { run, reason }),
+    setAutonomy: (autonomy, run) => post('/api/run/autonomy', { autonomy, ...(run ? { run } : {}) }),
+    startRun: (body) => post('/api/run', body),
   };
 }

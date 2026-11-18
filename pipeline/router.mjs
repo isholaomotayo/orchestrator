@@ -1,4 +1,5 @@
 import { detectRunner, runOneShot } from './adapters.mjs';
+import { resolveModelId } from './models.mjs';
 
 export const STAGE_KEYWORDS = {
   planner: ['spec', 'plan', 'requirement', 'scope', 'design'],
@@ -81,7 +82,8 @@ Respond with exactly one word: planner|coder|tester|reviewer.
 User message:
 "${text}"`;
 
-  const model = status?.models?.stages?.planner || null;
+  // status holds model FAMILIES ('opus-5'); the CLI only accepts its native id.
+  const model = resolveModelId(status?.models?.stages?.planner || null, runner);
   const response = await runOneShot({ runner, prompt, config, model });
   const match = response.toLowerCase().match(/\b(planner|coder|tester|reviewer)\b/);
   return match ? match[1] : null;

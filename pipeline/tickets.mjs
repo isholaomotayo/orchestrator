@@ -10,6 +10,10 @@
 // the shared context (objective, failure modes) and drops the other tickets, so
 // a worker cannot wander outside its lane.
 
+// Marks a single ticket's slice of a plan: its dependencies name tickets that
+// are deliberately not in this document.
+export const SLICE_MARKER = '<!-- ticket-slice: dependencies refer to tickets outside this slice -->';
+
 const TICKET_SECTION_RE = /^##\s+3\.\s*Tracer-Bullet Tickets\s*$/im;
 const TICKET_HEADING_RE = /^###\s*Ticket\s+(\d+)\s*:\s*(.+?)\s*$/gim;
 
@@ -30,8 +34,14 @@ function fieldValue(body, label) {
 
 function splitList(value) {
   return value
+    // Planners annotate paths: "`a/b.ts` (add `fn`, a query)". The note is not
+    // part of the path, and its commas are not list separators.
+    .replace(/\s*\([^)]*\)/g, '')
     .split(/[,;]/)
-    .map((v) => v.trim().replace(/^`|`$/g, '').replace(/\\/g, '/').replace(/^\.\//, ''))
+    .map((v) => {
+      const quoted = /`([^`]+)`/.exec(v);
+      return (quoted ? quoted[1] : v).trim().replace(/^`|`$/g, '').replace(/\\/g, '/').replace(/^\.\//, '');
+    })
     .filter((v) => v && !/^\[.*\]$/.test(v));
 }
 
@@ -69,11 +79,11 @@ export function parseTickets(specs) {
       block: block.trim(),
     };
   });
-  validateTickets(result);
+  validateTickets(result, { externalDeps: text.includes(SLICE_MARKER) });
   return result;
 }
 
-export function validateTickets(tickets) {
+export function validateTickets(tickets, { externalDeps = false } = {}) {
   const ids = new Set();
   for (const t of tickets) {
     if (ids.has(t.id)) throw new Error(`Duplicate ticket ${t.id}`);
@@ -82,7 +92,10 @@ export function validateTickets(tickets) {
   }
   const visiting = new Set(), visited = new Set();
   function visit(id) {
-    if (!ids.has(id)) throw new Error(`Unknown ticket dependency ${id}`);
+    if (!ids.has(id)) {
+      if (externalDeps) return;
+      throw new Error(`Unknown ticket dependency ${id}`);
+    }
     if (visiting.has(id)) throw new Error(`Ticket dependency cycle at ${id}`);
     if (visited.has(id)) return;
     visiting.add(id);
@@ -107,7 +120,7 @@ export function sliceSpecForTicket(specs, ticketId) {
   if (!ticket) throw new Error(`Unknown ticket "${ticketId}" in this specification.`);
   const sectionStart = TICKET_SECTION_RE.exec(text);
   const shared = text.slice(0, sectionStart.index).trimEnd();
-  return `${shared}\n\n## 3. Tracer-Bullet Tickets\n\n${ticket.block}\n`;
+  return `${shared}\n\n## 3. Tracer-Bullet Tickets\n\n${SLICE_MARKER}\n${ticket.block}\n`;
 }
 
 /**

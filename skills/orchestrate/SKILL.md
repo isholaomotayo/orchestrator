@@ -9,7 +9,7 @@ arguments:
   - mode
   - runner
 disable-model-invocation: true
-allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool.mjs *) Bash(node pipeline/skills.mjs *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt) Write(.pipeline/roadmap.md)
+allowed-tools: Bash(bash .pipeline/orchestrate.sh *) Bash(node pipeline/pool-cli.mjs *) Bash(node pipeline/skills-cli.mjs *) Bash(bash skills/orchestrate/scripts/bootstrap.sh *) Bash(bash .agents/skills/orchestrate/scripts/bootstrap.sh *) Bash(cat .pipeline/*) Bash(cat .pipeline/ui.url) Bash(lsof *) Read Write(.pipeline/task.txt) Write(.pipeline/roadmap.md)
 ---
 
 # Orchestrate
@@ -22,7 +22,7 @@ The operating contract is one skill and one command for the whole request; an in
 
 !`[ -f .pipeline/.lock ] && cat .pipeline/.lock || echo "No active pipeline run"`
 
-!`[ -d .pipeline/control ] && node pipeline/pool.mjs status --json 2>/dev/null | head -40 || echo "No roadmap pool in this project"`
+!`[ -d .pipeline/control ] && node pipeline/pool-cli.mjs status --json 2>/dev/null | head -40 || echo "No roadmap pool in this project"`
 
 !`[ -f .pipeline/status.json ] && cat .pipeline/status.json || echo "No status.json"`
 
@@ -90,29 +90,34 @@ Example message: *"Pipeline started! Open the live dashboard (URL in `.pipeline/
 When `.pipeline/stage-handoff.json` is present and status is `awaiting_chat`:
 
 1. Read the handoff file and its referenced prompt.
-2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model.
-3. Work on the assigned pipeline stage in this session (specs, design, code, tests, review, handoff, or reporter — Handoff and Reporter are mandatory stages that always run after an `APPROVED` review, same as any other stage in this loop). Never spawn or delegate to another agent CLI (`handoff.hostNote` reiterates this when set).
+2. If `handoff.model` specifies a model available in this environment, switch to it; otherwise (or when the model is `current-chat`) use your active chat model. When the handoff has a `delegate` block (low-effort stages such as handoff and reporter) and your host can start a subagent on a chosen model (for example Claude Code's Agent tool with `model`), run the stage in that subagent on `delegate.model` and record it as `actualModel`; the subagent writes the artifact, you still run `--continue`.
+3. Work on the assigned pipeline stage in this session (specs, design, code, tests, review, handoff, or reporter — Handoff and Reporter are mandatory stages that always run after an `APPROVED` review, same as any other stage in this loop). Never spawn or delegate to another agent CLI (`handoff.hostClient` names the chat you are in; the `delegate` subagent in step 2 is the only exception, and it is a subagent of this session, not another CLI).
 
-   **Progressive Incremental Streaming (Mandatory for Live Dashboard)**:
-   Because the orchestrator script exits while waiting for your chat session, the dashboard has zero visibility into your work unless you emit events. Never wait until the end of a stage to emit progress. Follow this progressive pattern:
-   - **Stage Start Heartbeat**: Immediately upon picking up the handoff, emit an intent heartbeat:
-     ```bash
-     bun pipeline/host-event.mjs --stage <stage> --kind text --text "Starting <stage>: inspecting specs and requirements..."
-     ```
-     (Use `handoff.progressStream.heartbeat` if provided; add `--run-id <runId>` when pooled).
-   - **Tool / Milestone Batches**: Emit a progress event after every 1–2 major tool operations, file edits, or test runs:
-     ```bash
-     bun pipeline/host-event.mjs --stage <stage> --kind tool --tool edit --file <file_path>
-     bun pipeline/host-event.mjs --stage <stage> --kind text --text "<concise_action_summary>"
-     ```
-   - **Check Followups**: Periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file.
-   - **Stage Completion Summary**: Emit your final summary event right before invoking `--continue`.
-4. Set `"actualModel": "your model name"` in `stage-handoff.json`.
+   **Progress for the live dashboard (mandatory)**: the orchestrator has exited while you work, so the dashboard sees only what gets reported.
+   - **If `handoff.hookProgress` is `true` and you claimed this run through the bridge**, your host's hooks already record every tool call in the dashboard feed and deliver bridge messages into your context. Send just two events with `handoff.eventCommand`: one when you start and one summary right before you complete the stage. Skip the per-tool events and the `run.checkpoint` after each tool batch: the hooks do both. Still do the followups check below: some notes (the v1 `message.queue` command, or a note queued before you claimed the run) are written to `.pipeline/followups/<stage>.txt`, and no hook reads that file.
+   - **Otherwise, report by hand:**
+     - **Stage start**: immediately upon picking up the handoff, emit an intent heartbeat:
+       ```bash
+       node pipeline/host-event.mjs --stage <stage> --kind text --text "Starting <stage>: inspecting specs and requirements..."
+       ```
+       (`handoff.eventCommand` is this exact command for the stage, with `--run-id` already added when pooled; vary `--kind`/`--text`.)
+     - **Tool / milestone batches**: emit a progress event after every 1–2 major tool operations, file edits, or test runs:
+       ```bash
+       node pipeline/host-event.mjs --stage <stage> --kind tool --tool edit --file <file_path>
+       node pipeline/host-event.mjs --stage <stage> --kind text --text "<concise_action_summary>"
+       ```
+     - **Check followups**: periodically check `.pipeline/followups/<stage>.txt` for live notes from the dashboard operator. Read and apply any note immediately, then delete the file.
+     - **Stage completion summary**: emit your final summary event right before invoking `--continue`.
+4. Set `"actualModel"` in `stage-handoff.json` to the **model** that did the work (e.g. `gemini-3.1-pro`), never your client's name (`antigravity`, `cursor`) — a client name is recorded as unknown.
 5. Resume:
    ```bash
    bash .pipeline/orchestrate.sh --continue
    ```
+   Prefer the exact command the handoff printed — it carries `--handoff-id <id>` (also in `stage-handoff.json` as `handoffId`), so your continue can only ever complete *this* stage. **Run `--continue` once per stage, and only after the artifact is fully written.** If the dashboard's Continue (or another session) already advanced the run, your `--continue` is rejected with exit code 2 and nothing changes — read `.pipeline/stage-handoff.json` again and work the new stage.
+   If the artifact is missing a required section or was not rewritten for this stage, `--continue` exits non-zero, names the file and section, and the run **stays** awaiting this stage. Fix the artifact and run `--continue` again — never edit `status.json` by hand.
 6. Repeat until the pipeline finishes or halts.
+
+**Bridge (managed) runs.** When `stage-handoff.json` has a `bridge` block and you claimed the run (`pool claim <runId>` / `run.claim`), you hold a lease: register your host conversation (`session.register`), `run.claim` the handoff, `run.checkpoint` before work and after each tool batch (with `handoff.hookProgress`, the hooks make the per-batch checkpoints), `message.ack` then `message.resolve` every operator message, and finish with `stage.complete` — all through `bridge.command`; never edit control state directly. Complete through `bridge.command` instead of a plain `--continue` — a claimed run refuses completion without its credentials. An unclaimed run uses the plain `--continue` above, and operator notes arrive in `.pipeline/followups/<stage>.txt`.
 
 When status is `awaiting_plan_approval` (an explicit `--approve-plan` gate, a blocked agent verdict, or exhausted revisions): present `.pipeline/specs.md` and `.pipeline/plan_review.md` to the user and ask them to approve or request revisions. To request a revision, queue a note in `.pipeline/followups/planner.txt` before resuming. Either way, resume with `bash .pipeline/orchestrate.sh --continue`.
 
@@ -152,12 +157,14 @@ Once the pipeline exits, read `.pipeline/review_report.md` and report the verdic
 
 | Halt Code | Action |
 |-----------|--------|
-| `MAX_CYCLES` | Surface `.pipeline/checker_report.md`, suggest `bash .pipeline/orchestrate.sh --resume --extend 5` |
+| `MAX_CYCLES` | Surface `.pipeline/checker_report.md`, suggest `bash .pipeline/orchestrate.sh --resume --extend 5` (pool: `pool extend <runId> 5`) |
 | `REGRESSION_BLOCKED` | Surface `.pipeline/checker_report.md`, human review required |
-| `MISSING_ARTIFACT` | Inspect `.pipeline/logs/planner.log` — often a CLI auth failure in CLI mode |
+| `MISSING_ARTIFACT` | The halt detail names the file and missing section. Fix that file in place, then `bash .pipeline/orchestrate.sh --resume` (pool: `pool resume-run <runId>`) — it re-validates and continues the same step. No fresh run, no hand-edited state |
 | `AGENT_ERROR` | CLI auth/spawn failure — suggest `--mode chat` from IDE or log in to the CLI tool |
 | `INTEGRITY_VIOLATION` | A stage wrote control-plane files it does not own, or a "read-only" stage edited the tree. Surface the listed files; the stage's output is untrusted — human review required |
-| `INVALID_VERDICT` | `.pipeline/review_report.md` has no parseable verdict. Show the report and ask whether to add the verdict line and `--resume` |
+| `INVALID_VERDICT` | `.pipeline/review_report.md` has no parseable verdict. Show the report and ask whether to add the verdict line and `--resume` (pool: `pool resume-run <runId>`) |
+| `ENGINE_ERROR` | The orchestrator itself failed. Surface the stage detail, then `--resume` re-enters the failed step |
+| `INTERRUPTED` / transient `AGENT_ERROR` | `--resume`; in pool mode the supervisor resumes these on its own |
 
 ### 9. Workspace Isolation
 

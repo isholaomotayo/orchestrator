@@ -105,7 +105,7 @@ test('resolveModelProfile manual requires all four stages', () => {
     manualStages: { planner: 'a', coder: 'b', tester: 'c', reviewer: 'd' },
   });
   assert.equal(ok.selection, 'manual');
-  assert.deepEqual(ok.stages, { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' });
+  assert.deepEqual(ok.stages, { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd', reporter: 'd' });
 });
 
 test('parseModelsJson validates shape', () => {
@@ -114,7 +114,7 @@ test('parseModelsJson validates shape', () => {
   assert.throws(() => parseModelsJson('{"planner":"a"}'));
   assert.deepEqual(
     parseModelsJson('{"planner":"a","coder":"b","tester":"c","reviewer":"d"}'),
-    { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd' },
+    { planner: 'a', plan_reviewer: 'd', coder: 'b', tester: 'c', reviewer: 'd', designer: 'a', handoff: 'd', reporter: 'd' },
   );
 });
 

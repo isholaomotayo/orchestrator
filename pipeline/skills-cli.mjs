@@ -13,7 +13,7 @@ import {
   normalizeSkillsConfig, resolveSkillDir, verifySkill, writePin, readPin, skillStatuses,
 } from './skills.mjs';
 
-const USAGE = `Usage: node pipeline/skills.mjs <command>
+const USAGE = `Usage: node pipeline/skills-cli.mjs <command>
 
   list [--json]        every declared skill and whether it is usable
   verify [name]        check declared skills against their pins
