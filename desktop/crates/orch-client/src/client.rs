@@ -138,13 +138,15 @@ impl Client {
         projects: &[String],
         last_event_id: Option<&str>,
     ) -> reqwest::RequestBuilder {
+        // No filter means every project, including ones registered later.
+        let url = if projects.is_empty() {
+            format!("{}/api/v1/events", self.base)
+        } else {
+            format!("{}/api/v1/events?projects={}", self.base, projects.join(","))
+        };
         let mut req = self
             .http
-            .get(format!(
-                "{}/api/v1/events?projects={}",
-                self.base,
-                projects.join(",")
-            ))
+            .get(url)
             .bearer_auth(&self.token)
             .header("Accept", "text/event-stream");
         if let Some(id) = last_event_id {

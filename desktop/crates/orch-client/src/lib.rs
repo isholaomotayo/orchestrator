@@ -14,6 +14,27 @@ pub use stream::StreamEvent;
 
 use orch_contract::{CommandResult, ProjectInfo, Snapshot};
 use serde_json::Value;
+use std::sync::{Arc, RwLock};
+
+/// The server connection every task uses. The stream replaces it when the
+/// server restarts (new port or token), so refreshes and commands follow.
+pub type SharedClient = Arc<RwLock<Client>>;
+
+fn current(shared: &SharedClient) -> Client {
+    shared.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// After a failed connection: the live server to use now, when it differs from
+/// `client` (a restart writes a new registry record with a new token, often a
+/// new port). The same address is preferred, else the newest server.
+pub fn rediscover(client: &Client) -> Option<Client> {
+    let servers = discovery::live_servers();
+    let record = servers
+        .iter()
+        .find(|r| r.base_url() == client.base)
+        .or_else(|| servers.first())?;
+    (record.base_url() != client.base || record.token != client.token()).then(|| Client::from_record(record))
+}
 
 /// Everything the network side reports, in arrival order.
 #[derive(Debug, Clone)]
@@ -57,25 +78,34 @@ impl ClientHandle {
             .build()?;
         std::thread::Builder::new().name("orch-client".into()).spawn(move || {
             runtime.block_on(async move {
+                let shared: SharedClient = Arc::new(RwLock::new(client));
+                // Returns the cursor of the first snapshot: the stream resumes
+                // from there, so a change published while the snapshots were
+                // being fetched is replayed instead of lost.
                 let refresh = |client: Client, tx: async_channel::Sender<ClientEvent>| async move {
+                    let mut first_cursor = None;
                     match client.projects().await {
                         Ok(projects) => {
                             let ids: Vec<String> = projects.iter().map(|p| p.project_id.clone()).collect();
                             let _ = tx.send(ClientEvent::Projects(projects)).await;
                             for id in &ids {
                                 match client.snapshot(id).await {
-                                    Ok(s) => { let _ = tx.send(ClientEvent::Snapshot(Box::new(s))).await; }
+                                    Ok(s) => {
+                                        first_cursor.get_or_insert_with(|| s.cursor.clone());
+                                        let _ = tx.send(ClientEvent::Snapshot(Box::new(s))).await;
+                                    }
                                     Err(e) => { let _ = tx.send(ClientEvent::Error(e.to_string())).await; }
                                 }
                             }
-                            ids
                         }
-                        Err(e) => { let _ = tx.send(ClientEvent::Error(e.to_string())).await; Vec::new() }
+                        Err(e) => { let _ = tx.send(ClientEvent::Error(e.to_string())).await; }
                     }
+                    first_cursor
                 };
-                let ids = refresh(client.clone(), events_tx.clone()).await;
+                let cursor = refresh(current(&shared), events_tx.clone()).await;
                 let (stream_tx, stream_rx) = async_channel::unbounded();
-                tokio::spawn(stream::run_event_stream(client.clone(), ids, stream_tx));
+                // Every project, including ones registered after startup.
+                tokio::spawn(stream::run_event_stream(shared.clone(), cursor, rediscover, stream_tx));
                 let forward = events_tx.clone();
                 tokio::spawn(async move {
                     while let Ok(ev) = stream_rx.recv().await {
@@ -84,9 +114,9 @@ impl ClientHandle {
                 });
                 while let Ok(req) = req_rx.recv().await {
                     match req {
-                        Request::Refresh => { refresh(client.clone(), events_tx.clone()).await; }
+                        Request::Refresh => { refresh(current(&shared), events_tx.clone()).await; }
                         Request::Command { request, project_id, kind, run_id, args, command_id } => {
-                            let client = client.clone();
+                            let client = current(&shared);
                             let tx = events_tx.clone();
                             tokio::spawn(async move {
                                 let result = client.command(&project_id, &kind, run_id.as_deref(), args, Some(command_id)).await.map_err(|e| e.to_string());
