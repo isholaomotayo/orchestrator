@@ -1219,7 +1219,10 @@ function handleRequest(req, res) {
       if (!status) return json(res, { error: 'no run recorded at this path' }, 409);
       if (isArchivedStatus(status)) return json(res, { error: 'cannot note an archived run' }, 409);
       const active = activeStageName(status);
-      if (active && body.stage !== active) {
+      // The plan gate waits on plan_reviewer, but asking for changes there is a
+      // note for the Planner followed by --continue (the engine re-plans).
+      const planChange = status.overall === 'awaiting_plan_approval' && body.stage === 'planner';
+      if (active && body.stage !== active && !planChange) {
         return json(res, { error: `stage "${body.stage}" is not active on this run (active: ${active})` }, 409);
       }
       try {

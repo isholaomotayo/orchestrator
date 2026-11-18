@@ -428,6 +428,21 @@ test('a note cannot target an archived run, a mismatched stage, or a path-traver
   assert.equal(traversal.status, 404);
 }));
 
+test('at the plan approval gate a note for the Planner is accepted, so Request changes works', withServer(async ({ post, root }) => {
+  const r9 = pipelinePaths(root, { runId: 'r9' });
+  fs.mkdirSync(r9.dir, { recursive: true });
+  // What requestPlanApproval records.
+  fs.writeFileSync(r9.status, JSON.stringify({
+    overall: 'awaiting_plan_approval', awaitingStage: 'plan_reviewer', resumePoint: { step: 'plan_approval', context: {} },
+    stages: [{ name: 'planner', status: 'done' }, { name: 'plan_reviewer', status: 'done' }],
+  }));
+  const res = await post('/api/followup', { stage: 'planner', text: 'Split ticket 2 in two.', run: 'r9' });
+  assert.equal(res.status, 200, await res.text());
+  assert.match(fs.readFileSync(path.join(r9.dir, 'followups', 'planner.txt'), 'utf8'), /Split ticket 2 in two\./);
+  const other = await post('/api/followup', { stage: 'coder', text: 'not yet', run: 'r9' });
+  assert.equal(other.status, 409, 'only the Planner takes notes at the gate');
+}));
+
 test('continue for a selected pool run writes --run-id into that run directory', withServer(async ({ post, root }) => {
   const r2 = pipelinePaths(root, { runId: 'r2' });
   fs.mkdirSync(r2.dir, { recursive: true });
