@@ -20,8 +20,17 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
-fn server(root: &Path) -> Child {
-    Command::new("node")
+/// Kills the server even when an assertion panics, so a failing run leaks nothing.
+struct Server(Child);
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn server(root: &Path) -> Server {
+    Server(Command::new("node")
         .arg(repo_root().join("pipeline/ui-server.mjs"))
         .current_dir(root)
         .env("PIPELINE_UI_PORT", free_port().to_string())
@@ -30,7 +39,7 @@ fn server(root: &Path) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap()
+        .unwrap())
 }
 
 fn newest_record(not_instance: Option<&str>) -> orch_contract::ServerRecord {
@@ -69,7 +78,7 @@ fn after_a_server_restart_the_client_follows_the_new_server_and_token() {
     write(&root.join(".pipeline/runs/r1/events.jsonl"), "");
     std::env::set_var("ORCHESTRATOR_HOME", root.join(".orch-home"));
 
-    let mut first = server(&root);
+    let first = server(&root);
     let record = newest_record(None);
     let handle = ClientHandle::connect(Client::from_record(&record)).unwrap();
     assert!(
@@ -77,9 +86,8 @@ fn after_a_server_restart_the_client_follows_the_new_server_and_token() {
         "connected to the first server"
     );
 
-    let _ = first.kill();
-    let _ = first.wait();
-    let mut second = server(&root);
+    drop(first);
+    let _second = server(&root);
     let fresh = newest_record(Some(&record.instance_id));
     assert_ne!(fresh.token, record.token, "a restart issues a new token");
     assert!(
@@ -96,7 +104,5 @@ fn after_a_server_restart_the_client_follows_the_new_server_and_token() {
         }),
         "a refresh after the restart returns a snapshot (last error: {error:?})"
     );
-    let _ = second.kill();
-    let _ = second.wait();
     let _ = std::fs::remove_dir_all(&root);
 }
